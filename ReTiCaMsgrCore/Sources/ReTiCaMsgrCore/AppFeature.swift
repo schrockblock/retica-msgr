@@ -98,6 +98,7 @@ public struct AppFeature {
             case .closeConversation:
                 state.openPeerHex = nil
                 state.threadMessages = []
+                state.draft = ""
                 return .none
 
             case let .startConversation(hex):

@@ -34,8 +34,14 @@ struct ConversationListView: View {
                     store.send(.openConversation(convo.peerHex))
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(shortHex(convo.peerHex))
-                            .font(.system(.headline, design: .monospaced))
+                        HStack {
+                            Text(shortHex(convo.peerHex))
+                                .font(.system(.headline, design: .monospaced))
+                            Spacer()
+                            Text(convo.lastTimestamp, style: .relative)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                         Text(convo.lastBody)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
