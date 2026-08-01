@@ -74,6 +74,53 @@ import ReTiCATransport
 }
 
 @MainActor
+@Test func deliveryFailedUpdatesMessageStatusAndReloadsMessages() async {
+    let db = try! AppDatabase.makeInMemory()
+    let identity = Identity()
+    let peerHex = "aa" + String(repeating: "bb", count: 15)
+    var initial = AppFeature.State(identity: identity)
+    initial.$peerAddressHex.withLock { $0 = peerHex }
+    initial.draft = "hello"
+    let store = TestStore(initialState: initial) {
+        AppFeature()
+    } withDependencies: {
+        $0.defaultDatabase = db
+        $0.date = .constant(Date(timeIntervalSince1970: 1700000000))
+        $0.uuid = .incrementing
+        $0.continuousClock = TestClock()
+        $0.tcpConnection = TCPConnection(
+            open: { _, _ in AsyncStream { _ in } },
+            send: { _ in },
+            close: { }
+        )
+    }
+    store.exhaustivity = .off
+
+    // Send a message so an outgoing row exists in the DB.
+    await store.send(.sendTapped)
+    await store.receive { action in
+        if case .node(.send(_, _, _, _)) = action { return true }
+        return false
+    }
+
+    // Read the persisted messageHash back from the DB.
+    let rows = try! await db.read { try Message.where { $0.peerHex.eq(peerHex) }.fetchAll($0) }
+    let hashHex = rows.first!.messageHash
+    let hashData = Data(hexString: hashHex)!
+
+    // Fire deliveryFailed and wait for the reload to reach the store.
+    await store.send(.node(.delegate(.deliveryFailed(messageHash: hashData))))
+    await store.receive { action in
+        if case .messagesLoaded(_) = action { return true }
+        return false
+    }
+
+    // The in-memory messages array must reflect the failed status.
+    let failed = store.state.messages.first(where: { $0.messageHash == hashHex })
+    #expect(failed?.status == MessageStatus.failed)
+}
+
+@MainActor
 @Test func receivedMessagePersistsIncomingRow() async {
     let db = try! AppDatabase.makeInMemory()
     let sender = Identity()

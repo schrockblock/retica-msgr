@@ -145,12 +145,17 @@ public struct AppFeature {
 
             case let .node(.delegate(.deliveryFailed(hash))):
                 let hex = hash.hexString
-                return .run { [database] _ in
+                let peerHex = state.peerAddressHex
+                return .run { [database] send in
                     try await database.write {
                         try Message.where { $0.messageHash.eq(hex) }
                             .update { $0.status = MessageStatus.failed }
                             .execute($0)
                     }
+                    let rows = try await database.read {
+                        try Message.where { $0.peerHex.eq(peerHex) }.order(by: \.timestamp).fetchAll($0)
+                    }
+                    await send(.messagesLoaded(rows))
                 }
 
             case let .messagesLoaded(rows):
