@@ -32,3 +32,8 @@ public extension Conversation {
             .sorted { $0.lastTimestamp > $1.lastTimestamp }
     }
 }
+
+/// True iff `hex` decodes to a 16-byte lxmf.delivery hash.
+public func isValidPeerAddress(_ hex: String) -> Bool {
+    Data(hexString: hex)?.count == 16
+}

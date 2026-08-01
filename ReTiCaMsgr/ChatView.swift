@@ -12,44 +12,31 @@ import ReTiCaMsgrCore
 struct ChatView: View {
     @Bindable var store: StoreOf<AppFeature>
 
-    var connectionColor: Color {
-        switch store.connection {
-        case .disconnected: return .red
-        case .connecting: return .yellow
-        case .connected: return .green
-        }
+    private var canSend: Bool {
+        guard let peer = store.openPeerHex else { return false }
+        return store.reachablePeers.contains(peer) && !store.draft.isEmpty
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                List(store.messages) { message in
-                    MessageBubble(message: message)
-                        .listRowSeparator(.hidden)
-                }
-                .listStyle(.plain)
-
-                Divider()
-
-                HStack(spacing: 8) {
-                    TextField("Message", text: $store.draft)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Send") {
-                        store.send(.sendTapped)
-                    }
-                    .disabled(!store.peerReachable || store.draft.isEmpty)
-                }
-                .padding()
+        VStack(spacing: 0) {
+            List(store.threadMessages) { message in
+                MessageBubble(message: message)
+                    .listRowSeparator(.hidden)
             }
-            .navigationTitle("Chat")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Circle()
-                        .fill(connectionColor)
-                        .frame(width: 10, height: 10)
-                }
+            .listStyle(.plain)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                TextField("Message", text: $store.draft)
+                    .textFieldStyle(.roundedBorder)
+                Button("Send") { store.send(.sendTapped) }
+                    .disabled(!canSend)
             }
+            .padding()
         }
+        .navigationTitle(store.openPeerHex.map(shortHex) ?? "Chat")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

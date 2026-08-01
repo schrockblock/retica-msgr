@@ -14,7 +14,7 @@ struct RootView: View {
 
     var body: some View {
         TabView {
-            ChatView(store: store)
+            ConversationListView(store: store)
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
             AddressView(store: store)
                 .tabItem { Label("Address", systemImage: "person.crop.circle") }
