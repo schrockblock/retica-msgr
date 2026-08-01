@@ -6,19 +6,20 @@
 //
 
 import SwiftUI
+import ComposableArchitecture
+import ReTiCaMsgrCore
 
-struct ContentView: View {
+struct RootView: View {
+    let store: StoreOf<AppFeature>
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        TabView {
+            ChatView(store: store)
+                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+            AddressView(store: store)
+                .tabItem { Label("Address", systemImage: "person.crop.circle") }
+            SettingsView(store: store)
+                .tabItem { Label("Settings", systemImage: "gear") }
         }
-        .padding()
     }
-}
-
-#Preview {
-    ContentView()
 }

@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		AA000003301E7A55003D6278 /* ReTiCaMsgrCore in Frameworks */ = {isa = PBXBuildFile; productRef = AA000002301E7A55003D6278 /* ReTiCaMsgrCore */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		49C3993D301E7A5B003D6278 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA000003301E7A55003D6278 /* ReTiCaMsgrCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = ReTiCaMsgr;
 			packageProductDependencies = (
+				AA000002301E7A55003D6278 /* ReTiCaMsgrCore */,
 			);
 			productName = ReTiCaMsgr;
 			productReference = 49C3992F301E7A55003D6278 /* ReTiCaMsgr.app */;
@@ -195,6 +201,9 @@
 			);
 			mainGroup = 49C39926301E7A55003D6278;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AA000001301E7A55003D6278 /* XCLocalSwiftPackageReference "ReTiCaMsgrCore" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 49C39930301E7A55003D6278 /* Products */;
 			projectDirPath = "";
@@ -578,6 +587,21 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		AA000001301E7A55003D6278 /* XCLocalSwiftPackageReference "ReTiCaMsgrCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ReTiCaMsgrCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA000002301E7A55003D6278 /* ReTiCaMsgrCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA000001301E7A55003D6278 /* XCLocalSwiftPackageReference "ReTiCaMsgrCore" */;
+			productName = ReTiCaMsgrCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 49C39927301E7A55003D6278 /* Project object */;
 }
