@@ -28,7 +28,11 @@ let package = Package(
         ),
         .testTarget(
             name: "ReTiCaMsgrCoreTests",
-            dependencies: ["ReTiCaMsgrCore"]
+            dependencies: [
+                "ReTiCaMsgrCore",
+                .product(name: "ReTiCAInterfaces", package: "ReTiCA"),
+                .product(name: "ReTiCATransport", package: "ReTiCA"),
+            ]
         ),
     ]
 )

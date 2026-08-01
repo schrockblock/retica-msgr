@@ -4,11 +4,6 @@ import Dependencies
 import ReTiCA
 @testable import ReTiCaMsgrCore
 
-// Data.hexString in ReTiCA is internal; provide a local equivalent for tests.
-private extension Data {
-    var hexString: String { map { String(format: "%02x", $0) }.joined() }
-}
-
 @Test func identityStoreTestValueIsStableAndAddressIsDeliveryHash() {
     let store = IdentityStore.testValue
     let a = store.load(); let b = store.load()

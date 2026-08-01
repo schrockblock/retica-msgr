@@ -5,11 +5,6 @@ import ReTiCA
 import Security
 #endif
 
-// Data.hexString in ReTiCA is internal; provide a local equivalent.
-private extension Data {
-    var hexString: String { map { String(format: "%02x", $0) }.joined() }
-}
-
 /// Loads the persistent user Identity: from Keychain if present, else generates + stores one.
 public struct IdentityStore: Sendable {
     public var load: @Sendable () -> Identity
