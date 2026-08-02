@@ -62,6 +62,9 @@ struct ConversationListView: View {
                     Circle().fill(connectionColor).frame(width: 10, height: 10)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { store.send(.syncTapped) } label: { Image(systemName: "arrow.clockwise") }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showingCompose = true } label: { Image(systemName: "plus") }
                 }
             }
