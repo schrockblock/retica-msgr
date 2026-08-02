@@ -47,6 +47,11 @@ struct ConversationListView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
+                    // Make the whole row tappable, not just the text glyphs: a
+                    // plain-style Button only hit-tests its content, so the empty
+                    // row area (gaps + trailing space) otherwise swallows taps.
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
