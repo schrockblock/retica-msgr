@@ -91,14 +91,16 @@ private let peerB = String(repeating: "b", count: 32)
     }
     await store.send(.sendTapped)
     await store.receive { action in
-        if case let .node(.send(dest, _, content, method)) = action {
-            #expect(dest == Data(hexString: peerA))
-            #expect(content == Data("hello".utf8))
-            #expect(method == .opportunistic)
+        if case let .node(.sendMessage(msg, alsoViaPropagation)) = action {
+            #expect(msg.destinationHash == Data(hexString: peerA))
+            #expect(msg.content == Data("hello".utf8))
+            #expect(alsoViaPropagation == false)
             return true
         }
         return false
     }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     let rows = try! await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }
     #expect(rows.count == 1)
     #expect(rows.first?.isOutgoing == true)
@@ -166,7 +168,7 @@ private let peerB = String(repeating: "b", count: 32)
         state.draft = "hello"
     }
     await store.send(.sendTapped)
-    await store.receive { if case .node(.send(_, _, _, _)) = $0 { return true }; return false }
+    await store.receive { if case .node(.sendMessage) = $0 { return true }; return false }
     let sent = try! await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }
     let hashHex = sent.first!.messageHash
     let hashData = Data(hexString: hashHex)!
@@ -197,4 +199,99 @@ private let peerB = String(repeating: "b", count: 32)
     await store.send(.startConversation(peerA))
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
     #expect(store.state.openPeerHex == peerA)
+}
+
+private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
+
+@MainActor @Test func sendWithPropagationNodeUsesSendMessageBoth() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = "hi"
+        s.$propagationNodeHex.withLock { $0 = pnHex }
+    }
+    await store.send(.sendTapped)
+    await store.receive { action in
+        if case let .node(.sendMessage(_, alsoViaPropagation)) = action { return alsoViaPropagation }
+        return false
+    }
+}
+
+@MainActor @Test func sendWithoutPropagationNodeUsesSendMessageDirectOnly() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = "hi"
+    }
+    await store.send(.sendTapped)
+    await store.receive { action in
+        if case let .node(.sendMessage(_, alsoViaPropagation)) = action { return !alsoViaPropagation }
+        return false
+    }
+}
+
+@MainActor @Test func interfaceConnectedWithPNConfiguresAndSyncs() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.$propagationNodeHex.withLock { $0 = pnHex }
+    }
+    await store.send(.node(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"))))))
+    await store.receive { if case .node(.setPropagationNode) = $0 { return true }; return false }
+    await store.receive { if case .node(.syncFromPropagationNode) = $0 { return true }; return false }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.router.outboundPropagationNode == Data(hexString: pnHex))
+}
+
+@MainActor @Test func interfaceConnectedWithoutPNDoesNotConfigure() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"))))))
+    await store.receive { if case .node(.registerDelivery) = $0 { return true }; return false }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.router.outboundPropagationNode == nil)
+}
+
+@MainActor @Test func setPropagationNodePersistsAndConfigures() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.setPropagationNode(pnHex))
+    await store.receive { if case .node(.syncFromPropagationNode) = $0 { return true }; return false }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.propagationNodeHex == pnHex)
+    #expect(store.state.node.router.outboundPropagationNode == Data(hexString: pnHex))
+}
+
+@MainActor @Test func setPropagationNodeInvalidDoesNotConfigure() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.setPropagationNode("nothex"))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.router.outboundPropagationNode == nil)
+}
+
+@MainActor @Test func syncTappedRequestsSync() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.syncTapped)
+    await store.receive { if case .node(.syncFromPropagationNode) = $0 { return true }; return false }
+}
+
+@MainActor @Test func propagationAcceptedMarksStored() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = "hi"
+    }
+    await store.send(.sendTapped)
+    await store.receive { if case .node(.sendMessage) = $0 { return true }; return false }
+    let sent = try! await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }
+    let hashHex = sent.first!.messageHash
+    let hashData = Data(hexString: hashHex)!
+    await store.send(.node(.delegate(.propagationAccepted(messageHash: hashData))))
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadMessages.first { $0.messageHash == hashHex }?.status == MessageStatus.propagated)
 }

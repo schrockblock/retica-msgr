@@ -41,4 +41,5 @@ public enum MessageStatus {
     public static let sent = "sent"
     public static let failed = "failed"
     public static let received = "received"
+    public static let propagated = "stored"
 }

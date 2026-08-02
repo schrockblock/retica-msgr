@@ -27,6 +27,7 @@ public struct AppFeature {
         public var threadMessages: [Message] = []
         // Peers with a known path (from pathLearned); gates Send in the UI. Session-only.
         public var reachablePeers: Set<String> = []
+        @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
 
         public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242) {
             self.identity = identity
@@ -47,6 +48,8 @@ public struct AppFeature {
         case openConversation(String)
         case closeConversation
         case startConversation(String)
+        case setPropagationNode(String)
+        case syncTapped
         case sendTapped
         case conversationsLoaded([Conversation])
         case threadLoaded([Message])
@@ -81,7 +84,12 @@ public struct AppFeature {
 
             case .node(.endpoint(.transport(.interfaceConnected(_)))):
                 state.connection = .connected
-                return .send(.node(.registerDelivery))
+                var effects: [Effect<Action>] = [.send(.node(.registerDelivery))]
+                if let pn = Data(hexString: state.propagationNodeHex), pn.count == 16 {
+                    effects.append(.send(.node(.setPropagationNode(destinationHash: pn))))
+                    effects.append(.send(.node(.syncFromPropagationNode)))
+                }
+                return .merge(effects)
 
             case .node(.endpoint(.transport(.interfaceDisconnected(_)))):
                 state.connection = .disconnected
@@ -130,18 +138,16 @@ public struct AppFeature {
                     validated: false,
                     messageHash: msg.hash.hexString
                 )
+                let alsoViaPropagation = !state.propagationNodeHex.isEmpty
                 state.draft = ""
-                return .run { [database] send in
-                    try await database.write { try Message.insert { row }.execute($0) }
-                    try await reloadThread(database, peerHex, send)
-                    try await reloadConversations(database, send)
-                    await send(.node(.send(
-                        destinationHash: peer,
-                        title: title,
-                        content: content,
-                        method: .opportunistic
-                    )))
-                }
+                return .merge(
+                    .send(.node(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation))),
+                    .run { [database] send in
+                        try await database.write { try Message.insert { row }.execute($0) }
+                        try await reloadThread(database, peerHex, send)
+                        try await reloadConversations(database, send)
+                    }
+                )
 
             case let .node(.delegate(.messageReceived(m, validated))):
                 let incomingPeer = m.sourceHash.hexString
@@ -186,6 +192,32 @@ public struct AppFeature {
             case let .threadLoaded(rows):
                 state.threadMessages = rows
                 return .none
+
+            case let .setPropagationNode(hex):
+                state.$propagationNodeHex.withLock { $0 = hex }
+                guard let pn = Data(hexString: hex), pn.count == 16 else { return .none }
+                return .merge(
+                    .send(.node(.setPropagationNode(destinationHash: pn))),
+                    .send(.node(.syncFromPropagationNode))
+                )
+
+            case .syncTapped:
+                return .send(.node(.syncFromPropagationNode))
+
+            case let .node(.delegate(.propagationAccepted(hash))):
+                let hex = hash.hexString
+                let openPeer = state.openPeerHex
+                return .run { [database] send in
+                    try await database.write {
+                        try Message.where { $0.messageHash.eq(hex) }
+                            .update { $0.status = MessageStatus.propagated }
+                            .execute($0)
+                    }
+                    try await reloadConversations(database, send)
+                    if let openPeer {
+                        try await reloadThread(database, openPeer, send)
+                    }
+                }
 
             case .node, .binding:
                 return .none
