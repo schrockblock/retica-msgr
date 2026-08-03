@@ -84,9 +84,31 @@ Rationale:
 - **No duplicated client logic** — `LXMFNode` is unchanged and keeps owning the
   endpoint, so the concurrent BLE/`TransportEndpoint` work is untouched.
 - **No duplicated store logic** — reuses `PropagationNode`.
-- **No handler conflict** — a client consumes `responseReceived` (its own sync);
-  a server consumes `requestReceived` (inbound `/get`). `LXMFNode` ignores
-  `requestReceived` today.
+- **`requestReceived` has no conflict** — a client consumes `responseReceived`
+  (its own sync); a server consumes `requestReceived` (inbound `/get`), which
+  `LXMFNode` ignores today.
+
+**Link classification (required — inbound data IS ambiguous).** `LXMFNode`
+already consumes `linkDataReceived` and `resourceReceived` as *direct client
+messages* (`LXMFNode.swift:245-249`), and the serve path needs those same two
+delegates as *propagation offers*. The disambiguator is **which local
+destination the link terminates on**: for an inbound link, `linkEstablished`
+carries our own local destination hash (`TCPEndpoint` resolves it via
+`transport.localDestinations`), whereas our client's outbound sync link carries
+the *remote* node's hash — so the two never collide.
+
+Therefore:
+
+- `LXMFNode` records `linkID → destinationHash` from `linkEstablished` and gains
+  an optional `propagationDestinationHash`. When a link's destination equals it,
+  `LXMFNode` skips its direct-message handling — that data belongs to the server.
+- `LXMFServiceNode` routes exactly those links' `linkDataReceived` /
+  `resourceReceived` to `ingestContainer`, and sets/clears
+  `propagationDestinationHash` when node-mode is enabled/disabled.
+
+Relying instead on "a container will fail `LXMessage.unpack`" is rejected: it is
+probabilistic, and a parse that *did* succeed would surface a bogus message to
+the user. Classification makes it correct by construction.
 - The new code is a **serve-only subset** of `PNNode` (no `/offer`, no peering,
   no peer-sync).
 - Every serve handler is gated on `nodeModeEnabled`; with it off,
