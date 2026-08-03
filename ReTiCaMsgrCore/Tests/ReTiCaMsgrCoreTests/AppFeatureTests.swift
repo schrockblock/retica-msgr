@@ -236,6 +236,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         s.$propagationNodeHex.withLock { $0 = pnHex }
     }
     await store.send(.node(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"))))))
+    await store.receive { if case .node(.registerDelivery) = $0 { return true }; return false }
     await store.receive { if case .node(.setPropagationNode) = $0 { return true }; return false }
     await store.receive { if case .node(.syncFromPropagationNode) = $0 { return true }; return false }
     await store.finish()
@@ -292,6 +293,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let hashHex = sent.first!.messageHash
     let hashData = Data(hexString: hashHex)!
     await store.send(.node(.delegate(.propagationAccepted(messageHash: hashData))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
     #expect(store.state.threadMessages.first { $0.messageHash == hashHex }?.status == MessageStatus.propagated)
 }
