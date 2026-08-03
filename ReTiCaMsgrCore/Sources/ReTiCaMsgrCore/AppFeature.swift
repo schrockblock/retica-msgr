@@ -34,7 +34,7 @@ public struct AppFeature {
             self.myAddressHex = lxmfAddressHex(identity)
             self.node = LXMFNode.State(
                 identity: identity,
-                endpoint: Endpoint.State(host: host, port: UInt16(port), reconnectOnDrop: true)
+                endpoint: TCPEndpoint.State(host: host, port: UInt16(port), reconnectOnDrop: true)
             )
             _host = Shared(wrappedValue: host, .appStorage("host"))
             _port = Shared(wrappedValue: port, .appStorage("port"))
