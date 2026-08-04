@@ -31,6 +31,16 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Run as Propagation Node") {
+                    Toggle("Act as a propagation node", isOn: Binding(
+                        get: { store.nodeModeEnabled },
+                        set: { store.send(.setNodeMode($0)) }
+                    ))
+                    Text("Stores and forwards messages for other users while this app is open.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Propagation Node") {
                     TextField("Node LXMF address (hex)", text: $pnInput)
                         .autocorrectionDisabled()

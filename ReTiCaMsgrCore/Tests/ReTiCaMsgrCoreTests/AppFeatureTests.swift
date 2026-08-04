@@ -265,6 +265,24 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(store.state.node.client.router.outboundPropagationNode == Data(hexString: pnHex))
 }
 
+/// Turning node-mode on enables serving and registers/announces lxmf.propagation.
+@MainActor @Test func nodeModeToggleEnablesServing() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.setNodeMode(true))
+    await store.receive { if case .node(.setNodeMode(true)) = $0 { return true }; return false }
+    #expect(store.state.nodeModeEnabled == true)
+    #expect(store.state.node.nodeModeEnabled == true)
+}
+
+/// On connect, a persisted node-mode setting is applied — the node serves again after relaunch.
+@MainActor @Test func persistedNodeModeIsAppliedOnConnect() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { $0.$nodeModeEnabled.withLock { $0 = true } }
+    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"))))))))
+    await store.receive { if case .node(.setNodeMode(true)) = $0 { return true }; return false }
+}
+
 @MainActor @Test func setPropagationNodeInvalidDoesNotConfigure() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())

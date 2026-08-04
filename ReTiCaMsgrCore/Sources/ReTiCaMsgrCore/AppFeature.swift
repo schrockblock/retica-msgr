@@ -28,6 +28,7 @@ public struct AppFeature {
         // Peers with a known path (from pathLearned); gates Send in the UI. Session-only.
         public var reachablePeers: Set<String> = []
         @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
+        @Shared(.appStorage("propagationNodeModeEnabled")) public var nodeModeEnabled: Bool = false
 
         public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242) {
             self.identity = identity
@@ -48,6 +49,7 @@ public struct AppFeature {
         case openConversation(String)
         case closeConversation
         case startConversation(String)
+        case setNodeMode(Bool)
         case setPropagationNode(String)
         case syncTapped
         case sendTapped
@@ -88,6 +90,9 @@ public struct AppFeature {
                 if let pn = Data(hexString: state.propagationNodeHex), pn.count == 16 {
                     effects.append(.send(.node(.client(.setPropagationNode(destinationHash: pn)))))
                     effects.append(.send(.node(.client(.syncFromPropagationNode))))
+                }
+                if state.nodeModeEnabled {
+                    effects.append(.send(.node(.setNodeMode(true))))
                 }
                 return .merge(effects)
 
@@ -192,6 +197,10 @@ public struct AppFeature {
             case let .threadLoaded(rows):
                 state.threadMessages = rows
                 return .none
+
+            case let .setNodeMode(enabled):
+                state.$nodeModeEnabled.withLock { $0 = enabled }
+                return .send(.node(.setNodeMode(enabled)))
 
             case let .setPropagationNode(hex):
                 state.$propagationNodeHex.withLock { $0 = hex }
