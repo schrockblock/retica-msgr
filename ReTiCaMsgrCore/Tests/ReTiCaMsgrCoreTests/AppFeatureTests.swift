@@ -354,6 +354,49 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(rows.isEmpty)
 }
 
+/// The `onLaunch` rehydration fetch orders by `storedAt` (Important-1) so that when the store evicts
+/// over its cap it removes the oldest entries deterministically — the same entries each launch.
+/// Verification: seed two entries with different `storedAt`, confirm the `rehydratePropagationStore`
+/// action carries them oldest-first.
+@MainActor @Test func propagationRehydrateUsesStoredAtOrder() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+
+    let destA = Data(repeating: 0xAA, count: 16)
+    let destB = Data(repeating: 0xBB, count: 16)
+    let bytesA = destA + Data("older".utf8)
+    let bytesB = destB + Data("newer".utf8)
+    let tidA = Data(repeating: 0x11, count: 32)
+    let tidB = Data(repeating: 0x22, count: 32)
+
+    // Seed in reverse order (B first / newer storedAt, A second / older storedAt) so a naive
+    // "fetch all, no ORDER BY" would return B before A and the test would catch the regression.
+    try await db.write { db in
+        try PropagationEntryRow.insert {
+            PropagationEntryRow(transientIdHex: tidB.hexString,
+                                destinationHashHex: destB.hexString,
+                                lxmfData: bytesB,
+                                storedAt: Date(timeIntervalSince1970: 1700000002.0))  // newer
+        }.execute(db)
+        try PropagationEntryRow.insert {
+            PropagationEntryRow(transientIdHex: tidA.hexString,
+                                destinationHashHex: destA.hexString,
+                                lxmfData: bytesA,
+                                storedAt: Date(timeIntervalSince1970: 1700000001.0))  // older
+        }.execute(db)
+    }
+
+    await store.send(.onLaunch)
+    var receivedData: [Data] = []
+    await store.receive { action in
+        if case let .rehydratePropagationStore(data) = action { receivedData = data; return true }
+        return false
+    }
+    // Oldest first (storedAt=1700000001 < 1700000002), so bytesA must precede bytesB.
+    #expect(receivedData.first == bytesA, "Expected older entry first")
+    #expect(receivedData.last == bytesB, "Expected newer entry last")
+}
+
 /// On launch the persisted backlog is restored into the in-memory store, so the node serves it again.
 @MainActor @Test func propagationStoreRehydratesOnLaunch() async throws {
     let db = try AppDatabase.makeInMemory()

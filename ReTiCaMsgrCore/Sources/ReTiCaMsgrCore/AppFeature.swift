@@ -77,7 +77,12 @@ public struct AppFeature {
                     .send(.node(.client(.endpoint(.start)))),
                     .run { [database] send in try await reloadConversations(database, send) },
                     .run { [database] send in
-                        let rows = try await database.read { try PropagationEntryRow.all.fetchAll($0) }
+                        // ORDER BY storedAt so eviction during rehydration is deterministic across
+                        // launches: the oldest entries are ingested first, matching the order in which
+                        // they were originally inserted, so the same entries are evicted at the cap.
+                        let rows = try await database.read {
+                            try PropagationEntryRow.all.order(by: \.storedAt).fetchAll($0)
+                        }
                         await send(.rehydratePropagationStore(rows.map(\.lxmfData)))
                     }
                 )
