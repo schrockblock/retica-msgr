@@ -91,7 +91,7 @@ private let peerB = String(repeating: "b", count: 32)
     }
     await store.send(.sendTapped)
     await store.receive { action in
-        if case let .node(.sendMessage(msg, alsoViaPropagation)) = action {
+        if case let .node(.client(.sendMessage(msg, alsoViaPropagation))) = action {
             #expect(msg.destinationHash == Data(hexString: peerA))
             #expect(msg.content == Data("hello".utf8))
             #expect(alsoViaPropagation == false)
@@ -126,7 +126,7 @@ private let peerB = String(repeating: "b", count: 32)
         title: Data(),
         content: Data("hi".utf8)
     )
-    await store.send(.node(.delegate(.messageReceived(message: m, signatureValidated: true))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
     #expect(store.state.threadMessages.contains { $0.body == "hi" })
@@ -150,7 +150,7 @@ private let peerB = String(repeating: "b", count: 32)
         title: Data(),
         content: Data("elsewhere".utf8)
     )
-    await store.send(.node(.delegate(.messageReceived(message: m, signatureValidated: true))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     // Drain any remaining in-flight effects and pending received actions (non-strict: ok if none).
     await store.finish()
@@ -168,11 +168,11 @@ private let peerB = String(repeating: "b", count: 32)
         state.draft = "hello"
     }
     await store.send(.sendTapped)
-    await store.receive { if case .node(.sendMessage) = $0 { return true }; return false }
+    await store.receive { if case .node(.client(.sendMessage)) = $0 { return true }; return false }
     let sent = try! await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }
     let hashHex = sent.first!.messageHash
     let hashData = Data(hexString: hashHex)!
-    await store.send(.node(.delegate(.deliveryFailed(messageHash: hashData))))
+    await store.send(.node(.client(.delegate(.deliveryFailed(messageHash: hashData)))))
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
     let failed = store.state.threadMessages.first { $0.messageHash == hashHex }
     #expect(failed?.status == MessageStatus.failed)
@@ -183,7 +183,7 @@ private let peerB = String(repeating: "b", count: 32)
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
     let h = Data(repeating: 0xAB, count: 16)
-    await store.send(.node(.endpoint(.delegate(.pathLearned(destinationHash: h, hops: 1)))))
+    await store.send(.node(.client(.endpoint(.delegate(.pathLearned(destinationHash: h, hops: 1))))))
     #expect(store.state.reachablePeers.contains(h.hexString))
 }
 
@@ -212,7 +212,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     }
     await store.send(.sendTapped)
     await store.receive { action in
-        if case let .node(.sendMessage(_, alsoViaPropagation)) = action { return alsoViaPropagation }
+        if case let .node(.client(.sendMessage(_, alsoViaPropagation))) = action { return alsoViaPropagation }
         return false
     }
 }
@@ -225,7 +225,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     }
     await store.send(.sendTapped)
     await store.receive { action in
-        if case let .node(.sendMessage(_, alsoViaPropagation)) = action { return !alsoViaPropagation }
+        if case let .node(.client(.sendMessage(_, alsoViaPropagation))) = action { return !alsoViaPropagation }
         return false
     }
 }
@@ -235,34 +235,34 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store = makeStore(db, identity: Identity()) { s in
         s.$propagationNodeHex.withLock { $0 = pnHex }
     }
-    await store.send(.node(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"))))))
-    await store.receive { if case .node(.registerDelivery) = $0 { return true }; return false }
-    await store.receive { if case .node(.setPropagationNode) = $0 { return true }; return false }
-    await store.receive { if case .node(.syncFromPropagationNode) = $0 { return true }; return false }
+    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"))))))))
+    await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
+    await store.receive { if case .node(.client(.setPropagationNode)) = $0 { return true }; return false }
+    await store.receive { if case .node(.client(.syncFromPropagationNode)) = $0 { return true }; return false }
     await store.finish()
     await store.skipReceivedActions(strict: false)
-    #expect(store.state.node.router.outboundPropagationNode == Data(hexString: pnHex))
+    #expect(store.state.node.client.router.outboundPropagationNode == Data(hexString: pnHex))
 }
 
 @MainActor @Test func interfaceConnectedWithoutPNDoesNotConfigure() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
-    await store.send(.node(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"))))))
-    await store.receive { if case .node(.registerDelivery) = $0 { return true }; return false }
+    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"))))))))
+    await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
     await store.finish()
     await store.skipReceivedActions(strict: false)
-    #expect(store.state.node.router.outboundPropagationNode == nil)
+    #expect(store.state.node.client.router.outboundPropagationNode == nil)
 }
 
 @MainActor @Test func setPropagationNodePersistsAndConfigures() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
     await store.send(.setPropagationNode(pnHex))
-    await store.receive { if case .node(.syncFromPropagationNode) = $0 { return true }; return false }
+    await store.receive { if case .node(.client(.syncFromPropagationNode)) = $0 { return true }; return false }
     await store.finish()
     await store.skipReceivedActions(strict: false)
     #expect(store.state.propagationNodeHex == pnHex)
-    #expect(store.state.node.router.outboundPropagationNode == Data(hexString: pnHex))
+    #expect(store.state.node.client.router.outboundPropagationNode == Data(hexString: pnHex))
 }
 
 @MainActor @Test func setPropagationNodeInvalidDoesNotConfigure() async {
@@ -271,14 +271,14 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.send(.setPropagationNode("nothex"))
     await store.finish()
     await store.skipReceivedActions(strict: false)
-    #expect(store.state.node.router.outboundPropagationNode == nil)
+    #expect(store.state.node.client.router.outboundPropagationNode == nil)
 }
 
 @MainActor @Test func syncTappedRequestsSync() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
     await store.send(.syncTapped)
-    await store.receive { if case .node(.syncFromPropagationNode) = $0 { return true }; return false }
+    await store.receive { if case .node(.client(.syncFromPropagationNode)) = $0 { return true }; return false }
 }
 
 @MainActor @Test func propagationAcceptedMarksStored() async {
@@ -288,11 +288,11 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         s.draft = "hi"
     }
     await store.send(.sendTapped)
-    await store.receive { if case .node(.sendMessage) = $0 { return true }; return false }
+    await store.receive { if case .node(.client(.sendMessage)) = $0 { return true }; return false }
     let sent = try! await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }
     let hashHex = sent.first!.messageHash
     let hashData = Data(hexString: hashHex)!
-    await store.send(.node(.delegate(.propagationAccepted(messageHash: hashData))))
+    await store.send(.node(.client(.delegate(.propagationAccepted(messageHash: hashData)))))
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
     #expect(store.state.threadMessages.first { $0.messageHash == hashHex }?.status == MessageStatus.propagated)

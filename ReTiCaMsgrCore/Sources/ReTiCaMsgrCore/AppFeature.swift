@@ -13,7 +13,7 @@ public struct AppFeature {
 
     @ObservableState
     public struct State: Equatable {
-        public var node: LXMFNode.State
+        public var node: LXMFServiceNode.State
         public var identity: Identity
         public var myAddressHex: String
         @Shared(.appStorage("host")) public var host: String = "127.0.0.1"
@@ -32,7 +32,7 @@ public struct AppFeature {
         public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242) {
             self.identity = identity
             self.myAddressHex = lxmfAddressHex(identity)
-            self.node = LXMFNode.State(
+            self.node = LXMFServiceNode.State(
                 identity: identity,
                 endpoint: TCPEndpoint.State(host: host, port: UInt16(port), reconnectOnDrop: true)
             )
@@ -53,7 +53,7 @@ public struct AppFeature {
         case sendTapped
         case conversationsLoaded([Conversation])
         case threadLoaded([Message])
-        case node(LXMFNode.Action)
+        case node(LXMFServiceNode.Action)
         case binding(BindingAction<State>)
     }
 
@@ -64,38 +64,38 @@ public struct AppFeature {
 
     public var body: some ReducerOf<Self> {
         BindingReducer()
-        Scope(state: \.node, action: \.node) { LXMFNode() }
+        Scope(state: \.node, action: \.node) { LXMFServiceNode() }
         Reduce { state, action in
             switch action {
             case .onLaunch:
                 state.connection = .connecting
                 return .merge(
-                    .send(.node(.endpoint(.connect))),
+                    .send(.node(.client(.endpoint(.start)))),
                     .run { [database] send in try await reloadConversations(database, send) }
                 )
 
             case .connectTapped:
                 state.connection = .connecting
-                return .send(.node(.endpoint(.connect)))
+                return .send(.node(.client(.endpoint(.start))))
 
             case .disconnectTapped:
                 state.connection = .disconnected
-                return .send(.node(.endpoint(.disconnect)))
+                return .send(.node(.client(.endpoint(.stop))))
 
-            case .node(.endpoint(.transport(.interfaceConnected(_)))):
+            case .node(.client(.endpoint(.tcp(.transport(.interfaceConnected(_)))))):
                 state.connection = .connected
-                var effects: [Effect<Action>] = [.send(.node(.registerDelivery))]
+                var effects: [Effect<Action>] = [.send(.node(.client(.registerDelivery)))]
                 if let pn = Data(hexString: state.propagationNodeHex), pn.count == 16 {
-                    effects.append(.send(.node(.setPropagationNode(destinationHash: pn))))
-                    effects.append(.send(.node(.syncFromPropagationNode)))
+                    effects.append(.send(.node(.client(.setPropagationNode(destinationHash: pn)))))
+                    effects.append(.send(.node(.client(.syncFromPropagationNode))))
                 }
                 return .merge(effects)
 
-            case .node(.endpoint(.transport(.interfaceDisconnected(_)))):
+            case .node(.client(.endpoint(.tcp(.transport(.interfaceDisconnected(_)))))):
                 state.connection = .disconnected
                 return .none
 
-            case let .node(.endpoint(.delegate(.pathLearned(h, _)))):
+            case let .node(.client(.endpoint(.delegate(.pathLearned(h, _))))):
                 state.reachablePeers.insert(h.hexString)
                 return .none
 
@@ -141,7 +141,7 @@ public struct AppFeature {
                 let alsoViaPropagation = !state.propagationNodeHex.isEmpty
                 state.draft = ""
                 return .merge(
-                    .send(.node(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation))),
+                    .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
                     .run { [database] send in
                         try await database.write { try Message.insert { row }.execute($0) }
                         try await reloadThread(database, peerHex, send)
@@ -149,7 +149,7 @@ public struct AppFeature {
                     }
                 )
 
-            case let .node(.delegate(.messageReceived(m, validated))):
+            case let .node(.client(.delegate(.messageReceived(m, validated)))):
                 let incomingPeer = m.sourceHash.hexString
                 let row = Message(
                     id: UUID(),
@@ -170,7 +170,7 @@ public struct AppFeature {
                     }
                 }
 
-            case let .node(.delegate(.deliveryFailed(hash))):
+            case let .node(.client(.delegate(.deliveryFailed(hash)))):
                 let hex = hash.hexString
                 let openPeer = state.openPeerHex
                 return .run { [database] send in
@@ -197,14 +197,14 @@ public struct AppFeature {
                 state.$propagationNodeHex.withLock { $0 = hex }
                 guard let pn = Data(hexString: hex), pn.count == 16 else { return .none }
                 return .merge(
-                    .send(.node(.setPropagationNode(destinationHash: pn))),
-                    .send(.node(.syncFromPropagationNode))
+                    .send(.node(.client(.setPropagationNode(destinationHash: pn)))),
+                    .send(.node(.client(.syncFromPropagationNode)))
                 )
 
             case .syncTapped:
-                return .send(.node(.syncFromPropagationNode))
+                return .send(.node(.client(.syncFromPropagationNode)))
 
-            case let .node(.delegate(.propagationAccepted(hash))):
+            case let .node(.client(.delegate(.propagationAccepted(hash)))):
                 let hex = hash.hexString
                 let openPeer = state.openPeerHex
                 return .run { [database] send in
