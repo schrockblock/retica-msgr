@@ -35,7 +35,8 @@ public struct AppFeature {
             self.myAddressHex = lxmfAddressHex(identity)
             self.node = LXMFServiceNode.State(
                 identity: identity,
-                endpoint: TCPEndpoint.State(host: host, port: UInt16(port), reconnectOnDrop: true)
+                endpoint: TCPEndpoint.State(host: host, port: UInt16(port), reconnectOnDrop: true),
+                minStampCost: 4
             )
             _host = Shared(wrappedValue: host, .appStorage("host"))
             _port = Shared(wrappedValue: port, .appStorage("port"))
@@ -55,6 +56,7 @@ public struct AppFeature {
         case sendTapped
         case conversationsLoaded([Conversation])
         case threadLoaded([Message])
+        case rehydratePropagationStore([Data])
         case node(LXMFServiceNode.Action)
         case binding(BindingAction<State>)
     }
@@ -73,7 +75,11 @@ public struct AppFeature {
                 state.connection = .connecting
                 return .merge(
                     .send(.node(.client(.endpoint(.start)))),
-                    .run { [database] send in try await reloadConversations(database, send) }
+                    .run { [database] send in try await reloadConversations(database, send) },
+                    .run { [database] send in
+                        let rows = try await database.read { try PropagationEntryRow.all.fetchAll($0) }
+                        await send(.rehydratePropagationStore(rows.map(\.lxmfData)))
+                    }
                 )
 
             case .connectTapped:
@@ -227,6 +233,38 @@ public struct AppFeature {
                         try await reloadThread(database, openPeer, send)
                     }
                 }
+
+            case let .node(.delegate(.messagesStored(entries))):
+                let rows = entries.map {
+                    PropagationEntryRow(transientIdHex: $0.transientId.hexString,
+                                        destinationHashHex: $0.destinationHash.hexString,
+                                        lxmfData: $0.lxmfData,
+                                        storedAt: date.now)
+                }
+                return .run { [database] _ in
+                    try await database.write { db in
+                        for row in rows {
+                            try PropagationEntryRow.where { $0.transientIdHex.eq(row.transientIdHex) }
+                                .delete().execute(db)
+                            try PropagationEntryRow.insert { row }.execute(db)
+                        }
+                    }
+                }
+
+            case let .node(.delegate(.messagesPurged(ids))):
+                let hexes = ids.map(\.hexString)
+                return .run { [database] _ in
+                    try await database.write { db in
+                        try PropagationEntryRow.where { $0.transientIdHex.in(hexes) }.delete().execute(db)
+                    }
+                }
+
+            case let .rehydratePropagationStore(entries):
+                // Restore through the tested ingest path (re-validates + re-dedups) rather than a bypass.
+                guard !entries.isEmpty else { return .none }
+                let container = LXMFPropagation.container(timestamp: date.now.timeIntervalSince1970,
+                                                          entries: entries)
+                return .send(.node(.pn(.ingestContainer(container))))
 
             case .node, .binding:
                 return .none

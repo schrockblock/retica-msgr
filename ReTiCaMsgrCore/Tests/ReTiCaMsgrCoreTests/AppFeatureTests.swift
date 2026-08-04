@@ -315,3 +315,75 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
     #expect(store.state.threadMessages.first { $0.messageHash == hashHex }?.status == MessageStatus.propagated)
 }
+
+// MARK: - Propagation persistence (Task 7)
+
+/// Ingested entries are mirrored to the database so they survive relaunch.
+@MainActor @Test func storedPropagationEntriesArePersisted() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    let tid = Data(repeating: 0x11, count: 32)
+    let dest = Data(repeating: 0xAA, count: 16)
+    let bytes = dest + Data("payload".utf8)
+    let entry = PropagationStore.Entry(transientId: tid, destinationHash: dest, lxmfData: bytes)
+
+    await store.send(.node(.delegate(.messagesStored(entries: [entry]))))
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    let rows = try await db.read { try PropagationEntryRow.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows[0].transientIdHex == tid.hexString)
+    #expect(rows[0].lxmfData == bytes)
+}
+
+/// Purged entries are deleted from the mirror, so the database cannot drift from the store.
+@MainActor @Test func purgedPropagationEntriesAreDeleted() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    let tid = Data(repeating: 0x22, count: 32)
+    let dest = Data(repeating: 0xBB, count: 16)
+    let entry = PropagationStore.Entry(transientId: tid, destinationHash: dest,
+                                       lxmfData: dest + Data("gone".utf8))
+
+    await store.send(.node(.delegate(.messagesStored(entries: [entry]))))
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store.send(.node(.delegate(.messagesPurged(transientIds: [tid]))))
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    let rows = try await db.read { try PropagationEntryRow.all.fetchAll($0) }
+    #expect(rows.isEmpty)
+}
+
+/// On launch the persisted backlog is restored into the in-memory store, so the node serves it again.
+@MainActor @Test func propagationStoreRehydratesOnLaunch() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { $0.$nodeModeEnabled.withLock { $0 = true } }
+    await store.send(.setNodeMode(true))
+
+    // A real stamped entry so it survives the store's stamp enforcement.
+    let recipient = Identity()
+    let sender = Identity()
+    let msg = LXMessage.create(source: sender,
+                               destinationHash: LXMessage.deliveryHash(identityHash: recipient.hash),
+                               timestamp: 1700000000.5, title: Data("t".utf8), content: Data("kept".utf8))
+    let (container, tid) = LXMFPropagation.pack(message: msg, recipientIdentity: recipient,
+                                                timestamp: 1700000000.5, stampCost: 4)
+    let entryBytes = LXMFPropagation.parseContainer(container)!.entries[0]
+
+    try await db.write {
+        try PropagationEntryRow.insert {
+            PropagationEntryRow(transientIdHex: tid.hexString,
+                                destinationHashHex: LXMFPropagation.destinationHash(lxmfData: entryBytes)!.hexString,
+                                lxmfData: entryBytes,
+                                storedAt: Date(timeIntervalSince1970: 1700000000.5))
+        }.execute($0)
+    }
+
+    await store.send(.onLaunch)
+    // Wait for the rehydration action to be dispatched and processed.
+    await store.receive { if case .rehydratePropagationStore = $0 { return true }; return false }
+    // Drain any remaining in-flight effects from the ingestContainer dispatch.
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.pn.store.contains(transientId: tid))
+}

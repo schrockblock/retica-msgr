@@ -18,6 +18,14 @@ public enum AppDatabase {
                 t.column("messageHash", .text).notNull()
             }
         }
+        m.registerMigration("createPropagationEntries") { db in
+            try db.create(table: "propagationEntryRows") { t in
+                t.primaryKey("transientIdHex", .text).notNull()
+                t.column("destinationHashHex", .text).notNull()
+                t.column("lxmfData", .blob).notNull()
+                t.column("storedAt", .datetime).notNull()
+            }
+        }
         return m
     }
 
