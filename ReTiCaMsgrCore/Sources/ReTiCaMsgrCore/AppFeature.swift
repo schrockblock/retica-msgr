@@ -33,10 +33,12 @@ public struct AppFeature {
         public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242) {
             self.identity = identity
             self.myAddressHex = lxmfAddressHex(identity)
+            // Use the LXMF library default — one constant that is both advertised in the
+            // node announce and enforced on inbound propagation offers.
             self.node = LXMFServiceNode.State(
                 identity: identity,
                 endpoint: TCPEndpoint.State(host: host, port: UInt16(port), reconnectOnDrop: true),
-                minStampCost: 4
+                minStampCost: LXMFPropagation.defaultPropagationStampCost
             )
             _host = Shared(wrappedValue: host, .appStorage("host"))
             _port = Shared(wrappedValue: port, .appStorage("port"))

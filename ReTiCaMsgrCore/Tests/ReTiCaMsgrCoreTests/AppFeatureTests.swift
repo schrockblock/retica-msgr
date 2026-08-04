@@ -265,6 +265,16 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(store.state.node.client.router.outboundPropagationNode == Data(hexString: pnHex))
 }
 
+/// The app's initial minStampCost equals the LXMF library default — not a development shortcut.
+/// This pins advertised-equals-enforced: the same constant feeds both the announce app-data and
+/// the inbound-offer validator (see LXMFServiceNode.State.init comment).
+@MainActor @Test func defaultStampCostIsProductionDefault() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    #expect(store.state.node.minStampCost == LXMFPropagation.defaultPropagationStampCost)
+    #expect(store.state.node.pn.store.minStampCost == LXMFPropagation.defaultPropagationStampCost)
+}
+
 /// Turning node-mode on enables serving and registers/announces lxmf.propagation.
 @MainActor @Test func nodeModeToggleEnablesServing() async throws {
     let db = try AppDatabase.makeInMemory()
@@ -398,9 +408,18 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 }
 
 /// On launch the persisted backlog is restored into the in-memory store, so the node serves it again.
+/// This test is about REHYDRATION MECHANICS (entries survive relaunch), not the stamp-cost policy.
+/// minStampCost is lowered to 4 in the configure closure so the cheap test fixture is accepted
+/// without running expensive production-cost PoW, keeping the suite fast.
 @MainActor @Test func propagationStoreRehydratesOnLaunch() async throws {
     let db = try AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity()) { $0.$nodeModeEnabled.withLock { $0 = true } }
+    let store = makeStore(db, identity: Identity()) {
+        $0.$nodeModeEnabled.withLock { $0 = true }
+        // Lower enforcement to match the cheap fixture stamp — this test is about rehydrate
+        // mechanics, not the stamp cost policy (see defaultStampCostIsProductionDefault for that).
+        $0.node.minStampCost = 4
+        $0.node.pn.store.minStampCost = 4
+    }
     await store.send(.setNodeMode(true))
 
     // A real stamped entry so it survives the store's stamp enforcement.
