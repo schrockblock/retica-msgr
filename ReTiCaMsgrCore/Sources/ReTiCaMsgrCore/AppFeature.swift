@@ -97,7 +97,7 @@ public struct AppFeature {
                 state.connection = .disconnected
                 return .send(.node(.client(.endpoint(.stop))))
 
-            case .node(.client(.endpoint(.tcp(.transport(.interfaceConnected(_)))))):
+            case .node(.client(.endpoint(.tcp(.transport(.interfaceConnected))))):
                 state.connection = .connected
                 var effects: [Effect<Action>] = [.send(.node(.client(.registerDelivery)))]
                 if let pn = Data(hexString: state.propagationNodeHex), pn.count == 16 {

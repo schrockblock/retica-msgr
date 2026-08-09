@@ -235,7 +235,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store = makeStore(db, identity: Identity()) { s in
         s.$propagationNodeHex.withLock { $0 = pnHex }
     }
-    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"))))))))
+    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
     await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
     await store.receive { if case .node(.client(.setPropagationNode)) = $0 { return true }; return false }
     await store.receive { if case .node(.client(.syncFromPropagationNode)) = $0 { return true }; return false }
@@ -247,7 +247,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 @MainActor @Test func interfaceConnectedWithoutPNDoesNotConfigure() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
-    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"))))))))
+    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
     await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
     await store.finish()
     await store.skipReceivedActions(strict: false)
@@ -289,7 +289,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 @MainActor @Test func persistedNodeModeIsAppliedOnConnect() async throws {
     let db = try AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity()) { $0.$nodeModeEnabled.withLock { $0 = true } }
-    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"))))))))
+    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
     await store.receive { if case .node(.setNodeMode(true)) = $0 { return true }; return false }
 }
 
