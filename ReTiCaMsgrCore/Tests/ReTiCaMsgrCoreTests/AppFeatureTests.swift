@@ -268,10 +268,11 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 /// The app's initial minStampCost equals the LXMF library default — not a development shortcut.
 /// This pins advertised-equals-enforced: the same constant feeds both the announce app-data and
 /// the inbound-offer validator (see LXMFServiceNode.State.init comment).
+/// `LXMFServiceNode.State.minStampCost` was removed in `08f1931` (single source of truth lives at
+/// `pn.store.minStampCost`); test updated accordingly (`AppFeatureTests`, `defaultStampCostIsProductionDefault`).
 @MainActor @Test func defaultStampCostIsProductionDefault() async throws {
     let db = try AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
-    #expect(store.state.node.minStampCost == LXMFPropagation.defaultPropagationStampCost)
     #expect(store.state.node.pn.store.minStampCost == LXMFPropagation.defaultPropagationStampCost)
 }
 
@@ -417,7 +418,8 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         $0.$nodeModeEnabled.withLock { $0 = true }
         // Lower enforcement to match the cheap fixture stamp — this test is about rehydrate
         // mechanics, not the stamp cost policy (see defaultStampCostIsProductionDefault for that).
-        $0.node.minStampCost = 4
+        // `LXMFServiceNode.State.minStampCost` was removed in `08f1931`; the single source of
+        // truth is `pn.store.minStampCost` (`propagationStoreRehydratesOnLaunch`).
         $0.node.pn.store.minStampCost = 4
     }
     await store.send(.setNodeMode(true))
@@ -428,8 +430,11 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let msg = LXMessage.create(source: sender,
                                destinationHash: LXMessage.deliveryHash(identityHash: recipient.hash),
                                timestamp: 1700000000.5, title: Data("t".utf8), content: Data("kept".utf8))
-    let (container, tid) = LXMFPropagation.pack(message: msg, recipientIdentity: recipient,
-                                                timestamp: 1700000000.5, stampCost: 4)
+    // `pack` became `async` and Optional in ReTiCA `3e919ed`: the stamp search now yields so it
+    // can be cancelled, and it returns nil when a peer's advertised cost exceeds our ceiling.
+    // A cost of 4 is far below that ceiling, so the force-unwrap cannot fire here.
+    let (container, tid) = await LXMFPropagation.pack(message: msg, recipientIdentity: recipient,
+                                                      timestamp: 1700000000.5, stampCost: 4)!
     let entryBytes = LXMFPropagation.parseContainer(container)!.entries[0]
 
     try await db.write {

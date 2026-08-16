@@ -99,7 +99,16 @@ public struct AppFeature {
 
             case .node(.client(.endpoint(.tcp(.transport(.interfaceConnected))))):
                 state.connection = .connected
-                var effects: [Effect<Action>] = [.send(.node(.client(.registerDelivery)))]
+                // PROVISIONAL: ReTiCaMsgr has no user-facing name entry UI; the constant below
+                // is a placeholder so the node appears named (not blank) in reference clients
+                // (Sideband, NomadNet). Replace with a user-editable @Shared field when one is added.
+                // setDisplayName must come BEFORE registerDelivery so the registration announce
+                // carries the name (registerDelivery packs LXMFAnnounceData from state.displayName
+                // at call time; TCA processes .send effects in FIFO order).
+                var effects: [Effect<Action>] = [
+                    .send(.node(.client(.setDisplayName("ReTiCaMsgr", stampCost: nil)))),
+                    .send(.node(.client(.registerDelivery))),
+                ]
                 if let pn = Data(hexString: state.propagationNodeHex), pn.count == 16 {
                     effects.append(.send(.node(.client(.setPropagationNode(destinationHash: pn)))))
                     effects.append(.send(.node(.client(.syncFromPropagationNode))))
