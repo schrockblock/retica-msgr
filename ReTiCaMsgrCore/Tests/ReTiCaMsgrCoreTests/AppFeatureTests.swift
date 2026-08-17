@@ -244,6 +244,42 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(store.state.node.client.router.outboundPropagationNode == Data(hexString: pnHex))
 }
 
+/// On connect, the app sets its delivery display name **before** registering the delivery
+/// destination — so the registration announce carries the name and reference clients (Sideband,
+/// NomadNet) show something other than an unnamed node.
+///
+/// **Nothing pinned this line.** Before this test, `grep displayName AppFeatureTests.swift` returned
+/// zero hits, and both `interfaceConnected…` tests above use predicate-`receive`, which *skips*
+/// non-matching actions — so deleting the `.setDisplayName` call from `AppFeature` left the entire
+/// suite green while every ReTiCA node on the network went back to being anonymous.
+///
+/// The ORDER is asserted, not just the presence: `receive(predicate:)` resumes after the previous
+/// match, so matching `.setDisplayName` first and `.registerDelivery` second fails if the two are
+/// swapped. `registerDelivery` packs the app-data from `State.displayName` at call time, so a
+/// name set afterwards would not be in the announce that actually goes out.
+///
+/// The name itself is asserted too. It is a PROVISIONAL constant — the same string for every user
+/// (see `AppFeature.swift:102-104`), so it names the *app*, not the person; two ReTiCaMsgr users are
+/// indistinguishable in a Sideband contact list. This test pins that a name is sent, not that it is
+/// a good one.
+@MainActor @Test func interfaceConnectedSetsTheDisplayNameBeforeRegisteringDelivery() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    await store.receive { action in
+        if case let .node(.client(.setDisplayName(name, stampCost))) = action {
+            #expect(name == "ReTiCaMsgr")
+            #expect(stampCost == nil)      // no inbound cost is advertised today
+            return true
+        }
+        return false
+    }
+    await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
+    #expect(store.state.node.client.displayName == "ReTiCaMsgr")
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
 @MainActor @Test func interfaceConnectedWithoutPNDoesNotConfigure() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
