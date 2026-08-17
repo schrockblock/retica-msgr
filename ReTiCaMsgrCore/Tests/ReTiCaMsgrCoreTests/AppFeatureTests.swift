@@ -258,26 +258,45 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 /// swapped. `registerDelivery` packs the app-data from `State.displayName` at call time, so a
 /// name set afterwards would not be in the announce that actually goes out.
 ///
-/// The name itself is asserted too. It is a PROVISIONAL constant — the same string for every user
-/// (see `AppFeature.swift:102-104`), so it names the *app*, not the person; two ReTiCaMsgr users are
-/// indistinguishable in a Sideband contact list. This test pins that a name is sent, not that it is
-/// a good one.
+/// Two cases are tested: empty displayName (sends nil — the correct "no name" signal, since
+/// LXMFAnnounceData.pack encodes non-nil as msgpack bin and "" would advertise a zero-length name)
+/// and a non-empty displayName (sends the name string). The `setDisplayName` app-level action
+/// also re-announces via `.announceDelivery` so running nodes see the change without reconnecting.
 @MainActor @Test func interfaceConnectedSetsTheDisplayNameBeforeRegisteringDelivery() async {
     let db = try! AppDatabase.makeInMemory()
+
+    // Case 1: empty displayName → nil is sent (not "")
     let store = makeStore(db, identity: Identity())
     await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
     await store.receive { action in
         if case let .node(.client(.setDisplayName(name, stampCost))) = action {
-            #expect(name == "ReTiCaMsgr")
+            #expect(name == nil)           // empty displayName → nil, not ""
             #expect(stampCost == nil)      // no inbound cost is advertised today
             return true
         }
         return false
     }
     await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
-    #expect(store.state.node.client.displayName == "ReTiCaMsgr")
     await store.finish()
     await store.skipReceivedActions(strict: false)
+
+    // Case 2: non-empty displayName → the name string is sent
+    let store2 = makeStore(db, identity: Identity()) { state in
+        state.$displayName.withLock { $0 = "Alice" }
+    }
+    await store2.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    await store2.receive { action in
+        if case let .node(.client(.setDisplayName(name, stampCost))) = action {
+            #expect(name == "Alice")
+            #expect(stampCost == nil)
+            return true
+        }
+        return false
+    }
+    await store2.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
+    #expect(store2.state.node.client.displayName == "Alice")
+    await store2.finish()
+    await store2.skipReceivedActions(strict: false)
 }
 
 @MainActor @Test func interfaceConnectedWithoutPNDoesNotConfigure() async {

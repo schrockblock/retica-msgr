@@ -29,6 +29,7 @@ public struct AppFeature {
         public var reachablePeers: Set<String> = []
         @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
         @Shared(.appStorage("propagationNodeModeEnabled")) public var nodeModeEnabled: Bool = false
+        @Shared(.appStorage("displayName")) public var displayName: String = ""
 
         public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242) {
             self.identity = identity
@@ -54,6 +55,7 @@ public struct AppFeature {
         case startConversation(String)
         case setNodeMode(Bool)
         case setPropagationNode(String)
+        case setDisplayName(String)
         case syncTapped
         case sendTapped
         case conversationsLoaded([Conversation])
@@ -99,14 +101,15 @@ public struct AppFeature {
 
             case .node(.client(.endpoint(.tcp(.transport(.interfaceConnected))))):
                 state.connection = .connected
-                // PROVISIONAL: ReTiCaMsgr has no user-facing name entry UI; the constant below
-                // is a placeholder so the node appears named (not blank) in reference clients
-                // (Sideband, NomadNet). Replace with a user-editable @Shared field when one is added.
                 // setDisplayName must come BEFORE registerDelivery so the registration announce
                 // carries the name (registerDelivery packs LXMFAnnounceData from state.displayName
                 // at call time; TCA processes .send effects in FIFO order).
+                // An empty display name sends nil, not "": LXMFAnnounceData.pack encodes a non-nil name
+                // as msgpack bin, so "" would advertise a zero-length name. Reference's
+                // display_name_from_app_data (LXMF.py:165) strips and returns it — showing an empty
+                // label rather than no label in Sideband/NomadNet. nil is the correct "no name" signal.
                 var effects: [Effect<Action>] = [
-                    .send(.node(.client(.setDisplayName("ReTiCaMsgr", stampCost: nil)))),
+                    .send(.node(.client(.setDisplayName(state.displayName.isEmpty ? nil : state.displayName, stampCost: nil)))),
                     .send(.node(.client(.registerDelivery))),
                 ]
                 if let pn = Data(hexString: state.propagationNodeHex), pn.count == 16 {
@@ -230,6 +233,14 @@ public struct AppFeature {
                 return .merge(
                     .send(.node(.client(.setPropagationNode(destinationHash: pn)))),
                     .send(.node(.client(.syncFromPropagationNode)))
+                )
+
+            case let .setDisplayName(name):
+                state.$displayName.withLock { $0 = name }
+                guard !name.isEmpty else { return .none }
+                return .merge(
+                    .send(.node(.client(.setDisplayName(name, stampCost: nil)))),
+                    .send(.node(.client(.announceDelivery)))
                 )
 
             case .syncTapped:
