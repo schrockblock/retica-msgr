@@ -108,8 +108,14 @@ public struct AppFeature {
                 // as msgpack bin, so "" would advertise a zero-length name. Reference's
                 // display_name_from_app_data (LXMF.py:165) strips and returns it — showing an empty
                 // label rather than no label in Sideband/NomadNet. nil is the correct "no name" signal.
+                // A WHITESPACE-ONLY name is empty for this purpose: nothing on the emit path trims
+                // (`LXMFAnnounceData.pack` bins the bytes as given), and the receiver's strip turns
+                // "   " into exactly the empty label this rule exists to prevent. Trimmed here too,
+                // not just in the setter, so a whitespace-only name persisted by an older build
+                // still announces as nil.
+                let launchName = state.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
                 var effects: [Effect<Action>] = [
-                    .send(.node(.client(.setDisplayName(state.displayName.isEmpty ? nil : state.displayName, stampCost: nil)))),
+                    .send(.node(.client(.setDisplayName(launchName.isEmpty ? nil : launchName, stampCost: nil)))),
                     .send(.node(.client(.registerDelivery))),
                 ]
                 if let pn = Data(hexString: state.propagationNodeHex), pn.count == 16 {
@@ -236,10 +242,24 @@ public struct AppFeature {
                 )
 
             case let .setDisplayName(name):
-                state.$displayName.withLock { $0 = name }
-                guard !name.isEmpty else { return .none }
+                // Persist the TRIMMED value so local state and the wire agree, and so
+                // `displayName.isEmpty` stays a correct "no name set" test for the UI.
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.$displayName.withLock { $0 = trimmed }
+                // Empty maps to nil for the same reason as the launch path above — but note it must
+                // still be SENT. An earlier version had `guard !name.isEmpty else { return .none }`
+                // here, which meant CLEARING a name updated local state and told the network nothing,
+                // so peers kept showing the old name forever. That is the same defect this whole
+                // feature exists to fix (state changed locally, announce never updated), and it
+                // survived because the tests covered only the launch path, not this setter.
+                // Announcing unconditionally is safe: this action is a settled edit (a Save tap), not
+                // a per-keystroke binding — the keystroke flood is what the pod's setter/announce
+                // split guards against (LXMFNode.swift:181-190) — and `announceDelivery` is a
+                // documented no-op before `registerDelivery` (LXMFNode.swift:352-354), so naming
+                // yourself while disconnected costs nothing.
+                let advertised: String? = trimmed.isEmpty ? nil : trimmed
                 return .merge(
-                    .send(.node(.client(.setDisplayName(name, stampCost: nil)))),
+                    .send(.node(.client(.setDisplayName(advertised, stampCost: nil)))),
                     .send(.node(.client(.announceDelivery)))
                 )
 

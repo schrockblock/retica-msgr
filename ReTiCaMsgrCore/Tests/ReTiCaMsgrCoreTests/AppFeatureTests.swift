@@ -258,15 +258,28 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 /// swapped. `registerDelivery` packs the app-data from `State.displayName` at call time, so a
 /// name set afterwards would not be in the announce that actually goes out.
 ///
-/// Two cases are tested: empty displayName (sends nil — the correct "no name" signal, since
-/// LXMFAnnounceData.pack encodes non-nil as msgpack bin and "" would advertise a zero-length name)
-/// and a non-empty displayName (sends the name string). The `setDisplayName` app-level action
-/// also re-announces via `.announceDelivery` so running nodes see the change without reconnecting.
+/// Three cases are tested, all on the LAUNCH path (`interfaceConnected`): an empty displayName
+/// sends nil — the correct "no name" signal, since LXMFAnnounceData.pack encodes non-nil as msgpack
+/// bin and "" would advertise a zero-length name; a WHITESPACE-ONLY name is empty for that same
+/// purpose (nothing on the emit path trims, and the receiver's strip turns "   " into exactly the
+/// empty label the rule exists to prevent); and a real name is sent as-is.
+///
+/// Scope note: this test covers the launch path ONLY. The app-level `.setDisplayName` SETTER — which
+/// re-announces via `.announceDelivery` so running nodes see a change without reconnecting, and which
+/// applies the same trim — is NOT exercised here and, as of this test, is covered by nothing. An
+/// earlier version of this docstring asserted that re-announce behaviour as though it were tested,
+/// which is the "claims two, asserts one" shape in prose rather than in a name.
+///
+/// Each case sets `$displayName` explicitly rather than relying on the default, because all three
+/// stores share one `.appStorage("displayName")` backing store — a default-valued store would
+/// otherwise inherit the previous case's name and pass for the wrong reason.
 @MainActor @Test func interfaceConnectedSetsTheDisplayNameBeforeRegisteringDelivery() async {
     let db = try! AppDatabase.makeInMemory()
 
     // Case 1: empty displayName → nil is sent (not "")
-    let store = makeStore(db, identity: Identity())
+    let store = makeStore(db, identity: Identity()) { state in
+        state.$displayName.withLock { $0 = "" }
+    }
     await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
     await store.receive { action in
         if case let .node(.client(.setDisplayName(name, stampCost))) = action {
@@ -277,6 +290,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         return false
     }
     await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
+    #expect(store.state.node.client.displayName == nil)
     await store.finish()
     await store.skipReceivedActions(strict: false)
 
@@ -297,6 +311,90 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(store2.state.node.client.displayName == "Alice")
     await store2.finish()
     await store2.skipReceivedActions(strict: false)
+
+    // Case 3: whitespace-only displayName → nil, exactly as if it were empty. Without the trim this
+    // announces "   ", which the reference strips to "" — an empty label, not an absent one.
+    let store3 = makeStore(db, identity: Identity()) { state in
+        state.$displayName.withLock { $0 = "   " }
+    }
+    await store3.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    await store3.receive { action in
+        if case let .node(.client(.setDisplayName(name, stampCost))) = action {
+            #expect(name == nil)
+            #expect(stampCost == nil)
+            return true
+        }
+        return false
+    }
+    await store3.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
+    #expect(store3.state.node.client.displayName == nil)
+    await store3.finish()
+    await store3.skipReceivedActions(strict: false)
+}
+
+/// Setting a name from Settings persists it AND re-announces, and **clearing it does the same**.
+///
+/// The clearing half is the one that matters. The first version of the `.setDisplayName` handler
+/// read `guard !name.isEmpty else { return .none }`, so clearing your name updated local state and
+/// told the network nothing — every peer kept showing the old name forever. That is precisely the
+/// defect this whole feature exists to fix (state changed locally, announce never updated), and it
+/// survived because the only display-name coverage was the *launch* path above, not this setter.
+///
+/// Anti-vacuity: each case asserts on the emitted `.setDisplayName` **payload** and on
+/// `.announceDelivery` actually being sent. A state-only assertion (`store.state.displayName`)
+/// would pass even if nothing reached the network, which is the exact bug being pinned.
+@MainActor @Test func setDisplayNameReAnnounces_includingWhenCleared() async {
+    let db = try! AppDatabase.makeInMemory()
+
+    // Set a name → the name is advertised, and an announce is emitted.
+    let store = makeStore(db, identity: Identity())
+    await store.send(.setDisplayName("Bob"))
+    #expect(store.state.displayName == "Bob")
+    await store.receive { action in
+        if case let .node(.client(.setDisplayName(name, _))) = action {
+            #expect(name == "Bob")
+            return true
+        }
+        return false
+    }
+    await store.receive { if case .node(.client(.announceDelivery)) = $0 { return true }; return false }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+
+    // Clear it → nil is advertised, and an announce is STILL emitted so peers stop showing "Bob".
+    let store2 = makeStore(db, identity: Identity()) { state in
+        state.$displayName.withLock { $0 = "Bob" }
+    }
+    await store2.send(.setDisplayName(""))
+    #expect(store2.state.displayName == "")
+    await store2.receive { action in
+        if case let .node(.client(.setDisplayName(name, _))) = action {
+            #expect(name == nil)           // cleared → nil, not ""
+            return true
+        }
+        return false
+    }
+    await store2.receive { if case .node(.client(.announceDelivery)) = $0 { return true }; return false }
+    await store2.finish()
+    await store2.skipReceivedActions(strict: false)
+
+    // A whitespace-only name is a CLEAR, not a name. The trimmed value is what gets persisted, so
+    // `displayName.isEmpty` stays a correct "no name set" test for the UI and state matches the wire.
+    let store3 = makeStore(db, identity: Identity()) { state in
+        state.$displayName.withLock { $0 = "Bob" }
+    }
+    await store3.send(.setDisplayName("   "))
+    #expect(store3.state.displayName == "")     // persisted TRIMMED, not "   "
+    await store3.receive { action in
+        if case let .node(.client(.setDisplayName(name, _))) = action {
+            #expect(name == nil)                // whitespace-only → nil, not "   "
+            return true
+        }
+        return false
+    }
+    await store3.receive { if case .node(.client(.announceDelivery)) = $0 { return true }; return false }
+    await store3.finish()
+    await store3.skipReceivedActions(strict: false)
 }
 
 @MainActor @Test func interfaceConnectedWithoutPNDoesNotConfigure() async {
