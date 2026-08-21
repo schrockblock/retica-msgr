@@ -97,3 +97,78 @@ private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> Diagnost
     #expect(identity.health == .ok)
     #expect(identity.reason == nil)
 }
+
+// MARK: - Socket ordering
+
+// The disagreement rule must run BEFORE the milder "connecting" warn so that when app=.connecting
+// and interface=.online, the conflict is surfaced as a disagreement (.problem), not silenced as a
+// routine "connecting" warn. This test fails if the two rules are swapped.
+@MainActor @Test func socketDisagreementBeatsConnectingWarnWhenAppIsConnectingButInterfaceIsOnline() {
+    var state = healthyState()
+    state.connection = .connecting
+    // interface stays .online (as set by healthyState)
+    let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
+    #expect(socket.health == .problem)
+    #expect(socket.reason == "app reports connecting, interface reports online")
+}
+
+// MARK: - Paths (F8 cross-check)
+
+private let peerHash = Data(repeating: 0xBB, count: 16)
+
+@MainActor @Test func pathsWarnWhenALearnedPathNamesAnInterfaceThatIsGone() {
+    var state = healthyState()
+    withTCP(&state) { tcp in
+        // A path heard on an interface that no longer exists. `learned` is non-destructive,
+        // so this is the ORDINARY state after a socket drop — not a contrived one.
+        tcp.transport.learned[peerHash] = LearnedDestination(
+            identity: Identity(), appData: nil, ratchet: nil,
+            interfaceID: InterfaceID("gone"), hops: 1, nextHop: nil, announceEmitted: 0)
+    }
+    let paths = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Paths")
+    #expect(paths.health == .warn)
+    #expect(paths.reason == "1 path names an interface that is gone")
+    #expect(paths.rows.contains { $0.value.contains("reachable=NO") })
+}
+
+@MainActor @Test func pathsAreOkWhenEveryPathNamesALiveInterface() {
+    var state = healthyState()
+    withTCP(&state) { tcp in
+        tcp.transport.learned[peerHash] = LearnedDestination(
+            identity: Identity(), appData: nil, ratchet: nil,
+            interfaceID: tcp.interfaceID, hops: 0, nextHop: nil, announceEmitted: 0)
+    }
+    let paths = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Paths")
+    #expect(paths.health == .ok)
+    #expect(paths.reason == nil)
+    #expect(paths.rows.contains { $0.value.contains("reachable=yes") })
+}
+
+// MARK: - Peers (F20 cross-check)
+
+@MainActor @Test func peersWarnWhenAKnownPeerHasNoPath() {
+    var state = healthyState()
+    // Exactly what a cold launch produces: learnedPeers is rehydrated from disk, the path
+    // table is not, so the peer is listed but cannot be messaged.
+    state.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
+        displayName: "Sideband", stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+    let peers = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Peers")
+    #expect(peers.health == .warn)
+    #expect(peers.reason == "1 peer has no path — known but not reachable")
+    #expect(peers.rows.contains { $0.value.contains("path=NO") })
+}
+
+@MainActor @Test func peersAreOkWhenEveryPeerHasAPath() {
+    var state = healthyState()
+    state.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
+        displayName: "Sideband", stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+    withTCP(&state) { tcp in
+        tcp.transport.learned[peerHash] = LearnedDestination(
+            identity: Identity(), appData: nil, ratchet: nil,
+            interfaceID: tcp.interfaceID, hops: 0, nextHop: nil, announceEmitted: 0)
+    }
+    let peers = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Peers")
+    #expect(peers.health == .ok)
+    #expect(peers.reason == nil)
+    #expect(peers.rows.contains { $0.value.contains("path=yes") })
+}

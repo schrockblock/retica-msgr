@@ -44,6 +44,8 @@ public struct DiagnosticsSnapshot: Equatable {
         self.layers = [
             Self.socketLayer(state),
             Self.identityLayer(state),
+            Self.pathsLayer(state),
+            Self.peersLayer(state),
         ]
     }
 }
@@ -109,6 +111,76 @@ extension DiagnosticsSnapshot {
         case .connecting:   return "connecting"
         case .connected:    return "connected"
         }
+    }
+}
+
+// MARK: - Paths
+
+extension DiagnosticsSnapshot {
+    /// F8 cross-check. `Transport.State.learned` is deliberately NON-destructive: losing an
+    /// interface does not purge the paths heard on it, so an entry routinely outlives the
+    /// interface it names. `Transport.reachableLearned` is the runtime's version of this test,
+    /// and `openLink` gates on it — a path whose interface is gone cannot carry a link.
+    static func pathsLayer(_ state: AppFeature.State) -> Layer {
+        let endpoint = state.node.client.endpoint
+        let interfaces = endpoint.interfaces
+        let learned = endpoint.learned
+
+        let entries = learned
+            .map { hash, entry -> (hash: Data, reachable: Bool, row: Row) in
+                let reachable = interfaces[entry.interfaceID] != nil
+                let next = entry.nextHop.map { $0.hexString } ?? "direct"
+                return (hash, reachable, Row(
+                    hash.hexString,
+                    "hops=\(entry.hops) next=\(next) if=\(entry.interfaceID.rawValue) "
+                    + "reachable=\(reachable ? "yes" : "NO")"))
+            }
+            .sorted { $0.hash.hexString < $1.hash.hexString }
+
+        let rows = entries.isEmpty ? [Row("(none)", "no paths learned this session")]
+                                   : entries.map(\.row)
+        let unreachable = entries.filter { !$0.reachable }.count
+        guard unreachable == 0 else {
+            return Layer(title: "Paths", health: .warn,
+                         reason: "\(unreachable) path\(unreachable == 1 ? "" : "s") "
+                                 + "name\(unreachable == 1 ? "s" : "") an interface that is gone",
+                         rows: rows)
+        }
+        return Layer(title: "Paths", health: .ok, reason: nil, rows: rows)
+    }
+}
+
+// MARK: - Peers
+
+extension DiagnosticsSnapshot {
+    /// F20 cross-check. `learnedPeers` is persisted by the app; the path table that holds the
+    /// peer's IDENTITY and route is not. After a cold launch the Announce tab can list peers
+    /// the app cannot message — opportunistic send needs the identity, `openLink` needs the
+    /// path. This row names that state instead of leaving it to be inferred from a greyed-out
+    /// Send button.
+    static func peersLayer(_ state: AppFeature.State) -> Layer {
+        let learned = state.node.client.endpoint.learned
+        let peers = state.node.client.learnedPeers
+
+        let entries = peers
+            .map { hash, peer -> (hash: Data, hasPath: Bool, row: Row) in
+                let hasPath = learned[hash] != nil
+                let cost = peer.stampCost.map(String.init) ?? "-"
+                return (hash, hasPath, Row(
+                    peer.displayName ?? "(unnamed)",
+                    "\(hash.hexString) cost=\(cost) path=\(hasPath ? "yes" : "NO")"))
+            }
+            .sorted { $0.hash.hexString < $1.hash.hexString }
+
+        let rows = entries.isEmpty ? [Row("(none)", "no peers detected")] : entries.map(\.row)
+        let pathless = entries.filter { !$0.hasPath }.count
+        guard pathless == 0 else {
+            return Layer(title: "Peers", health: .warn,
+                         reason: "\(pathless) peer\(pathless == 1 ? "" : "s") has no path "
+                                 + "— known but not reachable",
+                         rows: rows)
+        }
+        return Layer(title: "Peers", health: .ok, reason: nil, rows: rows)
     }
 }
 
