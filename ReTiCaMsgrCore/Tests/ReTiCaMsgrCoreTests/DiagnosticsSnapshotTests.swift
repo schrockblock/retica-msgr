@@ -1,0 +1,99 @@
+import Testing
+import Foundation
+import ComposableArchitecture
+import ReTiCA
+import ReTiCAInterfaces
+import ReTiCANode
+import ReTiCATransport
+@testable import ReTiCaMsgrCore
+
+// MARK: - Fixtures
+
+private let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+/// A state whose SOCKET layer is healthy: app connected, interface online, interface registered.
+/// Fixtures here are built COHERENTLY on purpose — seeding `learned` without `interfaces`
+/// produces a state the runtime cannot reach, and that incoherence is itself one of the
+/// conditions under test (see the paths cross-check in a later task).
+@MainActor
+private func healthyState() -> AppFeature.State {
+    var state = AppFeature.State(identity: Identity())
+    state.connection = .connected
+    guard case var .tcp(tcp) = state.node.client.endpoint else {
+        fatalError("fixture assumes a TCP endpoint")
+    }
+    tcp.interface.status = .online
+    tcp.transport.interfaces[tcp.interfaceID] = .tcp
+    state.node.client.endpoint = .tcp(tcp)
+    state.node.client.deliveryDestinationHash = Data(repeating: 0xAA, count: 16)
+    return state
+}
+
+/// Mutate the TCP endpoint of a state in place.
+@MainActor
+private func withTCP(_ state: inout AppFeature.State, _ body: (inout TCPEndpoint.State) -> Void) {
+    guard case var .tcp(tcp) = state.node.client.endpoint else {
+        fatalError("fixture assumes a TCP endpoint")
+    }
+    body(&tcp)
+    state.node.client.endpoint = .tcp(tcp)
+}
+
+private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> DiagnosticsSnapshot.Layer {
+    guard let found = snapshot.layers.first(where: { $0.title == title }) else {
+        fatalError("no layer titled \(title)")
+    }
+    return found
+}
+
+// MARK: - Socket
+
+@MainActor @Test func socketIsOkWhenAppAndInterfaceAgreeAndInterfaceIsRegistered() {
+    let snapshot = DiagnosticsSnapshot(from: healthyState(), at: fixedDate)
+    let socket = layer(snapshot, "Socket")
+    #expect(socket.health == .ok)
+    #expect(socket.reason == nil)
+}
+
+// The two rows that disagreed for the whole duration of the stale-callback reconnect bug.
+// Reported as a DISAGREEMENT, not masked by the milder "connecting" rule beneath it.
+@MainActor @Test func socketIsAProblemWhenAppSaysConnectedButInterfaceIsNot() {
+    var state = healthyState()
+    withTCP(&state) { $0.interface.status = .connecting }
+    let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
+    #expect(socket.health == .problem)
+    #expect(socket.reason == "app reports connected, interface reports connecting")
+}
+
+@MainActor @Test func socketIsAProblemWhenInterfaceIsOnlineButTransportHasNoInterfaces() {
+    var state = healthyState()
+    withTCP(&state) { $0.transport.interfaces = [:] }
+    let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
+    #expect(socket.health == .problem)
+    #expect(socket.reason == "socket is up but Transport has no registered interface")
+}
+
+@MainActor @Test func socketWarnsWhileBothAgreeConnecting() {
+    var state = healthyState()
+    state.connection = .connecting
+    withTCP(&state) { $0.interface.status = .connecting }
+    let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
+    #expect(socket.health == .warn)
+    #expect(socket.reason == "connecting")
+}
+
+// MARK: - Identity
+
+@MainActor @Test func identityIsAProblemWhenNoDeliveryDestinationIsRegistered() {
+    var state = healthyState()
+    state.node.client.deliveryDestinationHash = nil
+    let identity = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Identity")
+    #expect(identity.health == .problem)
+    #expect(identity.reason == "no delivery destination registered — nothing can reach us")
+}
+
+@MainActor @Test func identityIsOkWhenDeliveryDestinationIsRegistered() {
+    let identity = layer(DiagnosticsSnapshot(from: healthyState(), at: fixedDate), "Identity")
+    #expect(identity.health == .ok)
+    #expect(identity.reason == nil)
+}
