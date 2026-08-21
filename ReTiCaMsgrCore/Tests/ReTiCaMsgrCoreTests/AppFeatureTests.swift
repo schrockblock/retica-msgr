@@ -68,6 +68,27 @@ private let peerB = String(repeating: "b", count: 32)
     #expect(store.state.conversations.first?.peerHex == peerB)   // ts 2000 newest
 }
 
+/// The TCP endpoint is built once at init with the host/port passed to State.init (defaults to
+/// 127.0.0.1:4242). The Settings fields bind to separate @Shared values, so without the sync the
+/// app would always dial those init defaults regardless of what the user configured. This pins the
+/// fix: on launch, the current Settings host/port are copied into the endpoint before dialing.
+@MainActor @Test func onLaunchSyncsSettingsHostPortIntoEndpoint() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { state in
+        state.$host.withLock { $0 = "gaefu.ddns.net" }
+        state.$port.withLock { $0 = 4243 }
+    }
+    await store.send(.onLaunch)
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    #expect(store.state.connection == .connecting)
+    guard case .tcp(let tcp) = store.state.node.client.endpoint else {
+        Issue.record("expected a TCP endpoint")
+        return
+    }
+    #expect(tcp.interface.host == "gaefu.ddns.net")
+    #expect(tcp.interface.port == 4243)
+}
+
 @MainActor
 @Test func openConversationLoadsThatPeersThread() async {
     let db = try! AppDatabase.makeInMemory()
@@ -463,6 +484,13 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.receive { if case .node(.client(.syncFromPropagationNode)) = $0 { return true }; return false }
 }
 
+@MainActor @Test func announceTappedReAnnouncesDelivery() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.announceTapped)
+    await store.receive { if case .node(.client(.announceDelivery)) = $0 { return true }; return false }
+}
+
 @MainActor @Test func propagationAcceptedMarksStored() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity()) { s in
@@ -606,4 +634,447 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     try await Task.sleep(nanoseconds: 50_000_000)
     await store.skipReceivedActions(strict: false)
     #expect(store.state.node.pn.store.contains(transientId: tid))
+}
+
+// MARK: - Dedup durability (Task 3)
+
+/// A message delivered in a previous session is NOT re-delivered after restart.
+///
+/// Mechanism: `.messageReceived` writes the message hash to `seenHashRows`; on the next launch
+/// `.onLaunch` reads those rows and sends `.rehydrateDedup`, which fills the router's `seen`
+/// ring BEFORE any network traffic arrives. When the same message arrives again, the router
+/// deduplicates it — the app's `messageReceived` delegate is NOT raised and the DB stays at
+/// one row, not two.
+///
+/// The "restart" is a new TestStore over the same database — the canonical pattern established by
+/// `propagationStoreRehydratesOnLaunch`. Each clause of the compound test name has its own
+/// assertion and its own mutation that kills it.
+///
+/// Anti-vacuity (three clauses):
+///   "hash is persisted": `seenHashRows` has the row after session 1 (mutation: remove write).
+///   "rehydrateDedup carries the hash": the action's payload contains the hash (mutation: remove
+///     the read from `.onLaunch`).
+///   "not re-delivered": the DB has 1 message row after the same message arrives again in
+///     session 2 (mutation: remove the rehydrateDedup forward to the library reducer — the ring
+///     starts empty and the message re-delivers, adding a second DB row).
+@MainActor @Test func deliveredMessageIsNotReDeliveredAfterRestart() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+
+    // --- Session 1: receive a message (writes hash to seenHashRows) ---
+    let store1 = makeStore(db, identity: me)
+    let m = LXMessage.create(
+        source: sender,
+        destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+        timestamp: 1700000000.5,
+        title: Data(),
+        content: Data("hello".utf8)
+    )
+    await store1.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store1.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    // Clause 1: hash must be persisted. Mutation: remove SeenHashRow write → count == 0.
+    let seenRows = try await db.read { try SeenHashRow.all.fetchAll($0) }
+    #expect(seenRows.count == 1, "Hash must be persisted before restart")
+    #expect(seenRows.first?.hashHex == m.hash.hexString)
+
+    // --- Session 2: restart — new store, same DB ---
+    let store2 = makeStore(db, identity: me)
+    await store2.send(.onLaunch)
+    // Clause 2: rehydrateDedup must carry the persisted hash.
+    // Mutation: remove the seenHashRow read from onLaunch → the action has an empty hashes array.
+    var capturedSeenHashes: [Data] = []
+    await store2.receive { action in
+        if case let .rehydrateDedup(hashes, _) = action {
+            capturedSeenHashes = hashes
+            return true
+        }
+        return false
+    }
+    #expect(capturedSeenHashes.contains(m.hash),
+            "rehydrateDedup must carry the persisted hash")
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store2.skipReceivedActions(strict: false)
+
+    // Clause 3: the same message arriving again must NOT produce a second DB row.
+    // We replay the message via the router's `.received` action (bypassing LXMFNode so we test
+    // the ring directly). The router's seen ring — pre-filled by rehydrateDedup — deduplicates
+    // it; no `.messageDelivered` delegate fires; `messageReceived` is not dispatched; the DB
+    // stays at 1 message row.
+    // Mutation: remove the forward of `.rehydrateDedup` to the library (the `case .rehydrateDedup`
+    // handler) → ring starts empty → message re-delivers → count becomes 2.
+    await store2.send(.node(.client(.router(.received(
+        method: .opportunistic,
+        destinationHash: m.destinationHash,
+        data: m.opportunisticPayload
+    )))))
+    await store2.finish()
+    await store2.skipReceivedActions(strict: false)
+    let allMessages = try await db.read { try Message.fetchAll($0) }
+    #expect(allMessages.count == 1, "Message must not be re-delivered (router dedup prevented it)")
+}
+
+/// Persisted seen-hash rows are pruned to `RingSet.capacity` (10 000).
+/// The transient-id table is NOT pruned (unbounded by ruling).
+///
+/// The test inserts (capacity + 2) hashes and confirms the table is trimmed to exactly capacity.
+/// It also inserts 3 transient IDs and confirms all 3 survive (no pruning).
+///
+/// Anti-vacuity: the count assertion fails if `pruneSeenHashes` is never called (table grows
+/// to capacity+2). Mutation: removing the prune call leaves the count at capacity+2 and fails the
+/// first `#expect`.
+@MainActor @Test func seenHashRowsArePrunedToRingCapacity() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me)
+
+    // Insert (capacity + 2) seen-hash rows directly to avoid stamping 10_002 real messages.
+    // storedAt is set so ordering is well-defined: row i has storedAt = epoch + i seconds.
+    let capacity = 10_000
+    try await db.write { database in
+        for i in 0..<(capacity + 2) {
+            let hashHex = Data(repeating: UInt8(i & 0xFF), count: 31) + Data([UInt8((i >> 8) & 0xFF)])
+            try SeenHashRow.insert {
+                SeenHashRow(hashHex: hashHex.hexString,
+                            storedAt: Date(timeIntervalSince1970: Double(i)))
+            }.execute(database)
+        }
+    }
+
+    // Deliver one real message — its write path calls pruneSeenHashes.
+    let sender = Identity()
+    let m = LXMessage.create(source: sender,
+                              destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+                              timestamp: 1700000000.5, title: Data(), content: Data("x".utf8))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    // After the prune the table must have exactly `capacity` rows (the real message takes one slot,
+    // so the pre-seeded rows are cut to capacity-1, and total = capacity).
+    let seenCount = try await db.read { try SeenHashRow.all.fetchAll($0) }.count
+    #expect(seenCount == capacity, "Table must be pruned to RingSet.capacity")
+
+    // Now insert 3 transient IDs and confirm none are pruned.
+    let tid1 = Data(repeating: 0xA1, count: 32)
+    let tid2 = Data(repeating: 0xA2, count: 32)
+    let tid3 = Data(repeating: 0xA3, count: 32)
+    await store.send(.node(.client(.router(.messagesDownloaded(transientIds: [tid1, tid2, tid3])))))
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let tidCount = try await db.read { try DownloadedTransientIdRow.all.fetchAll($0) }.count
+    #expect(tidCount == 3, "Transient-ID table must NOT be pruned")
+}
+
+/// A peer's stamp cost survives a restart and the post-restart send carries a stamp.
+///
+/// Mechanism: `.pathLearned` for a delivery-destination announce writes `LearnedPeerRow`; on the
+/// next launch `.rehydrateLearnedPeers` restores `LXMFNode.State.learnedPeers`; when a message
+/// is sent to that peer `LXMFNode.deliverySend` finds the entry and generates a stamp.
+///
+/// Stamp generation at cost ≤ 10 is fast (expected ~2^10 = 1024 hash rounds vs ~2^20 for cost 20).
+/// We verify the stamp is present on the SENT message by reconstructing it from the
+/// `.sendOpportunistic` delegate payload: `opportunisticPayload = message.packed.dropFirst(16)`,
+/// so `LXMessage.fromOpportunistic(destinationHash:payload:)` returns the stamped message.
+///
+/// Anti-vacuity (two clauses, each with its own mutation):
+///   "stamp cost survives restart": the `LearnedPeerRow` exists after session 1.
+///     Mutation 1: remove the LearnedPeerRow write → peerRows is empty → first #expect fails.
+///   "send carries a stamp": the reconstructed message in session 2 has a non-nil stamp.
+///     Mutation 2: remove the rehydrateLearnedPeers forward to the library → learnedPeers is
+///     empty after restart → deliverySend finds no cost → message is sent without a stamp →
+///     reconstructed.stamp is nil → second #expect fails.
+///   These mutations kill different assertions, confirming there is no shared vacuity.
+@MainActor @Test func peerStampCostSurvivesRestartAndIsSpent() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let peer = Identity()
+    let peerDeliveryHash = LXMessage.deliveryHash(identityHash: peer.hash)
+    let peerDeliveryHex = peerDeliveryHash.hexString
+    let stampCost = 8    // low cost — fast generation, well below the 20-round ceiling
+
+    // --- Session 1: simulate an announce from peer (writes LearnedPeerRow) ---
+    let store1 = makeStore(db, identity: me)
+    // Prime the LXMFNode state with the peer's stamp cost by sending the library action first
+    // (this does NOT write to the DB — it only updates in-memory state), then fire `pathLearned`
+    // so the AppFeature handler reads the entry and writes it to the DB.
+    let learnedPeer = LXMFNode.LearnedPeer(
+        displayName: "Peer",
+        stampCost: stampCost,
+        supportsCompression: false,
+        learnedAt: Date(timeIntervalSince1970: 1700000000)
+    )
+    await store1.send(.node(.client(.rehydrateLearnedPeers([peerDeliveryHash: learnedPeer]))))
+    await store1.send(.node(.client(.endpoint(.delegate(.pathLearned(destinationHash: peerDeliveryHash, hops: 1))))))
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store1.skipReceivedActions(strict: false)
+
+    // Clause 1: verify the row was written.
+    // Mutation 1: remove the LearnedPeerRow write from the pathLearned handler → count == 0.
+    let peerRows = try await db.read { try LearnedPeerRow.all.fetchAll($0) }
+    #expect(peerRows.count == 1, "LearnedPeerRow must be written on pathLearned")
+    let savedRow = try #require(peerRows.first)
+    #expect(savedRow.destinationHashHex == peerDeliveryHex)
+    #expect(savedRow.stampCost == stampCost)
+
+    // --- Session 2: restart — new store, same DB ---
+    let store2 = makeStore(db, identity: me) { s in
+        s.openPeerHex = peerDeliveryHex
+        s.draft = "hi"
+        s.reachablePeers.insert(peerDeliveryHex)
+    }
+    await store2.send(.onLaunch)
+    await store2.receive { if case .rehydrateLearnedPeers = $0 { return true }; return false }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store2.skipReceivedActions(strict: false)
+    #expect(store2.state.node.client.learnedPeers[peerDeliveryHash]?.stampCost == stampCost,
+            "learnedPeers must carry the persisted stamp cost after rehydration")
+
+    // Send a message to the peer. With a stamp cost of 8, generation takes ~milliseconds.
+    // `.sendTapped` → `deliverySend` starts an async stamp search → completes → `.router(.send)`
+    // → `.sendOpportunistic` delegate fires.
+    await store2.send(.sendTapped)
+    var opportunisticPayload: Data?
+    await store2.receive { action in
+        if case let .node(.client(.router(.delegate(.sendOpportunistic(dest, payload))))) = action,
+           dest == peerDeliveryHash {
+            opportunisticPayload = payload
+            return true
+        }
+        return false
+    }
+    await store2.finish()
+    await store2.skipReceivedActions(strict: false)
+
+    // Clause 2: reconstruct the message from the opportunistic payload and check the stamp.
+    // `opportunisticPayload = message.packed.dropFirst(16)`, so:
+    //   LXMessage.fromOpportunistic(destinationHash: peerDeliveryHash, payload: opportunisticPayload)
+    //   = LXMessage.unpack(peerDeliveryHash + opportunisticPayload)
+    //   = LXMessage.unpack(message.packed)   — which carries the stamp.
+    //
+    // Mutation 2: remove the rehydrateLearnedPeers forward to the library (case .rehydrateLearnedPeers
+    // handler returns .none instead of .send(.node(.client(.rehydrateLearnedPeers(...))))) →
+    // learnedPeers is empty after restart → deliverySend finds no cost → message is sent unstamped →
+    // reconstructed.stamp == nil → assertion fails.
+    let payload = try #require(opportunisticPayload, "sendOpportunistic must have fired")
+    let reconstructed = try #require(LXMessage.fromOpportunistic(destinationHash: peerDeliveryHash, payload: payload),
+                                     "Opportunistic payload must unpack to a valid LXMessage")
+    #expect(reconstructed.stamp != nil, "Sent message must carry a delivery stamp (cost \(stampCost) was persisted and rehydrated)")
+}
+
+// MARK: - Public key requests (announce row tap)
+
+@MainActor @Test func announceRowTappedOpensLinkAndMarksRequesting() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.announceRowTapped(destinationHashHex: peerA))
+    #expect(store.state.publicKeyRequests[peerA] == .requesting)
+    await store.receive { action in
+        if case let .node(.client(.endpoint(.openLink(destinationHash)))) = action {
+            #expect(destinationHash == Data(hexString: peerA))
+            return true
+        }
+        return false
+    }
+}
+
+/// With no learned path (the test store's transport has never heard of this peer), openLink
+/// fails immediately with .noPath and the request settles as failed — a row can never stick on
+/// "requesting" because of an unroutable peer.
+@MainActor @Test func announceRowTappedWithoutPathFails() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.announceRowTapped(destinationHashHex: peerA))
+    await store.receive { if case .node(.client(.endpoint(.openLink))) = $0 { return true }; return false }
+    await store.receive { action in
+        if case let .node(.client(.endpoint(.delegate(.linkFailed(destinationHash, reason))))) = action {
+            #expect(destinationHash == Data(hexString: peerA))
+            #expect(reason == .noPath)
+            return true
+        }
+        return false
+    }
+    #expect(store.state.publicKeyRequests[peerA] == .failed(reason: "link failed"))
+}
+
+@MainActor @Test func announceRowTappedRejectsInvalidHex() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.announceRowTapped(destinationHashHex: "nothex"))
+    #expect(store.state.publicKeyRequests.isEmpty)
+    await store.send(.announceRowTapped(destinationHashHex: String(repeating: "a", count: 10)))   // 5 bytes — not a hash
+    #expect(store.state.publicKeyRequests.isEmpty)
+}
+
+/// A request already in flight owns its link; a second tap must not open a duplicate one.
+/// Tapping after the request settles (received/failed) is the retry path and IS allowed.
+@MainActor @Test func announceRowTappedWhileRequestingIsIgnored() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.publicKeyRequests[peerA] = .requesting
+    }
+    await store.send(.announceRowTapped(destinationHashHex: peerA))
+    #expect(store.state.publicKeyRequests[peerA] == .requesting)
+
+    let store2 = makeStore(db, identity: Identity()) { s in
+        s.publicKeyRequests[peerA] = .failed(reason: "no response")
+    }
+    await store2.send(.announceRowTapped(destinationHashHex: peerA))
+    #expect(store2.state.publicKeyRequests[peerA] == .requesting)   // retry after failure
+}
+
+@MainActor @Test func linkEstablishedForRequestingPeerSendsPublicKeyRequest() async {
+    let db = try! AppDatabase.makeInMemory()
+    let linkID = Data(repeating: 0x42, count: 16)
+    let store = makeStore(db, identity: Identity()) { s in
+        s.publicKeyRequests[peerA] = .requesting
+    }
+    await store.send(.node(.client(.endpoint(
+        .delegate(.linkEstablished(linkID: linkID, destinationHash: Data(hexString: peerA)!))))))
+    await store.receive { action in
+        if case let .node(.client(.endpoint(.sendRequestOverLink(linkID: l, path: p, data: d)))) = action {
+            #expect(l == linkID)
+            #expect(p == AppFeature.publicKeyRequestPath)
+            #expect(d.isEmpty)
+            return true
+        }
+        return false
+    }
+    #expect(store.state.publicKeyRequestLinks[linkID] == peerA)
+}
+
+/// Links established for other reasons (e.g. direct message delivery) must not be hijacked for
+/// a public-key request: only links opened by announceRowTapped are correlated.
+@MainActor @Test func linkEstablishedForNonRequestingPeerSendsNoRequest() async {
+    let db = try! AppDatabase.makeInMemory()
+    let linkID = Data(repeating: 0x42, count: 16)
+    let store = makeStore(db, identity: Identity())   // no requesting peer
+    await store.send(.node(.client(.endpoint(
+        .delegate(.linkEstablished(linkID: linkID, destinationHash: Data(hexString: peerA)!))))))
+    #expect(store.state.publicKeyRequestLinks.isEmpty)
+}
+
+@MainActor @Test func responseReceivedStoresValidPublicKey() async {
+    let db = try! AppDatabase.makeInMemory()
+    let linkID = Data(repeating: 0x42, count: 16)
+    let peerKey = Identity().publicKey
+    let store = makeStore(db, identity: Identity()) { s in
+        s.publicKeyRequests[peerA] = .requesting
+        s.publicKeyRequestLinks[linkID] = peerA
+    }
+    await store.send(.node(.client(.endpoint(
+        .delegate(.responseReceived(linkID: linkID, requestID: Data(repeating: 1, count: 32), data: peerKey))))))
+    #expect(store.state.publicKeyRequests[peerA] == .received(publicKeyHex: peerKey.hexString))
+    #expect(store.state.publicKeyRequestLinks.isEmpty)
+}
+
+/// A malformed or low-order key must be rejected, not stored — a poisoned Identity would break
+/// every later use of it.
+@MainActor @Test func responseReceivedWithInvalidDataMarksFailed() async {
+    let db = try! AppDatabase.makeInMemory()
+    let linkID = Data(repeating: 0x42, count: 16)
+    let store = makeStore(db, identity: Identity()) { s in
+        s.publicKeyRequests[peerA] = .requesting
+        s.publicKeyRequestLinks[linkID] = peerA
+    }
+    await store.send(.node(.client(.endpoint(
+        .delegate(.responseReceived(linkID: linkID, requestID: Data(repeating: 1, count: 32), data: Data("not a key".utf8)))))))
+    #expect(store.state.publicKeyRequests[peerA] == .failed(reason: "invalid public key"))
+    #expect(store.state.publicKeyRequestLinks.isEmpty)
+}
+
+@MainActor @Test func linkFailedMarksRequestingPeerFailed() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.publicKeyRequests[peerA] = .requesting
+    }
+    await store.send(.node(.client(.endpoint(
+        .delegate(.linkFailed(destinationHash: Data(hexString: peerA)!, reason: .establishmentTimedOut))))))
+    #expect(store.state.publicKeyRequests[peerA] == .failed(reason: "link failed"))
+}
+
+@MainActor @Test func requestFailedMarksRequestingPeerFailed() async {
+    let db = try! AppDatabase.makeInMemory()
+    let linkID = Data(repeating: 0x42, count: 16)
+    let store = makeStore(db, identity: Identity()) { s in
+        s.publicKeyRequests[peerA] = .requesting
+        s.publicKeyRequestLinks[linkID] = peerA
+    }
+    await store.send(.node(.client(.endpoint(
+        .delegate(.requestFailed(linkID: linkID, requestID: Data(repeating: 1, count: 32)))))))
+    #expect(store.state.publicKeyRequests[peerA] == .failed(reason: "no response"))
+    #expect(store.state.publicKeyRequestLinks.isEmpty)
+}
+
+/// A link that closes while a request is in flight emits NO requestFailed (LinkSession's close
+/// path only cancels the deadline) — without this branch the row would stick on "requesting".
+@MainActor @Test func linkClosedMarksInFlightRequestFailed() async {
+    let db = try! AppDatabase.makeInMemory()
+    let linkID = Data(repeating: 0x42, count: 16)
+    let store = makeStore(db, identity: Identity()) { s in
+        s.publicKeyRequests[peerA] = .requesting
+        s.publicKeyRequestLinks[linkID] = peerA
+    }
+    await store.send(.node(.client(.endpoint(
+        .delegate(.linkClosed(linkID: linkID, reason: .timedOut))))))
+    #expect(store.state.publicKeyRequests[peerA] == .failed(reason: "link closed"))
+    #expect(store.state.publicKeyRequestLinks.isEmpty)
+}
+
+@MainActor @Test func interfaceConnectedRegistersPublicKeyRequestHandler() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.client(.endpoint(
+        .tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    await store.receive { action in
+        if case let .node(.client(.endpoint(.registerRequestHandler(path: p, policy: pol)))) = action {
+            #expect(p == AppFeature.publicKeyRequestPath)
+            #expect(pol == .all)
+            return true
+        }
+        return false
+    }
+}
+
+// MARK: - Foreground re-dial
+//
+// iOS suspends the app in the background and the TCP socket does not survive it. Nothing else
+// re-dials: `.task` fires once per view lifetime, and the interface's reconnect backoff cannot run
+// while the process is suspended. Before `.foregrounded` existed, the only recovery from a
+// background/foreground cycle was killing the app.
+
+@MainActor @Test func foregroundingWhileDisconnectedReDialsTheEndpoint() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { state in
+        state.$host.withLock { $0 = "node.example" }
+        state.$port.withLock { $0 = 4243 }
+    }
+    #expect(store.state.connection == .disconnected)
+
+    await store.send(.foregrounded) { $0.connection = .connecting }
+    await store.receive { action in
+        if case .node(.client(.endpoint(.start))) = action { return true }
+        return false
+    }
+    // The dial must use the CURRENT settings, not whatever State.init was built with — the same
+    // reason `.onLaunch` and `.connectTapped` sync them.
+    guard case let .tcp(tcp) = store.state.node.client.endpoint else {
+        Issue.record("expected a TCP endpoint")
+        return
+    }
+    #expect(tcp.interface.host == "node.example")
+    #expect(tcp.interface.port == 4243)
+}
+
+@MainActor @Test func foregroundingWhileConnectedDoesNotReDial() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.client(.endpoint(
+        .tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    #expect(store.state.connection == .connected)
+
+    // Re-dialling a healthy connection would tear down every live link on each app switch.
+    await store.send(.foregrounded)
+    #expect(store.state.connection == .connected)
 }

@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import ComposableArchitecture
 import Sharing
 import SQLiteData
@@ -10,6 +11,16 @@ import ReTiCATransport
 @Reducer
 public struct AppFeature {
     public enum Connection: Equatable { case disconnected, connecting, connected }
+
+    /// Status of a public-key request for one peer.
+    public enum PublicKeyRequestStatus: Equatable {
+        /// A link to the peer is being established (or a request is in flight over it).
+        case requesting
+        /// The peer answered with a valid 64-byte public key.
+        case received(publicKeyHex: String)
+        /// The request could not be completed (link failed, no response, or a malformed key).
+        case failed(reason: String)
+    }
 
     @ObservableState
     public struct State: Equatable {
@@ -27,6 +38,15 @@ public struct AppFeature {
         public var threadMessages: [Message] = []
         // Peers with a known path (from pathLearned); gates Send in the UI. Session-only.
         public var reachablePeers: Set<String> = []
+        // In-flight / settled public-key requests, keyed by the peer's delivery-destination hash hex.
+        // Session-only: a request is a live network exchange, not something to persist.
+        public var publicKeyRequests: [String: PublicKeyRequestStatus] = [:]
+        // linkID → destination hash hex, for links opened by a public-key request. Correlates the
+        // link-scoped delegates (responseReceived / requestFailed / linkClosed) back to a peer.
+        // LXMFNode's directLinks cannot be used for this: it is cleared on linkClosed BEFORE this
+        // reducer sees the action (the node Scope reduces first), and it is also written by links
+        // opened for message delivery, which this feature must not touch.
+        public var publicKeyRequestLinks: [Data: String] = [:]
         @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
         @Shared(.appStorage("propagationNodeModeEnabled")) public var nodeModeEnabled: Bool = false
         @Shared(.appStorage("displayName")) public var displayName: String = ""
@@ -48,6 +68,9 @@ public struct AppFeature {
 
     public enum Action: Equatable, BindableAction {
         case onLaunch
+        /// The app returned to the foreground. iOS tears the socket down while suspended, so this
+        /// re-dials rather than trusting a reconnect timer that could not run while suspended.
+        case foregrounded
         case connectTapped
         case disconnectTapped
         case openConversation(String)
@@ -57,16 +80,35 @@ public struct AppFeature {
         case setPropagationNode(String)
         case setDisplayName(String)
         case syncTapped
+        case announceTapped
+        /// Tap on a detected-announce row: request that peer's public key over an authenticated link.
+        case announceRowTapped(destinationHashHex: String)
         case sendTapped
         case conversationsLoaded([Conversation])
         case threadLoaded([Message])
         case rehydratePropagationStore([Data])
+        /// Restore the router's dedup sets (seen-message hashes + downloaded transient IDs) from the
+        /// previous session. Sent on launch after reading the three durability tables.
+        case rehydrateDedup(seenHashes: [Data], downloadedTransientIds: [Data])
+        /// Restore the learned-peer table (stamp costs, display names) from the previous session.
+        /// Sent on launch alongside `.rehydrateDedup`.
+        case rehydrateLearnedPeers([Data: LXMFNode.LearnedPeer])
         case node(LXMFServiceNode.Action)
         case binding(BindingAction<State>)
     }
 
     @Dependency(\.defaultDatabase) var database
     @Dependency(\.date) var date
+
+    /// Request path for the public-key exchange: a peer answers with its 64-byte public key
+    /// (`Identity.publicKey`). The key is already public — every delivery announce carries it,
+    /// signed — so answering discloses nothing new; the exchange's value is that it happens over
+    /// an authenticated link, i.e. the peer demonstrably holds the matching private key.
+    public static let publicKeyRequestPath = "/publicKey"
+
+    /// Diagnostic channel for inbound-message shape. Filter in Console.app or with
+    /// `log stream --predicate 'subsystem == "com.reticamsgr"'`.
+    static let inbound = Logger(subsystem: "com.reticamsgr", category: "inbound")
 
     public init() {}
 
@@ -77,6 +119,7 @@ public struct AppFeature {
             switch action {
             case .onLaunch:
                 state.connection = .connecting
+                syncEndpointHostPort(&state)
                 return .merge(
                     .send(.node(.client(.endpoint(.start)))),
                     .run { [database] send in try await reloadConversations(database, send) },
@@ -88,11 +131,57 @@ public struct AppFeature {
                             try PropagationEntryRow.all.order(by: \.storedAt).fetchAll($0)
                         }
                         await send(.rehydratePropagationStore(rows.map(\.lxmfData)))
+                    },
+                    .run { [database] send in
+                        // Restore the router's dedup state. ORDER BY storedAt ASC is load-bearing
+                        // (see SeenHashRow): the RingSet evicts at capacity, so oldest-first insertion
+                        // keeps the newest 10 000 hashes — supplying them newest-first would do the
+                        // opposite and defeat the feature while every test passes.
+                        let (seenRows, tidRows): ([SeenHashRow], [DownloadedTransientIdRow]) =
+                            try await database.read { db in
+                                let seen = try SeenHashRow.all.order(by: \.storedAt).fetchAll(db)
+                                let tids = try DownloadedTransientIdRow.all.fetchAll(db)
+                                return (seen, tids)
+                            }
+                        let seenHashes = seenRows.compactMap { Data(hexString: $0.hashHex) }
+                        let transientIds = tidRows.compactMap { Data(hexString: $0.transientIdHex) }
+                        await send(.rehydrateDedup(seenHashes: seenHashes, downloadedTransientIds: transientIds))
+                    },
+                    .run { [database] send in
+                        // Restore learned-peer data (stamp costs, display names) so outbound messages
+                        // are stamped at the costs peers last advertised, not sent unstamped until each
+                        // peer re-announces. The library sweeps expired entries (>45 days old) during
+                        // rehydration — no sweep here.
+                        let rows = try await database.read {
+                            try LearnedPeerRow.all.fetchAll($0)
+                        }
+                        var peers: [Data: LXMFNode.LearnedPeer] = [:]
+                        for row in rows {
+                            guard let hash = Data(hexString: row.destinationHashHex) else { continue }
+                            peers[hash] = LXMFNode.LearnedPeer(
+                                displayName: row.displayName,
+                                stampCost: row.stampCost,
+                                supportsCompression: row.supportsCompression,
+                                learnedAt: row.learnedAt
+                            )
+                        }
+                        await send(.rehydrateLearnedPeers(peers))
                     }
                 )
 
+            case .foregrounded:
+                // Only re-dial when we are not already up: a healthy connection carries live links
+                // and re-dialling would tear them down on every app switch. If the socket died
+                // while suspended, the drop is processed as the app resumes and this branch (or the
+                // interface's own backoff) brings it back.
+                guard state.connection != .connected else { return .none }
+                state.connection = .connecting
+                syncEndpointHostPort(&state)
+                return .send(.node(.client(.endpoint(.start))))
+
             case .connectTapped:
                 state.connection = .connecting
+                syncEndpointHostPort(&state)
                 return .send(.node(.client(.endpoint(.start))))
 
             case .disconnectTapped:
@@ -117,6 +206,10 @@ public struct AppFeature {
                 var effects: [Effect<Action>] = [
                     .send(.node(.client(.setDisplayName(launchName.isEmpty ? nil : launchName, stampCost: nil)))),
                     .send(.node(.client(.registerDelivery))),
+                    // Answer peers' /publicKey requests (the app's requestResponder dependency
+                    // supplies the key). Idempotent — re-registering on reconnect is harmless.
+                    .send(.node(.client(.endpoint(
+                        .registerRequestHandler(path: AppFeature.publicKeyRequestPath, policy: .all))))),
                 ]
                 if let pn = Data(hexString: state.propagationNodeHex), pn.count == 16 {
                     effects.append(.send(.node(.client(.setPropagationNode(destinationHash: pn)))))
@@ -131,8 +224,59 @@ public struct AppFeature {
                 state.connection = .disconnected
                 return .none
 
-            case let .node(.client(.endpoint(.delegate(.pathLearned(h, _))))):
-                state.reachablePeers.insert(h.hexString)
+            // --- Public-key requests: link lifecycle → request/response ---
+
+            case let .node(.client(.endpoint(.delegate(.linkEstablished(linkID, destHash))))):
+                // The link to a requesting peer is up (the handshake authenticated the peer) — send
+                // the /publicKey request over it. Links established for other reasons (direct
+                // message delivery) are not ours to use here: only links WE opened for a request,
+                // recorded below, are correlated.
+                let hex = destHash.hexString
+                guard state.publicKeyRequests[hex] == .requesting else { return .none }
+                state.publicKeyRequestLinks[linkID] = hex
+                return .send(.node(.client(.endpoint(
+                    .sendRequestOverLink(linkID: linkID, path: AppFeature.publicKeyRequestPath, data: Data())))))
+
+            case let .node(.client(.endpoint(.delegate(.responseReceived(linkID, _, data))))):
+                guard let hex = state.publicKeyRequestLinks[linkID],
+                      state.publicKeyRequests[hex] == .requesting else { return .none }
+                state.publicKeyRequestLinks[linkID] = nil
+                // Validate before trusting: a malformed or low-order key would poison any later
+                // use of the Identity (Identity.init?(publicKey:) rejects both).
+                if data.count == Identity.keySize, Identity(publicKey: data) != nil {
+                    state.publicKeyRequests[hex] = .received(publicKeyHex: data.hexString)
+                } else {
+                    state.publicKeyRequests[hex] = .failed(reason: "invalid public key")
+                }
+                return .none
+
+            case let .node(.client(.endpoint(.delegate(.linkFailed(destHash, _))))):
+                // The link never came up (no path, stale path, or the peer rejected the handshake).
+                // LXMFNode may still recover the route and re-establish — but this attempt is over;
+                // tapping the row again starts a fresh request. No correlation-map entry exists:
+                // linkFailed only fires for links that never reached established.
+                if state.publicKeyRequests[destHash.hexString] == .requesting {
+                    state.publicKeyRequests[destHash.hexString] = .failed(reason: "link failed")
+                }
+                return .none
+
+            case let .node(.client(.endpoint(.delegate(.requestFailed(linkID, _))))):
+                // The request deadline fired with no response (the link is still up — a closed
+                // link cancels the deadline instead, and surfaces via linkClosed below).
+                guard let hex = state.publicKeyRequestLinks[linkID],
+                      state.publicKeyRequests[hex] == .requesting else { return .none }
+                state.publicKeyRequestLinks[linkID] = nil
+                state.publicKeyRequests[hex] = .failed(reason: "no response")
+                return .none
+
+            case let .node(.client(.endpoint(.delegate(.linkClosed(linkID, _))))):
+                // The link went away while a request was in flight. LinkSession's close path only
+                // CANCELS the pending request deadlines — it emits no requestFailed — so without
+                // this branch a closed link would leave the row stuck on "requesting" forever.
+                guard let hex = state.publicKeyRequestLinks[linkID],
+                      state.publicKeyRequests[hex] == .requesting else { return .none }
+                state.publicKeyRequestLinks[linkID] = nil
+                state.publicKeyRequests[hex] = .failed(reason: "link closed")
                 return .none
 
             case let .openConversation(peerHex):
@@ -185,8 +329,60 @@ public struct AppFeature {
                     }
                 )
 
+            case let .node(.client(.endpoint(.delegate(.pathLearned(h, _))))):
+                // LXMFNode's Scope reducer has already run and updated state.node.client.learnedPeers[h]
+                // if the announce was a delivery-destination one with valid app-data. Persist whatever
+                // the library stored — if nothing was stored (not a delivery announce, or no app-data),
+                // there is nothing to write. Only delivery announces update learnedPeers (see
+                // LXMFNode.swift:633-641), so an absent entry here means "not a delivery peer".
+                let peerToStore: (key: Data, peer: LXMFNode.LearnedPeer)?
+                if let peer = state.node.client.learnedPeers[h] {
+                    peerToStore = (key: h, peer: peer)
+                } else {
+                    peerToStore = nil
+                }
+                state.reachablePeers.insert(h.hexString)
+                guard let (hashKey, learned) = peerToStore else { return .none }
+                let hashHex = hashKey.hexString
+                let row = LearnedPeerRow(
+                    destinationHashHex: hashHex,
+                    displayName: learned.displayName,
+                    stampCost: learned.stampCost,
+                    supportsCompression: learned.supportsCompression,
+                    learnedAt: learned.learnedAt
+                )
+                return .run { [database] _ in
+                    try await database.write { db in
+                        try LearnedPeerRow.where { $0.destinationHashHex.eq(hashHex) }.delete().execute(db)
+                        try LearnedPeerRow.insert { row }.execute(db)
+                    }
+                }
+
             case let .node(.client(.delegate(.messageReceived(m, validated)))):
                 let incomingPeer = m.sourceHash.hexString
+                // DIAGNOSTIC (2026-08-21) — remove once the empty-body question is settled.
+                //
+                // Messages from Sideband are landing with an empty `content` while the sender
+                // reports them delivered. This is NOT a framing bug: `LXMessage.unpack` is strict
+                // and returns nil on any malformed frame, and `LXMFRouter.received` drops nil — so
+                // nothing can reach here with a body that merely failed to parse. The content is
+                // genuinely empty on the wire, which means the payload is most likely in `fields`.
+                // LXMF defines FIELD_TELEMETRY (0x02), FIELD_ICON_APPEARANCE (0x04) and
+                // FIELD_COMMANDS (0x09), all of which carry empty content by design, and this app
+                // renders every delivered message as a chat bubble while discarding `fields`.
+                //
+                // That is a HYPOTHESIS. This line records what actually arrived so it can be
+                // confirmed or killed with evidence instead of being fixed on a guess.
+                let fieldKeys = m.fields.map { "0x" + String($0.key, radix: 16) }.joined(separator: ",")
+                let wireBytes = m.receivedBytes?.count ?? -1
+                AppFeature.inbound.notice("""
+                    inbound lxmf from=\(incomingPeer.prefix(8), privacy: .public) \
+                    content=\(m.content.count, privacy: .public)B \
+                    title=\(m.title.count, privacy: .public)B \
+                    fields=[\(fieldKeys, privacy: .public)] \
+                    wire=\(wireBytes, privacy: .public)B \
+                    validated=\(validated, privacy: .public)
+                    """)
                 let row = Message(
                     id: UUID(),
                     peerHex: incomingPeer,
@@ -198,8 +394,22 @@ public struct AppFeature {
                     messageHash: ""
                 )
                 let openPeer = state.openPeerHex
+                let seenHashHex = m.hash.hexString
+                let seenNow = date.now
                 return .run { [database] send in
-                    try await database.write { try Message.insert { row }.execute($0) }
+                    try await database.write { db in
+                        try Message.insert { row }.execute(db)
+                        // Persist the seen hash so a cold start doesn't re-deliver this message.
+                        // Upsert: replace any existing row for the same hash (a duplicate from a
+                        // previous session should already be in seen, but a re-deliver would be
+                        // wrong regardless). Then prune to RingSet.capacity so the table mirrors
+                        // the in-memory ring and doesn't grow without bound.
+                        try SeenHashRow.where { $0.hashHex.eq(seenHashHex) }.delete().execute(db)
+                        try SeenHashRow.insert {
+                            SeenHashRow(hashHex: seenHashHex, storedAt: seenNow)
+                        }.execute(db)
+                        try pruneSeenHashes(db)
+                    }
                     try await reloadConversations(database, send)
                     if incomingPeer == openPeer {
                         try await reloadThread(database, incomingPeer, send)
@@ -266,6 +476,22 @@ public struct AppFeature {
             case .syncTapped:
                 return .send(.node(.client(.syncFromPropagationNode)))
 
+            case .announceTapped:
+                return .send(.node(.client(.announceDelivery)))
+
+            case let .announceRowTapped(hex):
+                // A request already in flight owns its link; a second tap would open a duplicate
+                // authenticated link to the same peer for no benefit. Tapping after settled
+                // (received/failed) starts a fresh request — that is the retry path.
+                guard state.publicKeyRequests[hex] != .requesting else { return .none }
+                guard let hash = Data(hexString: hex), hash.count == 16 else { return .none }
+                state.publicKeyRequests[hex] = .requesting
+                // The link handshake itself authenticates the peer (the responder must sign with
+                // the destination identity's private key); the /publicKey request over that link
+                // then fetches the key from the device. `openLink` resolves the destination's
+                // identity from the transport's learned table (populated by this peer's announce).
+                return .send(.node(.client(.endpoint(.openLink(destinationHash: hash)))))
+
             case let .node(.client(.delegate(.propagationAccepted(hash)))):
                 let hex = hash.hexString
                 let openPeer = state.openPeerHex
@@ -313,11 +539,56 @@ public struct AppFeature {
                                                           entries: entries)
                 return .send(.node(.pn(.ingestContainer(container))))
 
+            case let .rehydrateDedup(seenHashes, downloadedTransientIds):
+                // Forward to the library reducer — it inserts hashes into the RingSet and unions
+                // the transient-ID set. No app-level state to update.
+                return .send(.node(.client(.router(.rehydrateDedup(
+                    seenHashes: seenHashes, downloadedTransientIds: downloadedTransientIds)))))
+
+            case let .rehydrateLearnedPeers(peers):
+                // Forward to the library reducer — it sweeps expired entries and restores the rest,
+                // never overwriting a fresher live entry that arrived via announce before this DB
+                // read completed.
+                return .send(.node(.client(.rehydrateLearnedPeers(peers))))
+
+            case let .node(.client(.router(.messagesDownloaded(transientIds)))):
+                // Persist the newly-downloaded transient IDs so a cold start doesn't re-request
+                // them on the next sync. An empty batch requires no write.
+                guard !transientIds.isEmpty else { return .none }
+                let tidRows = transientIds.map {
+                    DownloadedTransientIdRow(transientIdHex: $0.hexString, storedAt: date.now)
+                }
+                return .run { [database] _ in
+                    try await database.write { db in
+                        for tidRow in tidRows {
+                            try DownloadedTransientIdRow
+                                .where { $0.transientIdHex.eq(tidRow.transientIdHex) }
+                                .delete().execute(db)
+                            try DownloadedTransientIdRow.insert { tidRow }.execute(db)
+                        }
+                        // downloadedTransientIds is deliberately NOT pruned — see
+                        // DownloadedTransientIdRow for the ruling and revisit trigger.
+                    }
+                }
+
             case .node, .binding:
                 return .none
             }
         }
     }
+}
+
+// The TCP endpoint is built once at init with the host/port passed to State.init (defaults to
+// 127.0.0.1:4242). The Settings fields bind to separate @Shared values, so without this the app
+// would always dial those init defaults regardless of what the user configured. Copy the current
+// Settings values into the endpoint immediately before dialing (onLaunch / connectTapped).
+private func syncEndpointHostPort(_ state: inout AppFeature.State) {
+    guard case .tcp(var tcp) = state.node.client.endpoint else { return }
+    tcp.interface.host = state.host
+    if let port = UInt16(exactly: state.port) {
+        tcp.interface.port = port
+    }
+    state.node.client.endpoint = .tcp(tcp)
 }
 
 // Reload helpers (file-scope free functions — no self capture in @Sendable effects).
@@ -331,4 +602,26 @@ private func reloadThread(_ database: any DatabaseWriter, _ peerHex: String, _ s
         try Message.where { $0.peerHex.eq(peerHex) }.order(by: \.timestamp).fetchAll($0)
     }
     await send(.threadLoaded(rows))
+}
+
+/// Prune `seenHashRows` to `RingSet.capacity` (10 000), keeping the newest rows.
+///
+/// Must be called inside a write transaction after every insert. The in-memory `RingSet` evicts
+/// the oldest hash at capacity, so pruning oldest-first keeps the DB consistent with the ring.
+/// Without this prune, the table grows without bound while mirroring a bounded structure.
+///
+/// The SQL is `DELETE … WHERE hashHex IN (SELECT hashHex … ORDER BY storedAt ASC LIMIT max(0, count - 10000))`.
+/// Structured-queries doesn't expose a `LIMIT` on DELETE directly, so we use a `WHERE … IN (SELECT …)`
+/// shape, which is a standard GRDB / SQLite pattern.
+private func pruneSeenHashes(_ db: GRDB.Database) throws {
+    // RingSet capacity — must match LXMFRouter.State's `RingSet(capacity: 10_000)`.
+    let capacity = 10_000
+    try db.execute(sql: """
+        DELETE FROM seenHashRows
+        WHERE hashHex IN (
+            SELECT hashHex FROM seenHashRows
+            ORDER BY storedAt ASC
+            LIMIT MAX(0, (SELECT COUNT(*) FROM seenHashRows) - \(capacity))
+        )
+        """)
 }
