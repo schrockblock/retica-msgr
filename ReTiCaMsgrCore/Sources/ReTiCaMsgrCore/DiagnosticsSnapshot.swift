@@ -46,6 +46,8 @@ public struct DiagnosticsSnapshot: Equatable {
             Self.identityLayer(state),
             Self.pathsLayer(state),
             Self.peersLayer(state),
+            Self.linksLayer(state, at: date),
+            Self.deliveryLayer(state),
         ]
     }
 }
@@ -176,7 +178,8 @@ extension DiagnosticsSnapshot {
         let pathless = entries.filter { !$0.hasPath }.count
         guard pathless == 0 else {
             return Layer(title: "Peers", health: .warn,
-                         reason: "\(pathless) peer\(pathless == 1 ? "" : "s") has no path "
+                         reason: "\(pathless) peer\(pathless == 1 ? "" : "s") "
+                                 + "\(pathless == 1 ? "has" : "have") no path "
                                  + "— known but not reachable",
                          rows: rows)
         }
@@ -201,5 +204,106 @@ extension DiagnosticsSnapshot {
                          rows: rows)
         }
         return Layer(title: "Identity", health: .ok, reason: nil, rows: rows)
+    }
+}
+
+// MARK: - Links
+
+extension DiagnosticsSnapshot {
+    /// Renders a hand-picked set of fields. `LinkSession.State` also carries `sessionKey` and
+    /// an `ephemeral` keypair; those are secrets and must never appear here or in `text`.
+    static func linksLayer(_ state: AppFeature.State, at date: Date) -> Layer {
+        let links = state.node.client.endpoint.links
+        let now = date.timeIntervalSince1970
+
+        let rows = links.map { link -> Row in
+            let role = link.role == .initiator ? "initiator" : "responder"
+            let rtt = link.rtt.map { String(format: "%.0fms", $0 * 1000) } ?? "-"
+            // `lastInbound` advances on ANY link-addressed packet; `lastData` only on traffic
+            // that actually decrypted. Both are shown because the difference distinguishes "a
+            // peer is talking to us" from "an AUTHENTICATED peer is talking to us" — and
+            // `LinkPlane` evicts responder links in order of `lastData`, not `lastInbound`.
+            return Row(link.linkID.hexString,
+                       "\(role) \(describe(link.status)) dest=\(link.destinationHash.hexString) "
+                       + "rtt=\(rtt) transfers=\(link.transfers.count) "
+                       + "up=\(age(link.activatedAt, now)) "
+                       + "in=\(age(link.lastInbound, now)) data=\(age(link.lastData, now))")
+        }
+
+        // An initiator link sitting in `.handshake` is establishment in flight — or stalled.
+        // `LinkSession.establishmentTimeout` bounds it at 15s.
+        let stalled = links.filter { $0.role == .initiator && $0.status == .handshake }.count
+        guard stalled == 0 else {
+            return Layer(title: "Links", health: .warn,
+                         reason: "\(stalled) outbound link\(stalled == 1 ? "" : "s") "
+                                 + "still in handshake",
+                         rows: rows)
+        }
+        return Layer(title: "Links", health: .ok, reason: nil,
+                     rows: rows.isEmpty ? [Row("(none)", "no live links")] : rows)
+    }
+
+    static func describe(_ status: LinkSession.Status) -> String {
+        switch status {
+        case .pending:   return "pending"
+        case .handshake: return "handshake"
+        case .active:    return "active"
+        case .closed:    return "closed"
+        }
+    }
+
+    /// Seconds since a unix-timestamp field, rendered compactly. Uses the INJECTED date, never
+    /// a live clock — that is what keeps `text` deterministic under test.
+    static func age(_ timestamp: Double?, _ now: Double) -> String {
+        guard let timestamp else { return "-" }
+        let seconds = max(0, now - timestamp)
+        if seconds < 90 { return "\(Int(seconds))s" }
+        if seconds < 5400 { return "\(Int(seconds / 60))m" }
+        return "\(Int(seconds / 3600))h"
+    }
+}
+
+// MARK: - Delivery
+
+extension DiagnosticsSnapshot {
+    static func deliveryLayer(_ state: AppFeature.State) -> Layer {
+        let router = state.node.client.router
+
+        let linkRows = router.directLinks
+            .map { dest, status -> (String, Row) in
+                let text: String
+                switch status {
+                case .awaitingPath:      text = "awaitingPath"
+                case .establishing:      text = "establishing"
+                case let .active(linkID): text = "active (\(linkID.hexString))"
+                }
+                return (dest.hexString, Row(dest.hexString, text))
+            }
+            .sorted { $0.0 < $1.0 }
+            .map(\.1)
+
+        let pendingRows = router.pendingDeliveries
+            .map { hash, pending in (hash.hexString, Row(hash.hexString, "attempts=\(pending.attempts)")) }
+            .sorted { $0.0 < $1.0 }
+            .map(\.1)
+
+        var rows = [Row("known paths", String(router.knownPaths.count))]
+        rows.append(Row("propagation node",
+                        router.outboundPropagationNode?.hexString ?? "(none)"))
+        rows.append(contentsOf: linkRows)
+        rows.append(contentsOf: pendingRows)
+
+        let hasActive = router.directLinks.values.contains {
+            if case .active = $0 { return true }
+            return false
+        }
+        let pending = router.pendingDeliveries.count
+        if pending > 0 && !hasActive {
+            return Layer(title: "Delivery", health: .warn,
+                         reason: "\(pending) message\(pending == 1 ? "" : "s") pending "
+                                 + "with no active link",
+                         rows: rows)
+        }
+        return Layer(title: "Delivery", health: .ok, reason: nil, rows: rows)
     }
 }

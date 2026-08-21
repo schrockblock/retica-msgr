@@ -172,3 +172,57 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     #expect(peers.reason == nil)
     #expect(peers.rows.contains { $0.value.contains("path=yes") })
 }
+
+@MainActor @Test func peersWarnWithPluralGrammarWhenMultiplePeersHaveNoPath() {
+    var state = healthyState()
+    let peerHash2 = Data(repeating: 0xCC, count: 16)
+    state.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
+        displayName: "Alice", stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+    state.node.client.learnedPeers[peerHash2] = LXMFNode.LearnedPeer(
+        displayName: "Bob", stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+    let peers = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Peers")
+    #expect(peers.health == .warn)
+    #expect(peers.reason == "2 peers have no path — known but not reachable")
+}
+
+// MARK: - Delivery
+
+@MainActor @Test func deliveryWarnsWhenMessagesArePendingWithNoActiveLink() {
+    var state = healthyState()
+    state.node.client.router.pendingDeliveries[Data(repeating: 0x01, count: 32)] =
+        LXMFRouter.PendingDelivery(
+            resend: .opportunistic(destinationHash: peerHash, payload: Data()), attempts: 2)
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .warn)
+    #expect(delivery.reason == "1 message pending with no active link")
+}
+
+@MainActor @Test func deliveryIsOkWhenPendingMessagesHaveAnActiveLink() {
+    var state = healthyState()
+    state.node.client.router.pendingDeliveries[Data(repeating: 0x01, count: 32)] =
+        LXMFRouter.PendingDelivery(
+            resend: .opportunistic(destinationHash: peerHash, payload: Data()), attempts: 1)
+    state.node.client.router.directLinks[peerHash] = .active(linkID: Data(repeating: 0x0C, count: 16))
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .ok)
+    #expect(delivery.reason == nil)
+}
+
+@MainActor @Test func deliveryIsOkWithNothingPending() {
+    let delivery = layer(DiagnosticsSnapshot(from: healthyState(), at: fixedDate), "Delivery")
+    #expect(delivery.health == .ok)
+}
+
+// MARK: - Links
+
+@MainActor @Test func linksLayerReportsNoLinksOnAQuietState() {
+    let links = layer(DiagnosticsSnapshot(from: healthyState(), at: fixedDate), "Links")
+    #expect(links.health == .ok)
+    #expect(links.rows.contains { $0.label == "(none)" })
+}
+
+@MainActor @Test func snapshotHasAllSixLayersInOrder() {
+    let snapshot = DiagnosticsSnapshot(from: healthyState(), at: fixedDate)
+    #expect(snapshot.layers.map(\.title)
+            == ["Socket", "Identity", "Paths", "Peers", "Links", "Delivery"])
+}
