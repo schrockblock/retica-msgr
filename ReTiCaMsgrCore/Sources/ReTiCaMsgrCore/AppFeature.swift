@@ -147,13 +147,24 @@ public struct AppFeature {
                         let transientIds = tidRows.compactMap { Data(hexString: $0.transientIdHex) }
                         await send(.rehydrateDedup(seenHashes: seenHashes, downloadedTransientIds: transientIds))
                     },
-                    .run { [database] send in
+                    .run { [database, expiryCutoff = date.now.addingTimeInterval(-LXMFNode.stampCostExpiry)] send in
                         // Restore learned-peer data (stamp costs, display names) so outbound messages
                         // are stamped at the costs peers last advertised, not sent unstamped until each
-                        // peer re-announces. The library sweeps expired entries (>45 days old) during
-                        // rehydration — no sweep here.
-                        let rows = try await database.read {
-                            try LearnedPeerRow.all.fetchAll($0)
+                        // peer re-announces.
+                        //
+                        // The expired rows are DELETED here, not merely skipped. The library's
+                        // `.rehydrateLearnedPeers` sweeps expired entries out of the in-memory table,
+                        // but it has no way to tell us to forget the row — so without this delete a
+                        // peer heard once, 46 days ago, is re-read and re-skipped at every launch
+                        // forever. In-memory growth would be collected while DISK growth was not,
+                        // which is the half that actually accumulates on a device.
+                        //
+                        // The cutoff is computed in the capture list, from the `\.date` dependency:
+                        // reading `date.now` inside the @Sendable closure would capture `self`.
+                        let cutoff = expiryCutoff
+                        let rows = try await database.write { db in
+                            try LearnedPeerRow.where { $0.learnedAt < cutoff }.delete().execute(db)
+                            return try LearnedPeerRow.all.fetchAll(db)
                         }
                         var peers: [Data: LXMFNode.LearnedPeer] = [:]
                         for row in rows {

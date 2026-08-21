@@ -680,21 +680,42 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(seenRows.count == 1, "Hash must be persisted before restart")
     #expect(seenRows.first?.hashHex == m.hash.hexString)
 
+    // Also persist a downloaded transient id, so the restart can assert BOTH halves of the dedup
+    // state. Driven through the real action rather than inserted directly, so the write path is
+    // exercised too.
+    let storedTransientId = Data(repeating: 0xC7, count: 32)
+    await store1.send(.node(.client(.router(.messagesDownloaded(transientIds: [storedTransientId])))))
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let tidRows = try await db.read { try DownloadedTransientIdRow.all.fetchAll($0) }
+    #expect(tidRows.contains { $0.transientIdHex == storedTransientId.hexString },
+            "transient id must be persisted before restart")
+    await store1.finish()
+    await store1.skipReceivedActions(strict: false)
+
     // --- Session 2: restart — new store, same DB ---
     let store2 = makeStore(db, identity: me)
     await store2.send(.onLaunch)
     // Clause 2: rehydrateDedup must carry the persisted hash.
     // Mutation: remove the seenHashRow read from onLaunch → the action has an empty hashes array.
     var capturedSeenHashes: [Data] = []
+    var capturedTransientIds: [Data] = []
     await store2.receive { action in
-        if case let .rehydrateDedup(hashes, _) = action {
+        if case let .rehydrateDedup(hashes, tids) = action {
             capturedSeenHashes = hashes
+            capturedTransientIds = tids
             return true
         }
         return false
     }
     #expect(capturedSeenHashes.contains(m.hash),
             "rehydrateDedup must carry the persisted hash")
+    // The transient-id half was previously discarded here, and a review proved the omission
+    // mattered: stubbing the launch read to `[]` left ALL 49 tests green. That is half the
+    // duplicate-delivery problem this slice exists to solve — the seen ring stops a message being
+    // re-DELIVERED, while the transient-id set is what stops the propagation node re-SENDING it in
+    // the first place. Asserting only the first is the name-claims-two-asserts-one shape.
+    #expect(capturedTransientIds.contains(storedTransientId),
+            "rehydrateDedup must carry the persisted transient id, not just the message hash")
     try await Task.sleep(nanoseconds: 50_000_000)
     await store2.skipReceivedActions(strict: false)
 
