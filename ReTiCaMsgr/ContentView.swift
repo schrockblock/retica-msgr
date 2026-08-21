@@ -18,6 +18,8 @@ struct RootView: View {
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
             AddressView(store: store)
                 .tabItem { Label("Address", systemImage: "person.crop.circle") }
+            AnnounceListView(store: store)
+                .tabItem { Label("Announces", systemImage: "antenna.radiowaves.left.and.right") }
             SettingsView(store: store)
                 .tabItem { Label("Settings", systemImage: "gear") }
         }

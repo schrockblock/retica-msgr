@@ -14,6 +14,22 @@ struct SettingsView: View {
     @State private var pnInput: String = ""
     @State private var nameInput: String = ""
 
+    private var connectionColor: Color {
+        switch store.connection {
+        case .disconnected: return .red
+        case .connecting: return .yellow
+        case .connected: return .green
+        }
+    }
+
+    private var connectionLabel: String {
+        switch store.connection {
+        case .disconnected: return "Disconnected"
+        case .connecting: return "Connecting…"
+        case .connected: return "Connected"
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -39,6 +55,12 @@ struct SettingsView: View {
                 }
 
                 Section("Node Connection") {
+                    HStack(spacing: 8) {
+                        Circle().fill(connectionColor).frame(width: 10, height: 10)
+                        Text(connectionLabel)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                     TextField("Host", text: $store.host)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)

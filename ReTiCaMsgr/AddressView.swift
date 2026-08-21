@@ -18,6 +18,8 @@ struct AddressView: View {
                 Text("My LXMF Address")
                     .font(.headline)
 
+                qrCodeView
+
                 Text(store.myAddressHex)
                     .font(.system(.body, design: .monospaced))
                     .textSelection(.enabled)
@@ -36,6 +38,22 @@ struct AddressView: View {
             }
             .padding(.top, 32)
             .navigationTitle("Address")
+        }
+    }
+
+    /// QR encoding of the LXMF address, a pure derivation of `store.myAddressHex`
+    /// (set once at store init), so no extra TCA state is needed.
+    @ViewBuilder
+    private var qrCodeView: some View {
+        if let image = QRCodeImage.generate(from: store.myAddressHex) {
+            Image(uiImage: image)
+                .interpolation(.none)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 220, height: 220)
+                .padding(16)
+                // Explicit white backing keeps the code scannable in dark mode.
+                .background(.white, in: RoundedRectangle(cornerRadius: 12))
         }
     }
 }
