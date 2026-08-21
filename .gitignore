@@ -1,0 +1,3 @@
+# Agent tooling working directory (Qwen's settings.json). Same class of artifact as
+# .superpowers/ in the ReTiCA repo, which self-ignores via a nested .gitignore.
+.qwen/
