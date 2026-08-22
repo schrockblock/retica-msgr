@@ -99,6 +99,15 @@ struct SettingsView: View {
                             .textSelection(.enabled)
                     }
                 }
+
+                Section {
+                    NavigationLink { DiagnosticsView(store: store) } label: {
+                        Label("Diagnostics", systemImage: "stethoscope")
+                    }
+                } footer: {
+                    Text("Connection, paths, peers, links and delivery state — and a shareable "
+                         + "snapshot for bug reports.")
+                }
             }
             .navigationTitle("Settings")
             // Seed the field from persisted state, so opening Settings with a name set does not
