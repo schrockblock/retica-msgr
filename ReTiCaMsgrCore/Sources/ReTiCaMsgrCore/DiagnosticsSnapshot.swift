@@ -263,6 +263,40 @@ extension DiagnosticsSnapshot {
     }
 }
 
+// MARK: - Text export
+
+extension DiagnosticsSnapshot {
+    /// Plain-text rendering for the share sheet. Identifiers are FULL here — the on-screen view
+    /// truncates for legibility, but a pasted dump gets correlated against rnsd logs and the
+    /// other end's client, so it needs the whole hash.
+    public var text: String {
+        var out = "ReTiCaMsgr diagnostics — \(Self.timestamp.string(from: generatedAt))\n"
+        for layer in layers {
+            let marker: String
+            switch layer.health {
+            case .ok:      marker = "ok"
+            case .warn:    marker = "warn"
+            case .problem: marker = "problem"
+            }
+            out += "\n\(layer.title.uppercased())  [\(marker)]"
+            if let reason = layer.reason { out += " \(reason)" }
+            out += "\n"
+            for row in layer.rows {
+                let padded = row.label.padding(toLength: max(row.label.count, 20),
+                                               withPad: " ", startingAt: 0)
+                out += "  \(padded) \(row.value)\n"
+            }
+        }
+        return out
+    }
+
+    nonisolated(unsafe) static let timestamp: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+}
+
 // MARK: - Delivery
 
 extension DiagnosticsSnapshot {

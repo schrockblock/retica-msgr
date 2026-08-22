@@ -226,3 +226,79 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     #expect(snapshot.layers.map(\.title)
             == ["Socket", "Identity", "Paths", "Peers", "Links", "Delivery"])
 }
+
+// MARK: - Delivery (non-active link does not suppress warn)
+
+// The production check is `if case .active = $0` — a precise enum-case match. A future
+// broadening to `directLinks[dest] != nil` would silently restore the crypto-amplification
+// vector with all tests still green. This test prevents that regression.
+@MainActor @Test func deliveryStillWarnsWhenDirectLinkIsEstablishingNotActive() {
+    var state = healthyState()
+    state.node.client.router.pendingDeliveries[Data(repeating: 0x01, count: 32)] =
+        LXMFRouter.PendingDelivery(
+            resend: .opportunistic(destinationHash: peerHash, payload: Data()), attempts: 2)
+    state.node.client.router.directLinks[peerHash] = .establishing
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .warn)
+    #expect(delivery.reason == "1 message pending with no active link")
+}
+
+// MARK: - Export
+
+@MainActor @Test func textIncludesTheTimestampLayerTitlesAndHealthMarkers() {
+    var state = healthyState()
+    withTCP(&state) { $0.interface.status = .connecting }
+    let text = DiagnosticsSnapshot(from: state, at: fixedDate).text
+
+    #expect(text.contains("ReTiCaMsgr diagnostics"))
+    #expect(text.contains("2023-11-14"))              // fixedDate in ISO 8601
+    #expect(text.contains("SOCKET  [problem]"))
+    #expect(text.contains("app reports connected, interface reports connecting"))
+    #expect(text.contains("IDENTITY  [ok]"))
+    #expect(text.contains("app connection"))
+}
+
+@MainActor @Test func textCarriesFullIdentifiersNotTruncatedOnes() {
+    var state = healthyState()
+    // Add only a peer (NO path): peersLayer renders the hash in the ROW VALUE as
+    // "Alice  bbbb...bbbb cost=... path=NO". Without a learned path, the hash does NOT
+    // appear as a row LABEL elsewhere, so truncating row values to prefix(8) would lose it.
+    state.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
+        displayName: "Alice", stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+    let text = DiagnosticsSnapshot(from: state, at: fixedDate).text
+    // Full 32-char hex, because this gets correlated against rnsd logs and the other client.
+    #expect(text.contains(peerHash.hexString))
+    #expect(peerHash.hexString.count == 32)
+}
+
+// NOT a correctness test — a safety one. `LinkSession.State` carries `sessionKey` and an
+// `ephemeral` keypair, and this text is designed to be pasted into bug reports. This is what
+// stops a later "just render all the fields" change from leaking key material.
+//
+// The link is built with a REAL LinkSession.State and asserted to be present before the
+// no-leak check. A safety test that silently exercises an empty collection passes for the
+// wrong reason and is worse than no test at all.
+@MainActor @Test func textNeverContainsALinkSessionKey() {
+    var state = healthyState()
+    let secret = Data(repeating: 0x5E, count: 32)
+    withTCP(&state) { tcp in
+        var link = LinkSession.State(
+            responderFor: Identity(),
+            destinationHash: peerHash,
+            interfaceID: tcp.interfaceID)
+        link.sessionKey = secret
+        link.status = .active
+        link.linkID = Data(repeating: 0x0C, count: 16)
+        tcp.links.append(link)
+    }
+
+    let snapshot = DiagnosticsSnapshot(from: state, at: fixedDate)
+    // Precondition: the fixture really does contain a link carrying the secret.
+    #expect(state.node.client.endpoint.links.count == 1)
+    #expect(snapshot.layers.first { $0.title == "Links" }?.rows.first?.label
+            == Data(repeating: 0x0C, count: 16).hexString)
+
+    let text = snapshot.text
+    #expect(!text.contains(secret.hexString))
+    #expect(!text.lowercased().contains("sessionkey"))
+}
