@@ -1541,3 +1541,42 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.skipReceivedActions(strict: false)
     await store.finish()
 }
+
+/// Launch race: rehydration and the TCP connect are both dispatched from onLaunch. If the interface
+/// registers BEFORE the DB read lands, interfaceConnected's seed found an empty learned table. The
+/// rehydrate handler must then seed from its own payload so Send still unlocks.
+@MainActor @Test func rehydrationAfterConnectStillUnlocksSend() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let peer = Identity()
+    let peerDeliveryHash = LXMessage.deliveryHash(identityHash: peer.hash)
+    let peerDeliveryHex = peerDeliveryHash.hexString
+
+    let destination = LearnedDestination(
+        identity: peer,
+        appData: nil,
+        ratchet: nil,
+        interfaceID: InterfaceID("tcp"),
+        hops: 1,
+        nextHop: nil,
+        announceEmitted: 1700000000,
+        learnedAt: Date(timeIntervalSince1970: 1700000000)
+    )
+
+    let store = makeStore(db, identity: me)
+
+    // Interface connects FIRST — learned is still empty, so this seed finds nothing.
+    await store.send(.node(.client(.endpoint(.transport(
+        .interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    #expect(!store.state.reachablePeers.contains(peerDeliveryHex),
+            "connect-before-rehydrate: nothing to seed yet")
+
+    // Rehydration lands AFTER connect — the app-level handler seeds from the payload.
+    await store.send(.rehydrateLearnedDestinations([peerDeliveryHash: destination]))
+
+    #expect(store.state.reachablePeers.contains(peerDeliveryHex),
+            "rehydration after connect must unlock Send via the launch-race guard")
+
+    await store.skipReceivedActions(strict: false)
+    await store.finish()
+}

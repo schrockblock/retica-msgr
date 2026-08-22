@@ -691,6 +691,13 @@ public struct AppFeature {
                 //       → Transport.rehydrateLearnedDestinations (transport is now shared at the
                 //       container level, so the address no longer traverses the tcpClient slot)
                 guard !destinations.isEmpty else { return .none }
+                // Launch race: if the interface already registered before this DB read landed, the seed in
+                // interfaceConnected (Task 1) ran against an empty learned table and missed these entries. Seed
+                // from the payload now — only those whose interface is currently registered (same reachability
+                // test). No-op when disconnected: interfaceConnected will seed from Transport.learned instead.
+                if state.connection == .connected {
+                    seedReachablePeers(&state, from: destinations)
+                }
                 return .send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations(destinations))))))
 
             case let .node(.client(.router(.messagesDownloaded(transientIds)))):
