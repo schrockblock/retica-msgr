@@ -144,6 +144,51 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     #expect(paths.rows.contains { $0.value.contains("reachable=yes") })
 }
 
+// I4. `interfaces` empties on EVERY socket drop, so the F8 test above would mark every learned
+// path unreachable and blame a missing interface — when the interface is not gone, the socket
+// is down, and Socket already says so. Reachability is not "no" here, it is unknowable.
+//
+// This is the ordinary disconnect, so the fixture is a coherent one: app disconnected,
+// interface disconnected, interfaces deregistered, learned NOT purged (it never is).
+@MainActor @Test func pathsDoNotBlameTheInterfaceWhenTheSocketIsDownAndNoInterfacesRemain() {
+    var state = healthyState()
+    state.connection = .disconnected
+    withTCP(&state) { tcp in
+        tcp.interface.status = .disconnected
+        tcp.transport.learned[peerHash] = LearnedDestination(
+            identity: Identity(), appData: nil, ratchet: nil,
+            interfaceID: tcp.interfaceID, hops: 0, nextHop: nil, announceEmitted: 0)
+        tcp.transport.interfaces = [:]
+    }
+    let snapshot = DiagnosticsSnapshot(from: state, at: fixedDate)
+    // Precondition: the path really is present and really does name an absent interface, so
+    // the old rule WOULD have fired here.
+    #expect(state.node.client.endpoint.learned.count == 1)
+    #expect(state.node.client.endpoint.interfaces.isEmpty)
+
+    let paths = layer(snapshot, "Paths")
+    #expect(paths.reason == "no interfaces registered — reachability is unknowable "
+                            + "until the socket is back; see Socket")
+    #expect(paths.rows.contains { $0.value.contains("reachable=?") })
+    #expect(!paths.rows.contains { $0.value.contains("reachable=NO") })
+    // Socket is the layer that owns this fault, and it is not silent about it.
+    #expect(layer(snapshot, "Socket").health != .ok)
+}
+
+// The mirror of the above: with no paths at all there is nothing for Paths to say, and it must
+// not invent a warn out of an empty table.
+@MainActor @Test func pathsAreOkWhenTheSocketIsDownAndNothingWasEverLearned() {
+    var state = healthyState()
+    state.connection = .disconnected
+    withTCP(&state) { tcp in
+        tcp.interface.status = .disconnected
+        tcp.transport.interfaces = [:]
+    }
+    let paths = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Paths")
+    #expect(paths.health == .ok)
+    #expect(paths.reason == nil)
+}
+
 // MARK: - Peers (F20 cross-check)
 
 @MainActor @Test func peersWarnWhenAKnownPeerHasNoPath() {
@@ -185,32 +230,149 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     #expect(peers.reason == "2 peers have no path — known but not reachable")
 }
 
-// MARK: - Delivery
-
-@MainActor @Test func deliveryWarnsWhenMessagesArePendingWithNoActiveLink() {
+// M8. `learnedAt` is what separates "announced 3s ago" from "restored from disk 40 days ago",
+// which is exactly the discrimination the F20 cross-check above is about — a peer with no path
+// heard seconds ago is a race, the same peer heard six weeks ago is a ghost. The two ages here
+// are BOTH derived from the injected date; a `Date()` in the builder would render neither.
+@MainActor @Test func peersRowsCarryTheAgeSincePeerWasHeardDerivedFromTheInjectedDate() {
     var state = healthyState()
-    state.node.client.router.pendingDeliveries[Data(repeating: 0x01, count: 32)] =
-        LXMFRouter.PendingDelivery(
-            resend: .opportunistic(destinationHash: peerHash, payload: Data()), attempts: 2)
-    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
-    #expect(delivery.health == .warn)
-    #expect(delivery.reason == "1 message pending with no active link")
+    let freshHash = Data(repeating: 0xB1, count: 16)
+    let staleHash = Data(repeating: 0xB2, count: 16)
+    state.node.client.learnedPeers[freshHash] = LXMFNode.LearnedPeer(
+        displayName: "Fresh", stampCost: 8, supportsCompression: true,
+        learnedAt: fixedDate.addingTimeInterval(-3))
+    state.node.client.learnedPeers[staleHash] = LXMFNode.LearnedPeer(
+        displayName: "Ghost", stampCost: 8, supportsCompression: true,
+        learnedAt: fixedDate.addingTimeInterval(-40 * 86_400))
+    let peers = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Peers")
+    #expect(peers.rows.contains { $0.label == "Fresh" && $0.value.contains("heard=3s") })
+    #expect(peers.rows.contains { $0.label == "Ghost" && $0.value.contains("heard=40d") })
 }
 
-@MainActor @Test func deliveryIsOkWhenPendingMessagesHaveAnActiveLink() {
+// MARK: - Delivery
+//
+// The rule under test (see `deliveryLayer`): a pending send needs a link only if its OWN method
+// needs one; `.direct`/`.propagated` are correlated against their OWN destination; and a
+// destination parked in `.awaitingPath`/`.establishing` warns on its own. One test per clause.
+
+private let messageHash = Data(repeating: 0x01, count: 32)
+private let otherPeerHash = Data(repeating: 0xDD, count: 16)
+
+// CLAUSE 1 — the false warn on every normal send. `pendingDeliveries` is armed by EVERY send
+// including opportunistic, this app sends ONLY opportunistic (`LXMFNode.sendMessage` passes
+// `method: .opportunistic`), and there is no opportunistic delivery receipt — so the entry sits
+// there for all five retry attempts. The old rule made Delivery yellow for ~40-50s after every
+// message on a perfectly healthy app, which is exactly the "yellow means nothing" outcome the
+// screen must avoid.
+@MainActor @Test func deliveryIsOkWhenTheOnlyPendingSendIsOpportunisticAndNeedsNoLink() {
     var state = healthyState()
-    state.node.client.router.pendingDeliveries[Data(repeating: 0x01, count: 32)] =
-        LXMFRouter.PendingDelivery(
-            resend: .opportunistic(destinationHash: peerHash, payload: Data()), attempts: 1)
-    state.node.client.router.directLinks[peerHash] = .active(linkID: Data(repeating: 0x0C, count: 16))
+    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+        resend: .opportunistic(destinationHash: peerHash, payload: Data()), attempts: 2)
     let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
     #expect(delivery.health == .ok)
     #expect(delivery.reason == nil)
 }
 
+// CLAUSE 1, other half — a method that DOES need a link still warns without one.
+@MainActor @Test func deliveryWarnsWhenADirectSendIsPendingWithNoLinkAtAll() {
+    var state = healthyState()
+    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+        resend: .direct(destinationHash: peerHash, data: Data(), asResource: false), attempts: 2)
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .warn)
+    #expect(delivery.reason == "1 message pending with no active link to its destination")
+}
+
+// CLAUSE 1, third method. `.propagated` links to the PROPAGATION NODE, so it needs one too.
+@MainActor @Test func deliveryWarnsWhenAPropagatedSendIsPendingWithNoLinkToThePropagationNode() {
+    var state = healthyState()
+    state.node.client.router.outboundPropagationNode = otherPeerHash
+    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+        resend: .propagated(destinationHash: otherPeerHash, data: Data()), attempts: 1)
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .warn)
+    #expect(delivery.reason == "1 message pending with no active link to its destination")
+}
+
+// CLAUSE 2 — correlation. A link to Alice says nothing about a message stranded to Bob. The old
+// rule asked only "is ANY link active anywhere", so this state read green.
+@MainActor @Test func deliveryWarnsWhenTheActiveLinkIsToADifferentDestinationThanThePendingSend() {
+    var state = healthyState()
+    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+        resend: .direct(destinationHash: peerHash, data: Data(), asResource: false), attempts: 1)
+    state.node.client.router.directLinks[otherPeerHash] =
+        .active(linkID: Data(repeating: 0x0C, count: 16))
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .warn)
+    #expect(delivery.reason == "1 message pending with no active link to its destination")
+}
+
+// CLAUSE 2, the satisfied case: the link is to the pending message's OWN destination.
+@MainActor @Test func deliveryIsOkWhenTheActiveLinkIsToThePendingSendsOwnDestination() {
+    var state = healthyState()
+    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+        resend: .direct(destinationHash: peerHash, data: Data(), asResource: false), attempts: 1)
+    state.node.client.router.directLinks[peerHash] =
+        .active(linkID: Data(repeating: 0x0C, count: 16))
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .ok)
+    #expect(delivery.reason == nil)
+}
+
+// CLAUSE 3 — the false GREEN on the real fault, and the reason this clause cannot be folded into
+// the pending-delivery scan. A `.direct` send with no active link does NOT enter
+// `pendingDeliveries`: it goes to `outboundQueue` (internal to the library, invisible here) and
+// the destination parks at `.awaitingPath`. So `pendingDeliveries` is EMPTY, and a rule keyed
+// off it reported green for the whole duration of a failing send to an unreachable peer.
+@MainActor @Test func deliveryWarnsWhenADestinationIsParkedAwaitingPathWithNothingPending() {
+    var state = healthyState()
+    state.node.client.router.directLinks[peerHash] = .awaitingPath
+    // Precondition: this is the state that used to read green — nothing pending at all.
+    #expect(state.node.client.router.pendingDeliveries.isEmpty)
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .warn)
+    #expect(delivery.reason
+            == "1 destination waiting for a link (awaiting path or establishing)")
+}
+
+@MainActor @Test func deliveryWarnsWhenADestinationIsParkedEstablishingWithNothingPending() {
+    var state = healthyState()
+    state.node.client.router.directLinks[peerHash] = .establishing
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .warn)
+    #expect(delivery.reason
+            == "1 destination waiting for a link (awaiting path or establishing)")
+}
+
 @MainActor @Test func deliveryIsOkWithNothingPending() {
     let delivery = layer(DiagnosticsSnapshot(from: healthyState(), at: fixedDate), "Delivery")
     #expect(delivery.health == .ok)
+    #expect(delivery.reason == nil)
+}
+
+// Both clauses at once must both be STATED. A verdict that drops half its evidence is the
+// wrong-reason failure this screen keeps hitting.
+@MainActor @Test func deliveryStatesBothClausesWhenAStrandedMessageAndAParkedDestinationCoexist() {
+    var state = healthyState()
+    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+        resend: .direct(destinationHash: peerHash, data: Data(), asResource: false), attempts: 3)
+    state.node.client.router.directLinks[peerHash] = .establishing
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .warn)
+    #expect(delivery.reason == "1 message pending with no active link to its destination; "
+                               + "1 destination waiting for a link (awaiting path or establishing)")
+}
+
+// M6. `active (<hex>)` failed the view's hex test because of the parentheses, so the full 32-char
+// link id escaped truncation on screen. `key=value` is what every other layer emits and what
+// `shorten` already handles; parentheses in this snapshot mean PLACEHOLDER, not data.
+@MainActor @Test func deliveryRendersAnActiveLinkAsAKeyValueTokenTheViewCanShorten() {
+    var state = healthyState()
+    let linkID = Data(repeating: 0x0C, count: 16)
+    state.node.client.router.directLinks[peerHash] = .active(linkID: linkID)
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.rows.contains { $0.label == peerHash.hexString
+                                     && $0.value == "active link=\(linkID.hexString)" })
 }
 
 // MARK: - Links
@@ -227,20 +389,54 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
             == ["Socket", "Identity", "Paths", "Peers", "Links", "Delivery"])
 }
 
-// MARK: - Delivery (non-active link does not suppress warn)
-
-// The production check is `if case .active = $0` — a precise enum-case match. A future
-// broadening to `directLinks[dest] != nil` would silently restore the crypto-amplification
-// vector with all tests still green. This test prevents that regression.
-@MainActor @Test func deliveryStillWarnsWhenDirectLinkIsEstablishingNotActive() {
+// C1. `.pending`, not `.handshake`. The two statuses are ROLE-DISJOINT in `LinkSession`:
+// `.handshake` is assigned in exactly one place, inside `case .acceptRequest` behind
+// `guard state.role == .responder`, while `case .establish` never touches `status` — an
+// initiator stays `.pending` until a proof makes it `.active`. The original
+// `role == .initiator && status == .handshake` was therefore UNSATISFIABLE, and the Links layer
+// reported green for every stuck outbound link, which is the one fault it was added to report.
+//
+// The link is built through the library's own initiator initialiser, so if that role/status
+// pairing ever changes this test changes with it rather than pinning a fiction.
+@MainActor @Test func linksWarnWhenAnOutboundLinkIsStillPendingEstablishment() {
     var state = healthyState()
-    state.node.client.router.pendingDeliveries[Data(repeating: 0x01, count: 32)] =
-        LXMFRouter.PendingDelivery(
-            resend: .opportunistic(destinationHash: peerHash, payload: Data()), attempts: 2)
-    state.node.client.router.directLinks[peerHash] = .establishing
-    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
-    #expect(delivery.health == .warn)
-    #expect(delivery.reason == "1 message pending with no active link")
+    withTCP(&state) { tcp in
+        var link = LinkSession.State(
+            initiatorTo: Identity(), destinationHash: peerHash, interfaceID: tcp.interfaceID)
+        link.linkID = Data(repeating: 0x0C, count: 16)
+        link.requestedAt = fixedDate.addingTimeInterval(-12).timeIntervalSince1970
+        tcp.links.append(link)
+    }
+    // Precondition: the library really does leave a freshly-requested initiator in `.pending`.
+    #expect(state.node.client.endpoint.links.first?.role == .initiator)
+    #expect(state.node.client.endpoint.links.first?.status == .pending)
+
+    let links = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Links")
+    #expect(links.health == .warn)
+    #expect(links.reason == "1 outbound link still establishing")
+    // A pending initiator has nil `activatedAt`/`lastInbound`/`lastData`, so `requestedAt` is
+    // the ONLY age it has — without it the row reads `up=- in=- data=-` and cannot tell
+    // "in flight" from "about to blow the 15s deadline".
+    #expect(links.rows.contains { $0.value.contains("req=12s") })
+}
+
+// The other half of the role/status split: a responder in `.pending` is a link SOMEONE ELSE is
+// establishing with us, has no 15s outbound deadline of ours attached, and must not warn.
+// A predicate that dropped the role clause would pass the test above and fail here.
+@MainActor @Test func linksAreOkWhenAPendingLinkIsInboundNotOutbound() {
+    var state = healthyState()
+    withTCP(&state) { tcp in
+        var link = LinkSession.State(
+            responderFor: Identity(), destinationHash: peerHash, interfaceID: tcp.interfaceID)
+        link.linkID = Data(repeating: 0x0D, count: 16)
+        tcp.links.append(link)
+    }
+    #expect(state.node.client.endpoint.links.first?.role == .responder)
+    #expect(state.node.client.endpoint.links.first?.status == .pending)
+
+    let links = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Links")
+    #expect(links.health == .ok)
+    #expect(links.reason == nil)
 }
 
 // MARK: - Export
@@ -271,34 +467,140 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     #expect(peerHash.hexString.count == 32)
 }
 
-// NOT a correctness test — a safety one. `LinkSession.State` carries `sessionKey` and an
-// `ephemeral` keypair, and this text is designed to be pasted into bug reports. This is what
-// stops a later "just render all the fields" change from leaking key material.
+// NOT a correctness test — a safety one, and it pins the CLASS rather than one field. This text
+// is designed to be pasted into bug reports, and the state it is built from is full of key
+// material on more than one layer:
 //
-// The link is built with a REAL LinkSession.State and asserted to be present before the
-// no-leak check. A safety test that silently exercises an empty collection passes for the
-// wrong reason and is worse than no test at all.
-@MainActor @Test func textNeverContainsALinkSessionKey() {
+//   * `LinkSession.State.sessionKey`      — the live link's symmetric key
+//   * `LinkSession.State.ephemeral`       — the per-link keypair (private half)
+//   * `LinkSession.State.owningIdentity`  — our LONG-TERM local private key for a served
+//                                           destination; worse to leak than an ephemeral
+//   * `InterfaceProfile.ifac`             — `IFAC`'s derived network key and Ed25519 seed,
+//                                           reachable from `socketLayer` via `interfaces`
+//
+// Each gets a DISTINCT recognisable pattern so a failure names which one leaked. Every plant is
+// asserted PRESENT before absence is asserted of the output: a safety test that silently
+// exercises an empty collection passes for the wrong reason and is worse than no test at all.
+@MainActor @Test func textCarriesNoKeyMaterialFromAnyLayer() {
     var state = healthyState()
-    let secret = Data(repeating: 0x5E, count: 32)
+    let sessionKey = Data(repeating: 0x5E, count: 32)
+    let ephemeralPrivate = Data(repeating: 0xE1, count: 64)
+    let owningPrivate = Data(repeating: 0x0D, count: 64)
+    let linkID = Data(repeating: 0x0C, count: 16)
+
+    // `IFAC` derives and privately stores its key; recompute the same derivation here rather
+    // than pretend a planted constant, so the bytes asserted absent are the REAL ones.
+    //
+    // HONEST LIMIT, so nobody over-reads this: `IFAC.key` and `IFAC.seed` are `private let` in
+    // ReTiCA, so today NO change to this file could leak those bytes and the two byte-level
+    // `#expect`s below cannot be falsified by mutation. They are kept for the day that storage
+    // becomes reachable. What IS live for the IFAC clause is the field-NAME check at the end:
+    // rendering `ifac=…` from `socketLayer` fails this test.
+    let ifacName = "diagnostics-deny-list-net"
+    let ifacPass = "diagnostics-deny-list-key"
+    let ifacOrigin = Crypto.fullHash(Data(ifacName.utf8)) + Crypto.fullHash(Data(ifacPass.utf8))
+    let ifacKey = Crypto.hkdf(length: 64, derivedFrom: Crypto.fullHash(ifacOrigin),
+                              salt: IFAC.salt, context: nil)
+    let ifacSeed = Data(ifacKey.suffix(32))
+
+    guard let ephemeral = Identity(privateKey: ephemeralPrivate),
+          let owning = Identity(privateKey: owningPrivate),
+          let ifac = IFAC(networkName: ifacName, passphrase: ifacPass, size: 16)
+    else { fatalError("fixture could not build its key material") }
+
     withTCP(&state) { tcp in
         var link = LinkSession.State(
-            responderFor: Identity(),
+            responderFor: owning,
             destinationHash: peerHash,
-            interfaceID: tcp.interfaceID)
-        link.sessionKey = secret
+            interfaceID: tcp.interfaceID,
+            ephemeral: ephemeral)
+        link.sessionKey = sessionKey
         link.status = .active
-        link.linkID = Data(repeating: 0x0C, count: 16)
+        link.linkID = linkID
         tcp.links.append(link)
+
+        var profile = InterfaceProfile.tcp
+        profile.ifac = ifac
+        tcp.transport.interfaces[tcp.interfaceID] = profile
     }
 
     let snapshot = DiagnosticsSnapshot(from: state, at: fixedDate)
-    // Precondition: the fixture really does contain a link carrying the secret.
-    #expect(state.node.client.endpoint.links.count == 1)
-    #expect(snapshot.layers.first { $0.title == "Links" }?.rows.first?.label
-            == Data(repeating: 0x0C, count: 16).hexString)
 
+    // PRECONDITIONS — every secret is really in the state the snapshot was built from, and the
+    // layers that could leak them really did render something.
+    let links = state.node.client.endpoint.links
+    #expect(links.count == 1)
+    #expect(links.first?.sessionKey == sessionKey)
+    #expect(links.first?.ephemeral.privateKey == ephemeralPrivate)
+    #expect(links.first?.owningIdentity?.privateKey == owningPrivate)
+    #expect(state.node.client.endpoint.interfaces.values.contains { $0.ifac != nil })
+    #expect(layer(snapshot, "Links").rows.first?.label == linkID.hexString)
+    #expect(layer(snapshot, "Socket").rows.contains { $0.value.contains("tcp") })
+
+    // The link id IS rendered, so the text is not trivially free of hex.
     let text = snapshot.text
-    #expect(!text.contains(secret.hexString))
-    #expect(!text.lowercased().contains("sessionkey"))
+    #expect(text.contains(linkID.hexString))
+
+    // No secret BYTES, in any of the forms this file emits.
+    #expect(!text.contains(sessionKey.hexString))
+    #expect(!text.contains(ephemeralPrivate.hexString))
+    #expect(!text.contains(Data(ephemeralPrivate.prefix(32)).hexString))
+    #expect(!text.contains(owningPrivate.hexString))
+    #expect(!text.contains(Data(owningPrivate.prefix(32)).hexString))
+    #expect(!text.contains(ifacKey.hexString))
+    #expect(!text.contains(ifacSeed.hexString))
+
+    // No secret FIELD NAMES either — a leak usually arrives labelled.
+    let lowered = text.lowercased()
+    for banned in ["sessionkey", "ephemeral", "owningidentity", "privatekey", "ifac", "seed"] {
+        #expect(!lowered.contains(banned), "text names the deny-listed field \(banned)")
+    }
+}
+
+// M7. `peer.displayName` is UNAUTHENTICATED announce data — the library flags `LearnedPeer` as
+// "Unauthenticated, potentially hostile" — and `LXMFAnnounceData` trims it with `.whitespaces`,
+// which does NOT include newlines. So a hostile peer could embed `\n` and forge whole lines in
+// an artifact people paste into bug reports and read as evidence.
+@MainActor @Test func aHostilePeerDisplayNameCannotForgeLinesInTheExport() {
+    var state = healthyState()
+    let forged = "SOCKET  [ok] all good"
+    state.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
+        displayName: "Mallory\n  \(forged)", stampCost: 8, supportsCompression: true,
+        learnedAt: fixedDate)
+
+    var benign = healthyState()
+    benign.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
+        displayName: "Mallory", stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+
+    let text = DiagnosticsSnapshot(from: state, at: fixedDate).text
+    let control = DiagnosticsSnapshot(from: benign, at: fixedDate).text
+
+    // Precondition: the hostile name really did reach a row label.
+    #expect(layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Peers")
+            .rows.contains { $0.label.contains("\n") })
+
+    // Same number of lines as the benign rendering — the newline bought no structure.
+    #expect(text.split(separator: "\n", omittingEmptySubsequences: false).count
+            == control.split(separator: "\n", omittingEmptySubsequences: false).count)
+    #expect(!text.contains("\n  \(forged)"))
+    // Escaped, not dropped: the reader still sees exactly what the peer claimed to be called.
+    #expect(text.contains("Mallory\\n"))
+    #expect(text.contains(forged))
+}
+
+// M7, second half. `String.padding(toLength:)` counts UTF-16 while `count` counts Characters, so
+// `padding(toLength: max(label.count, 20))` silently TRUNCATED any label whose UTF-16 length
+// exceeded its Character count — 25 emoji came out as 12 emoji and a replacement character.
+@MainActor @Test func aMultiByteLabelIsPaddedNotTruncatedInTheExport() {
+    var state = healthyState()
+    let name = String(repeating: "🙂", count: 25)
+    // Precondition: this is a label whose UTF-16 length exceeds max(Character count, 20).
+    #expect(name.count == 25)
+    #expect(name.utf16.count == 50)
+    state.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
+        displayName: name, stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+
+    let text = DiagnosticsSnapshot(from: state, at: fixedDate).text
+    #expect(text.contains(name))
+    #expect(!text.contains("\u{FFFD}"))
 }
