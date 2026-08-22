@@ -1483,3 +1483,61 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(capturedDestinations[peerHash] == nil,
             "Expired destination must not appear in rehydrateLearnedDestinations payload")
 }
+
+/// After restart, a persisted path that is now reachable (interface registered) must unlock Send —
+/// i.e. land in `reachablePeers` — WITHOUT any inbound announce. This is the UI-gate assertion the
+/// sibling test `learnedPathSurvivesRestartAndIsReachableWithoutAnnounce` deliberately does NOT make
+/// (that one proves only transport-level routability).
+@MainActor @Test func persistedPathUnlocksSendOnInterfaceConnect() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let peer = Identity()
+    let peerDeliveryHash = LXMessage.deliveryHash(identityHash: peer.hash)
+    let peerDeliveryHex = peerDeliveryHash.hexString
+
+    let destination = LearnedDestination(
+        identity: peer,
+        appData: nil,
+        ratchet: nil,
+        interfaceID: InterfaceID("tcp"),
+        hops: 1,
+        nextHop: nil,
+        announceEmitted: 1700000000,
+        learnedAt: Date(timeIntervalSince1970: 1700000000)
+    )
+
+    let store = makeStore(db, identity: me)
+
+    // Rehydrate the persisted path into Transport.learned (no inbound announce, no interface yet).
+    await store.send(.node(.client(.endpoint(.transport(
+        .rehydrateLearnedDestinations([peerDeliveryHash: destination]))))))
+
+    // Precondition: the path is in learned but Send is still gated (interface not registered).
+    #expect(!store.state.reachablePeers.contains(peerDeliveryHex),
+            "before an interface registers, the rehydrated path is not yet reachable")
+
+    // The interface registers → paths become usable → seed runs inside the interfaceConnected handler.
+    await store.send(.node(.client(.endpoint(.transport(
+        .interfaceConnected(InterfaceID("tcp"), .tcp))))))
+
+    #expect(store.state.reachablePeers.contains(peerDeliveryHex),
+            "a persisted, now-reachable path must unlock Send without an inbound announce")
+
+    await store.skipReceivedActions(strict: false)
+    await store.finish()
+}
+
+/// With no persisted path, connecting must NOT seed any phantom peer — Send stays gated.
+@MainActor @Test func noPersistedPathLeavesSendGatedOnConnect() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+
+    await store.send(.node(.client(.endpoint(.transport(
+        .interfaceConnected(InterfaceID("tcp"), .tcp))))))
+
+    #expect(store.state.reachablePeers.isEmpty,
+            "no persisted path → nothing to seed → Send stays gated after connect")
+
+    await store.skipReceivedActions(strict: false)
+    await store.finish()
+}

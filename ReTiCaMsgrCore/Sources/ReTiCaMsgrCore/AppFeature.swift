@@ -294,6 +294,11 @@ public struct AppFeature {
 
             case .node(.client(.endpoint(.transport(.interfaceConnected)))):
                 state.connection = .connected
+                // Restore the Send gate for peers whose persisted path is now usable (interface just registered).
+                // The Transport Scope has already run (child reducers reduce before this Reduce body — see the
+                // pathLearned comment), so `endpoint.interfaces` already contains the new interface here.
+                let learnedForSeed = state.node.client.endpoint.learned
+                seedReachablePeers(&state, from: learnedForSeed)
                 // setDisplayName must come BEFORE registerDelivery so the registration announce
                 // carries the name (registerDelivery packs LXMFAnnounceData from state.displayName
                 // at call time; TCA processes .send effects in FIFO order).
@@ -754,6 +759,22 @@ private func syncEndpointHostPort(_ state: inout AppFeature.State) {
         }
     } else {
         state.node.client.endpoint.tcpServer = nil
+    }
+}
+
+// Seed `reachablePeers` (the Send gate) from learned destinations that are reachable RIGHT NOW:
+// present in `destinations` AND whose interface is currently registered. `interfaces` is EMPTY
+// whenever the socket is down (every interface deregisters), so this no-ops until an interface
+// registers — the same reachability test `reachableLearned` uses (ReTiCA Transport.swift:159-163)
+// and DiagnosticsSnapshot's pathsLayer uses. Idempotent (Set insert); safe to call from multiple
+// sites. Read `interfaces` into a local FIRST so we are not reading and mutating `state` in the
+// same access.
+private func seedReachablePeers(_ state: inout AppFeature.State,
+                                from destinations: [Data: LearnedDestination]) {
+    let interfaces = state.node.client.endpoint.interfaces
+    guard !interfaces.isEmpty else { return }
+    for (hash, entry) in destinations where interfaces[entry.interfaceID] != nil {
+        state.reachablePeers.insert(hash.hexString)
     }
 }
 
