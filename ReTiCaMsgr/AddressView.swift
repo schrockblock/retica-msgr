@@ -11,6 +11,7 @@ import ReTiCaMsgrCore
 
 struct AddressView: View {
     let store: StoreOf<AppFeature>
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -38,6 +39,11 @@ struct AddressView: View {
             }
             .padding(.top, 32)
             .navigationTitle("Address")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 

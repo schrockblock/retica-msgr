@@ -13,6 +13,7 @@ struct SettingsView: View {
     @Bindable var store: StoreOf<AppFeature>
     @State private var pnInput: String = ""
     @State private var nameInput: String = ""
+    @State private var showingAddress = false
 
     private var connectionColor: Color {
         switch store.connection {
@@ -124,6 +125,17 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingAddress = true } label: {
+                        Image(systemName: "person.crop.circle")
+                    }
+                    .accessibilityLabel("My Address")
+                }
+            }
+            .sheet(isPresented: $showingAddress) {
+                AddressView(store: store)
+            }
             // Seed the field from persisted state, so opening Settings with a name set does not
             // show a blank box whose Save button would clear it. (The propagation-node field above
             // deliberately starts blank — pasting a fresh hex address is its normal use — but a
