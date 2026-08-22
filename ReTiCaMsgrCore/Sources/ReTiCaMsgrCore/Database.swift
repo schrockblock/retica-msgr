@@ -26,6 +26,25 @@ public enum AppDatabase {
                 t.column("storedAt", .datetime).notNull()
             }
         }
+        m.registerMigration("createLearnedDestinations") { db in
+            // Learned transport paths: mirrors Transport.State.learned so a cold start can route
+            // to known destinations without waiting for re-announces. Pruned at launch (before the
+            // read) on the same 7-day cutoff as Transport.maintenanceTick. Write policy differs
+            // from the dedup tables: debounced at ~30 s (not per-event) because path updates are
+            // continuous on a meshed network. A flush fires on applicationDidEnterBackground /
+            // applicationWillTerminate.
+            try db.create(table: "learnedDestinationRows") { t in
+                t.primaryKey("destinationHashHex", .text).notNull()
+                t.column("publicKeyHex", .text).notNull()
+                t.column("appDataHex", .text)           // nullable — absent when announce has no app-data
+                t.column("ratchetHex", .text)           // nullable — absent when no ratchet
+                t.column("interfaceId", .text).notNull()
+                t.column("hops", .integer).notNull()
+                t.column("nextHopHex", .text)           // nullable — nil if directly heard
+                t.column("announceEmitted", .integer).notNull()
+                t.column("learnedAt", .datetime).notNull()
+            }
+        }
         m.registerMigration("createDedupPersistence") { db in
             // Seen-message hashes: mirrors LXMFRouter.State.seen (RingSet capacity 10_000).
             // Pruned to the ring capacity on every write (oldest pruned first, matching what the

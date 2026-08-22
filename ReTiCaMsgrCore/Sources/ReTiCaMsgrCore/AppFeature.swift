@@ -71,6 +71,9 @@ public struct AppFeature {
         /// The app returned to the foreground. iOS tears the socket down while suspended, so this
         /// re-dials rather than trusting a reconnect timer that could not run while suspended.
         case foregrounded
+        /// The app entered the background (UIApplication.didEnterBackgroundNotification). Used to
+        /// flush the debounced learned-destination write before the process may be killed by the OS.
+        case backgrounded
         case connectTapped
         case disconnectTapped
         case openConversation(String)
@@ -93,12 +96,39 @@ public struct AppFeature {
         /// Restore the learned-peer table (stamp costs, display names) from the previous session.
         /// Sent on launch alongside `.rehydrateDedup`.
         case rehydrateLearnedPeers([Data: LXMFNode.LearnedPeer])
+        /// Restore `Transport.State.learned` from the previous session so that after a cold start
+        /// the node can route to known destinations without waiting for re-announces.
+        ///
+        /// Sent on launch after pruning and reading the `learnedDestinationRows` table. Forwarded to
+        /// Transport via `.node(.client(.endpoint(.tcp(.transport(.rehydrateLearnedDestinations)))))`.
+        case rehydrateLearnedDestinations([Data: LearnedDestination])
+        /// The debounce timer fired — write the current `learned` table to the database.
+        ///
+        /// Internal: only ever sent by the 30 s debounce effect or by `.backgrounded` flush.
+        /// Not part of the public-facing action surface; callers should send `.backgrounded` for
+        /// an explicit flush.
+        case _flushLearnedDestinations
         case node(LXMFServiceNode.Action)
         case binding(BindingAction<State>)
     }
 
+    /// Effect cancel IDs for this reducer.
+    private enum CancelID: Hashable {
+        /// The running debounce timer for learned-destination persistence.
+        /// Cancelled and restarted on every `.pathLearned`; cancelled on `.backgrounded` flush.
+        case learnedDebounce
+    }
+
     @Dependency(\.defaultDatabase) var database
     @Dependency(\.date) var date
+    @Dependency(\.continuousClock) var clock
+
+    /// Path expiry matching `Transport.pathExpiry` (internal, not accessible from the app).
+    ///
+    /// `Transport.pathExpiry` is `internal` (Swift default), so the app cannot reference it
+    /// directly. This constant must be kept in sync with the library value. Value: 7 days.
+    /// RNS reference: `DESTINATION_TIMEOUT = 60*60*24*7` (Transport.py:91, stock 1.4.2).
+    static let pathExpiry: TimeInterval = 60 * 60 * 24 * 7     // 604800 s — matches Transport.pathExpiry
 
     /// Request path for the public-key exchange: a peer answers with its 64-byte public key
     /// (`Identity.publicKey`). The key is already public — every delivery announce carries it,
@@ -177,6 +207,35 @@ public struct AppFeature {
                             )
                         }
                         await send(.rehydrateLearnedPeers(peers))
+                    },
+                    .run { [database, expiryCutoff = date.now.addingTimeInterval(-AppFeature.pathExpiry)] send in
+                        // Restore the learned transport-path table so routing works immediately after a
+                        // cold start, without waiting for announces to re-arrive. iOS kills are routine
+                        // (every background suspend is a candidate), so the dead window without this
+                        // slice is constant on mobile.
+                        //
+                        // **Prune BEFORE the read.** `learned` is swept by `Transport.maintenanceTick`
+                        // on the same 7-day cutoff. Without this delete a destination heard once,
+                        // 8 days ago, is re-read and re-skipped at rehydration forever — in-memory
+                        // growth is collected by maintenanceTick while disk growth is not, which is
+                        // the half that actually accumulates on a device. This mirrors the fix applied
+                        // to `LearnedPeerRow` in the previous slice.
+                        //
+                        // The cutoff is computed in the capture list, from the `\.date` dependency:
+                        // reading `date.now` inside the @Sendable closure would capture `self`.
+                        let cutoff = expiryCutoff
+                        let destRows = try await database.write { db in
+                            try LearnedDestinationRow
+                                .where { $0.learnedAt < cutoff }
+                                .delete().execute(db)
+                            return try LearnedDestinationRow.all.fetchAll(db)
+                        }
+                        var destinations: [Data: LearnedDestination] = [:]
+                        for row in destRows {
+                            guard let pair = row.toLearnedDestination() else { continue }
+                            destinations[pair.hash] = pair.destination
+                        }
+                        await send(.rehydrateLearnedDestinations(destinations))
                     }
                 )
 
@@ -189,6 +248,29 @@ public struct AppFeature {
                 state.connection = .connecting
                 syncEndpointHostPort(&state)
                 return .send(.node(.client(.endpoint(.start))))
+
+            case .backgrounded:
+                // Flush the learned-destination table immediately instead of waiting out the
+                // debounce interval. On iOS, applicationDidEnterBackground gives the app ~5 s
+                // before the process is suspended; the debounce timer cannot run while suspended,
+                // so without this flush up to ~30 s of path learning is lost on every background
+                // cycle. Cancel the pending debounce so it doesn't fire redundantly on resume.
+                let learnedToFlush = state.node.client.endpoint.learned
+                return .merge(
+                    .cancel(id: CancelID.learnedDebounce),
+                    .run { [database] _ in
+                        try await writeLearnedDestinations(learnedToFlush, to: database)
+                    }
+                )
+
+            case ._flushLearnedDestinations:
+                // Debounce timer fired: write the current learned table. The table may have grown
+                // since the timer was armed; we always write the latest snapshot, so rapid
+                // announces are coalesced into one write per 30 s window.
+                let learnedToWrite = state.node.client.endpoint.learned
+                return .run { [database] _ in
+                    try await writeLearnedDestinations(learnedToWrite, to: database)
+                }
 
             case .connectTapped:
                 state.connection = .connecting
@@ -353,7 +435,25 @@ public struct AppFeature {
                     peerToStore = nil
                 }
                 state.reachablePeers.insert(h.hexString)
-                guard let (hashKey, learned) = peerToStore else { return .none }
+
+                // Arm (or restart) the debounce timer for the learned-destination table. ALL
+                // pathLearned events touch Transport.State.learned (that is what pathLearned means),
+                // so we arm the debounce unconditionally here — even when learnedPeers has no entry
+                // (not a delivery-destination announce). The debounce writes the ENTIRE learned
+                // table once the interval elapses, so rapid announces are coalesced into one write.
+                //
+                // Write policy: debounced, not per-event. See LearnedDestinationRow for the full
+                // ruling. The contrast with LearnedPeerRow (per-event) is intentional and explained
+                // there: path updates are continuous on a meshed network; peer announces are not.
+                let debounceEffect: Effect<Action> = .run { [clock] send in
+                    try await clock.sleep(for: .seconds(30))
+                    await send(._flushLearnedDestinations)
+                }
+                .cancellable(id: CancelID.learnedDebounce, cancelInFlight: true)
+
+                guard let (hashKey, learned) = peerToStore else {
+                    return debounceEffect
+                }
                 let hashHex = hashKey.hexString
                 let row = LearnedPeerRow(
                     destinationHashHex: hashHex,
@@ -362,12 +462,15 @@ public struct AppFeature {
                     supportsCompression: learned.supportsCompression,
                     learnedAt: learned.learnedAt
                 )
-                return .run { [database] _ in
-                    try await database.write { db in
-                        try LearnedPeerRow.where { $0.destinationHashHex.eq(hashHex) }.delete().execute(db)
-                        try LearnedPeerRow.insert { row }.execute(db)
+                return .merge(
+                    debounceEffect,
+                    .run { [database] _ in
+                        try await database.write { db in
+                            try LearnedPeerRow.where { $0.destinationHashHex.eq(hashHex) }.delete().execute(db)
+                            try LearnedPeerRow.insert { row }.execute(db)
+                        }
                     }
-                }
+                )
 
             case let .node(.client(.delegate(.messageReceived(m, validated)))):
                 let incomingPeer = m.sourceHash.hexString
@@ -562,6 +665,17 @@ public struct AppFeature {
                 // read completed.
                 return .send(.node(.client(.rehydrateLearnedPeers(peers))))
 
+            case let .rehydrateLearnedDestinations(destinations):
+                // Forward to Transport via the full action path. The Transport reducer sweeps
+                // expired and future-dated entries in this same pass (matching the prune done at
+                // launch) and never overwrites a fresher live entry — so an announce that arrived
+                // before this DB read completes is not displaced.
+                //
+                // Path: AppFeature → LXMFServiceNode → LXMFNode → TransportEndpoint → TCPEndpoint
+                //       → Transport.rehydrateLearnedDestinations
+                guard !destinations.isEmpty else { return .none }
+                return .send(.node(.client(.endpoint(.tcp(.transport(.rehydrateLearnedDestinations(destinations)))))))
+
             case let .node(.client(.router(.messagesDownloaded(transientIds)))):
                 // Persist the newly-downloaded transient IDs so a cold start doesn't re-request
                 // them on the next sync. An empty batch requires no write.
@@ -613,6 +727,29 @@ private func reloadThread(_ database: any DatabaseWriter, _ peerHex: String, _ s
         try Message.where { $0.peerHex.eq(peerHex) }.order(by: \.timestamp).fetchAll($0)
     }
     await send(.threadLoaded(rows))
+}
+
+/// Persist the full `learned` snapshot to `learnedDestinationRows`, replacing the table atomically.
+///
+/// Called by both the debounce path (`._flushLearnedDestinations`) and the immediate-flush path
+/// (`.backgrounded`). Writing the entire current snapshot — not an incremental delta — is simpler
+/// and correct: the table always reflects exactly what the in-memory state held at write time,
+/// regardless of how many announces arrived between writes.
+///
+/// Write policy: this is the debounced write for learned destinations, NOT the per-event write
+/// used for `LearnedPeerRow` and `SeenHashRow`. See `LearnedDestinationRow` for the ruling.
+/// Short form: path updates are continuous on a meshed network; per-event writes here would mean
+/// continuous disk traffic. The debounce caps that at one write per 30 s.
+private func writeLearnedDestinations(_ learned: [Data: LearnedDestination],
+                                      to database: any DatabaseWriter) async throws {
+    let rows = learned.compactMap { hash, dest in LearnedDestinationRow(hash: hash, destination: dest) }
+    try await database.write { db in
+        // Full replace: delete all rows, then insert the current snapshot.
+        try LearnedDestinationRow.all.delete().execute(db)
+        for row in rows {
+            try LearnedDestinationRow.insert { row }.execute(db)
+        }
+    }
 }
 
 /// Prune `seenHashRows` to `RingSet.capacity` (10 000), keeping the newest rows.
