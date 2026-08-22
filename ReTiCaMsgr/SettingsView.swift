@@ -75,6 +75,20 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Direct Connections") {
+                    // Standard Toggle in a Form row: the whole row is already hittable, so no
+                    // explicit contentShape is needed here.
+                    Toggle("Listen for direct connections", isOn: $store.listenEnabled)
+                    TextField("Listen port", value: $store.listenPort, format: .number)
+                        .keyboardType(.numberPad)
+                        .disabled(!store.listenEnabled)
+                    Text("Lets other Reticulum nodes on your local Wi-Fi connect directly to this "
+                         + "device — anyone on the same network can reach it. Off by default. "
+                         + "Takes effect on the next Connect.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Run as Propagation Node") {
                     Toggle("Act as a propagation node", isOn: Binding(
                         get: { store.nodeModeEnabled },

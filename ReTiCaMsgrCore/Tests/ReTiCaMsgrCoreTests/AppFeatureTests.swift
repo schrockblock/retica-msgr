@@ -32,6 +32,14 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
             send: { _ in },
             close: { }
         )
+        // The opt-in listener, when enabled, starts a TCPListener. A never-emitting stream keeps
+        // the test hermetic (no real socket) while letting the listen effect start harmlessly.
+        $0.tcpListener = TCPListener(
+            listen: { _ in AsyncStream { _ in } },
+            send: { _, _ in },
+            close: { _ in },
+            stop: { }
+        )
     }
     store.exhaustivity = .off
     return store
@@ -85,12 +93,42 @@ private let peerB = String(repeating: "b", count: 32)
     await store.send(.onLaunch)
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     #expect(store.state.connection == .connecting)
-    guard case .tcp(let tcp) = store.state.node.client.endpoint else {
-        Issue.record("expected a TCP endpoint")
+    guard let tcp = store.state.node.client.endpoint.tcpClient else {
+        Issue.record("expected a TCP-client endpoint slot")
         return
     }
     #expect(tcp.interface.host == "gaefu.ddns.net")
     #expect(tcp.interface.port == 4243)
+}
+
+/// The listener is OPT-IN and OFF by default: a fresh state that has never toggled it must not
+/// grow a `tcpServer` slot on connect. The dialling-only client never listened, and that default
+/// is the mitigation for the unbounded-listener LAN surface (no admission control yet — Tier 7).
+@MainActor @Test func onLaunchDoesNotAddListenerSlotWhenListenDisabled() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())   // listenEnabled defaults false
+    await store.send(.onLaunch)
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    #expect(store.state.node.client.endpoint.tcpServer == nil)
+}
+
+/// Enabling the listener adds a `tcpServer` slot bound to the DEDICATED `listenPort` (not the dial
+/// `port`) when Settings are synced at connect time. The slot is what lets other LAN nodes dial
+/// THIS device directly.
+@MainActor @Test func enablingListenAddsListenerSlotOnDedicatedPortAtConnect() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { state in
+        state.$listenEnabled.withLock { $0 = true }
+        state.$listenPort.withLock { $0 = 5151 }
+        state.$port.withLock { $0 = 4243 }   // dial port is DIFFERENT — must not be reused
+    }
+    await store.send(.onLaunch)
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    guard let server = store.state.node.client.endpoint.tcpServer else {
+        Issue.record("expected a tcpServer slot when listening is enabled")
+        return
+    }
+    #expect(server.interface.port == 5151)   // the LISTEN port, not the dial port 4243
 }
 
 @MainActor
@@ -260,7 +298,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store = makeStore(db, identity: Identity()) { s in
         s.$propagationNodeHex.withLock { $0 = pnHex }
     }
-    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
     await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
     await store.receive { if case .node(.client(.setPropagationNode)) = $0 { return true }; return false }
     await store.receive { if case .node(.client(.syncFromPropagationNode)) = $0 { return true }; return false }
@@ -305,7 +343,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store = makeStore(db, identity: Identity()) { state in
         state.$displayName.withLock { $0 = "" }
     }
-    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
     await store.receive { action in
         if case let .node(.client(.setDisplayName(name, stampCost))) = action {
             #expect(name == nil)           // empty displayName → nil, not ""
@@ -323,7 +361,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store2 = makeStore(db, identity: Identity()) { state in
         state.$displayName.withLock { $0 = "Alice" }
     }
-    await store2.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    await store2.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
     await store2.receive { action in
         if case let .node(.client(.setDisplayName(name, stampCost))) = action {
             #expect(name == "Alice")
@@ -342,7 +380,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store3 = makeStore(db, identity: Identity()) { state in
         state.$displayName.withLock { $0 = "   " }
     }
-    await store3.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    await store3.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
     await store3.receive { action in
         if case let .node(.client(.setDisplayName(name, stampCost))) = action {
             #expect(name == nil)
@@ -425,7 +463,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 @MainActor @Test func interfaceConnectedWithoutPNDoesNotConfigure() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
-    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
     await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
     await store.finish()
     await store.skipReceivedActions(strict: false)
@@ -468,7 +506,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 @MainActor @Test func persistedNodeModeIsAppliedOnConnect() async throws {
     let db = try AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity()) { $0.$nodeModeEnabled.withLock { $0 = true } }
-    await store.send(.node(.client(.endpoint(.tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
     await store.receive { if case .node(.setNodeMode(true)) = $0 { return true }; return false }
 }
 
@@ -1051,7 +1089,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
     await store.send(.node(.client(.endpoint(
-        .tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+        .transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
     await store.receive { action in
         if case let .node(.client(.endpoint(.registerRequestHandler(path: p, policy: pol)))) = action {
             #expect(p == AppFeature.publicKeyRequestPath)
@@ -1084,8 +1122,8 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     }
     // The dial must use the CURRENT settings, not whatever State.init was built with — the same
     // reason `.onLaunch` and `.connectTapped` sync them.
-    guard case let .tcp(tcp) = store.state.node.client.endpoint else {
-        Issue.record("expected a TCP endpoint")
+    guard let tcp = store.state.node.client.endpoint.tcpClient else {
+        Issue.record("expected a TCP-client endpoint slot")
         return
     }
     #expect(tcp.interface.host == "node.example")
@@ -1096,7 +1134,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
     await store.send(.node(.client(.endpoint(
-        .tcp(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp)))))))
+        .transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
     #expect(store.state.connection == .connected)
 
     // Re-dialling a healthy connection would tear down every live link on each app switch.
@@ -1174,7 +1212,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     // to arm the debounce. (pathLearned alone does NOT put anything in Transport.learned in the
     // test environment — that requires a real announce over the wire. The rehydrate is used only
     // to pre-seed the learned table so the flush has something to write.)
-    await store1.send(.node(.client(.endpoint(.tcp(.transport(.rehydrateLearnedDestinations([peerDeliveryHash: destination])))))))
+    await store1.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations([peerDeliveryHash: destination]))))))
     await store1.send(.node(.client(.endpoint(.delegate(.pathLearned(destinationHash: peerDeliveryHash, hops: 1))))))
 
     // Advance the clock 30 s to fire the debounce.
@@ -1220,11 +1258,11 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     // In the test environment (no real TCP) the send succeeds routing-wise but fails at
     // interfaceUnavailable (no physical connection). We check for NOT notLearned.
     let sentPlaintext = Data("hello from session 2".utf8)
-    await store2.send(.node(.client(.endpoint(.tcp(.transport(.send(destinationHash: peerDeliveryHash, plaintext: sentPlaintext)))))))
+    await store2.send(.node(.client(.endpoint(.transport(.send(destinationHash: peerDeliveryHash, plaintext: sentPlaintext))))))
     var gotNotLearned = false
     var gotReachable = false
     await store2.receive { action in
-        if case let .node(.client(.endpoint(.tcp(.transport(.delegate(.sendFailed(dest, reason))))))) = action,
+        if case let .node(.client(.endpoint(.transport(.delegate(.sendFailed(dest, reason)))))) = action,
            dest == peerDeliveryHash {
             if reason == .notLearned { gotNotLearned = true }
             if reason == .interfaceUnavailable { gotReachable = true }
@@ -1282,7 +1320,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         hops: 1, nextHop: nil, announceEmitted: 0,
         learnedAt: Date(timeIntervalSince1970: 1700000000)
     )
-    await store.send(.node(.client(.endpoint(.tcp(.transport(.rehydrateLearnedDestinations([peerHash: destination])))))))
+    await store.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations([peerHash: destination]))))))
 
     // t=0: send event A — starts a 30 s debounce timer.
     let hashA = Data(repeating: 0xAA, count: 16)
@@ -1358,7 +1396,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         announceEmitted: 1700000000,
         learnedAt: Date(timeIntervalSince1970: 1700000000)
     )
-    await store.send(.node(.client(.endpoint(.tcp(.transport(.rehydrateLearnedDestinations([peerHash: destination])))))))
+    await store.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations([peerHash: destination]))))))
     // Arm the debounce (30 s timer running).
     await store.send(.node(.client(.endpoint(.delegate(.pathLearned(destinationHash: peerHash, hops: 1))))))
 

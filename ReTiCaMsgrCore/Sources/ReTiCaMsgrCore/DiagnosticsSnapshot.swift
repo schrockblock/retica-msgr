@@ -76,7 +76,7 @@ extension DiagnosticsSnapshot {
 
         var status = "n/a"
         var dialing = "n/a"
-        if case let .tcp(tcp) = endpoint {
+        if let tcp = endpoint.tcpClient {
             status = describe(tcp.interface.status)
             dialing = "\(tcp.interface.host):\(tcp.interface.port)"
         }

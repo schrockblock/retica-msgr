@@ -50,6 +50,16 @@ public struct AppFeature {
         @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
         @Shared(.appStorage("propagationNodeModeEnabled")) public var nodeModeEnabled: Bool = false
         @Shared(.appStorage("displayName")) public var displayName: String = ""
+        /// Opt-in: also run a TCP listener so other nodes on the LAN can dial THIS device
+        /// directly (peer-to-peer, no shared rnsd). OFF by default — a listening socket is an
+        /// attack surface the dialling-only client never was (see the Settings caption). The
+        /// natural home for Tier 7 admission-control settings when they arrive.
+        @Shared(.appStorage("listenEnabled")) public var listenEnabled: Bool = false
+        /// The local port the opt-in listener binds. A DEDICATED setting, not a reuse of `port`:
+        /// `port` is the REMOTE rnsd port we dial OUT to; the listener binds a LOCAL port we
+        /// accept IN on. Conflating them would bind the listener to whatever remote port the user
+        /// happened to dial. Defaults to 4242 (the RNS TCP default).
+        @Shared(.appStorage("listenPort")) public var listenPort: Int = 4242
 
         public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242) {
             self.identity = identity
@@ -100,7 +110,7 @@ public struct AppFeature {
         /// the node can route to known destinations without waiting for re-announces.
         ///
         /// Sent on launch after pruning and reading the `learnedDestinationRows` table. Forwarded to
-        /// Transport via `.node(.client(.endpoint(.tcp(.transport(.rehydrateLearnedDestinations)))))`.
+        /// Transport via `.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations))))`.
         case rehydrateLearnedDestinations([Data: LearnedDestination])
         /// The debounce timer fired — write the current `learned` table to the database.
         ///
@@ -282,7 +292,7 @@ public struct AppFeature {
                 state.connection = .disconnected
                 return .send(.node(.client(.endpoint(.stop))))
 
-            case .node(.client(.endpoint(.tcp(.transport(.interfaceConnected))))):
+            case .node(.client(.endpoint(.transport(.interfaceConnected)))):
                 state.connection = .connected
                 // setDisplayName must come BEFORE registerDelivery so the registration announce
                 // carries the name (registerDelivery packs LXMFAnnounceData from state.displayName
@@ -314,7 +324,7 @@ public struct AppFeature {
                 }
                 return .merge(effects)
 
-            case .node(.client(.endpoint(.tcp(.transport(.interfaceDisconnected(_)))))):
+            case .node(.client(.endpoint(.transport(.interfaceDisconnected(_))))):
                 state.connection = .disconnected
                 return .none
 
@@ -672,10 +682,11 @@ public struct AppFeature {
                 // launch) and never overwrites a fresher live entry — so an announce that arrived
                 // before this DB read completes is not displaced.
                 //
-                // Path: AppFeature → LXMFServiceNode → LXMFNode → TransportEndpoint → TCPEndpoint
-                //       → Transport.rehydrateLearnedDestinations
+                // Path: AppFeature → LXMFServiceNode → LXMFNode → TransportEndpoint
+                //       → Transport.rehydrateLearnedDestinations (transport is now shared at the
+                //       container level, so the address no longer traverses the tcpClient slot)
                 guard !destinations.isEmpty else { return .none }
-                return .send(.node(.client(.endpoint(.tcp(.transport(.rehydrateLearnedDestinations(destinations)))))))
+                return .send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations(destinations))))))
 
             case let .node(.client(.router(.messagesDownloaded(transientIds)))):
                 // Persist the newly-downloaded transient IDs so a cold start doesn't re-request
@@ -704,17 +715,46 @@ public struct AppFeature {
     }
 }
 
-// The TCP endpoint is built once at init with the host/port passed to State.init (defaults to
+// The TransportEndpoint is built once at init with the host/port passed to State.init (defaults to
 // 127.0.0.1:4242). The Settings fields bind to separate @Shared values, so without this the app
 // would always dial those init defaults regardless of what the user configured. Copy the current
 // Settings values into the endpoint immediately before dialing (onLaunch / connectTapped).
+//
+// The endpoint is now a STRUCT product (Task 1b/2): one shared `transport`/`linkPlane`, plus
+// optional per-KIND driver slots. The dial host/port live on the `tcpClient` slot's interface, so
+// we mutate that slot IN PLACE — never `state.node.client.endpoint = .tcp(...)`, which would
+// rebuild the container and reset the shared `transport`/`linkPlane` (learned paths, live links).
+//
+// This is also where the opt-in listener is applied: `listenEnabled` gates whether the `tcpServer`
+// slot is present, and it is decided at connect time here (not at State.init) because the endpoint
+// is constructed before the persisted Settings are read in. Toggling the setting takes effect on
+// the next connect (onLaunch / connectTapped / foregrounded), matching how host/port already work.
 private func syncEndpointHostPort(_ state: inout AppFeature.State) {
-    guard case .tcp(var tcp) = state.node.client.endpoint else { return }
-    tcp.interface.host = state.host
-    if let port = UInt16(exactly: state.port) {
-        tcp.interface.port = port
+    guard state.node.client.endpoint.tcpClient != nil else { return }
+    // Read the @Shared Settings into locals first: mutating `state.node…` while reading
+    // `state.host`/`state.port` in the same statement is an exclusive-access violation.
+    let host = state.host
+    let dialPort = UInt16(exactly: state.port)
+    let listenEnabled = state.listenEnabled
+    let listenPort = UInt16(exactly: state.listenPort)
+
+    state.node.client.endpoint.tcpClient?.interface.host = host
+    if let dialPort {
+        state.node.client.endpoint.tcpClient?.interface.port = dialPort
     }
-    state.node.client.endpoint = .tcp(tcp)
+
+    // Add or remove the listener slot to match the current setting. Rebuilding only the OPTIONAL
+    // slot leaves the shared transport/linkPlane untouched.
+    if listenEnabled, let listenPort {
+        // Preserve an already-running listener on the same port rather than tearing it down and
+        // re-binding on every re-dial (foreground/reconnect would otherwise drop live accepted
+        // connections). Only build a fresh slot when there is none or the port changed.
+        if state.node.client.endpoint.tcpServer?.interface.port != listenPort {
+            state.node.client.endpoint.tcpServer = TCPServerEndpoint.State(port: listenPort)
+        }
+    } else {
+        state.node.client.endpoint.tcpServer = nil
+    }
 }
 
 // Reload helpers (file-scope free functions — no self capture in @Sendable effects).
