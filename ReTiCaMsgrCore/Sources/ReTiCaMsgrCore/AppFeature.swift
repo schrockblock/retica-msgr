@@ -123,12 +123,13 @@ public struct AppFeature {
     @Dependency(\.date) var date
     @Dependency(\.continuousClock) var clock
 
-    /// Path expiry matching `Transport.pathExpiry` (internal, not accessible from the app).
+    /// Path expiry for pruning `learnedDestinationRows`, taken from the library rather than copied.
     ///
-    /// `Transport.pathExpiry` is `internal` (Swift default), so the app cannot reference it
-    /// directly. This constant must be kept in sync with the library value. Value: 7 days.
-    /// RNS reference: `DESTINATION_TIMEOUT = 60*60*24*7` (Transport.py:91, stock 1.4.2).
-    static let pathExpiry: TimeInterval = 60 * 60 * 24 * 7     // 604800 s — matches Transport.pathExpiry
+    /// This was briefly a local `60 * 60 * 24 * 7` behind a "must be kept in sync" comment, because
+    /// `Transport.pathExpiry` was `internal`. It is now `public` precisely so this file does not
+    /// have to hold a second copy: a mirrored constant with a sync comment is the drift that
+    /// produced a real stamp-cost bug in this project.
+    static var pathExpiry: TimeInterval { Transport.pathExpiry }
 
     /// Request path for the public-key exchange: a peer answers with its 64-byte public key
     /// (`Identity.publicKey`). The key is already public — every delivery announce carries it,
