@@ -138,6 +138,11 @@ extension DiagnosticsSnapshot {
     /// interface does not purge the paths heard on it, so an entry routinely outlives the
     /// interface it names. `Transport.reachableLearned` is the runtime's version of this test,
     /// and `openLink` gates on it — a path whose interface is gone cannot carry a link.
+    ///
+    /// DENY LIST: `endpoint.interfaces` carries `InterfaceProfile.ifac`, which holds the derived
+    /// network `key` and its Ed25519 `seed` — membership credentials for an access-controlled
+    /// network. Only `interfaceID.rawValue` is rendered here, and nothing on this layer may ever
+    /// widen to the full profile.
     static func pathsLayer(_ state: AppFeature.State) -> Layer {
         let endpoint = state.node.client.endpoint
         let interfaces = endpoint.interfaces
@@ -146,8 +151,9 @@ extension DiagnosticsSnapshot {
         // `interfaces` is EMPTY whenever the socket is down — every interface deregisters. So the
         // per-path test below is only meaningful when at least one interface remains: with none,
         // it would mark every learned path unreachable and blame a missing interface, when the
-        // truth is that the socket is down and Socket has already said so. Reachability is not
-        // "no" in that state, it is UNKNOWABLE, and the rows say `?` rather than `NO`.
+        // truth is that the socket is down (or not yet registered) and Socket has already said so.
+        // Reachability is not "no" in that state, it is UNKNOWABLE, and the rows say `?` rather
+        // than `NO`.
         //
         // The F8 signal with diagnostic value is a path naming a dead interface WHILE OTHERS ARE
         // UP — that is a stale routing entry, which is a different fault with a different fix.
@@ -170,14 +176,13 @@ extension DiagnosticsSnapshot {
         guard interfacesKnown else {
             // Nothing to say about paths that Socket has not already said better. Report it
             // honestly rather than green — a reader must not read "Paths ok" as "routes fine" —
-            // but do NOT attribute it to a gone interface.
-            guard entries.isEmpty else {
-                return Layer(title: "Paths", health: .warn,
-                             reason: "no interfaces registered — reachability is unknowable "
-                                     + "until the socket is back; see Socket",
-                             rows: rows)
-            }
-            return Layer(title: "Paths", health: .ok, reason: nil, rows: rows)
+            // but do NOT attribute it to a gone interface. The wording covers both "socket is
+            // down" and "socket is online but no interface is registered yet": in both cases the
+            // Socket layer already describes the fault; see Socket.
+            return Layer(title: "Paths", health: .warn,
+                         reason: "no interfaces registered — reachability is unknowable; "
+                                 + "see Socket",
+                         rows: rows)
         }
 
         let unreachable = entries.filter { $0.reachable == false }.count
@@ -223,7 +228,7 @@ extension DiagnosticsSnapshot {
         let pathless = entries.filter { !$0.hasPath }.count
         guard pathless == 0 else {
             return Layer(title: "Peers", health: .warn,
-                         reason: "\(pathless) peer\(pathless == 1 ? "" : "s") "
+                         reason: "\(pathless) \(pluralize(pathless, "peer", "peers")) "
                                  + "\(pathless == 1 ? "has" : "have") no path "
                                  + "— known but not reachable",
                          rows: rows)
@@ -299,7 +304,7 @@ extension DiagnosticsSnapshot {
         let stalled = links.filter { $0.role == .initiator && $0.status == .pending }.count
         guard stalled == 0 else {
             return Layer(title: "Links", health: .warn,
-                         reason: "\(stalled) outbound link\(stalled == 1 ? "" : "s") "
+                         reason: "\(stalled) outbound \(pluralize(stalled, "link", "links")) "
                                  + "still establishing",
                          rows: rows)
         }
@@ -487,18 +492,40 @@ extension DiagnosticsSnapshot {
 
         var clauses: [String] = []
         if stranded > 0 {
-            clauses.append("\(stranded) message\(stranded == 1 ? "" : "s") pending "
-                           + "with no active link to its destination")
+            clauses.append("\(stranded) \(pluralize(stranded, "message", "messages")) pending "
+                           + "with no active link to \(stranded == 1 ? "its" : "their") destination")
         }
         if parked > 0 {
-            clauses.append("\(parked) destination\(parked == 1 ? "" : "s") "
+            clauses.append("\(parked) \(pluralize(parked, "destination", "destinations")) "
                            + "waiting for a link (awaiting path or establishing)")
         }
+        // Opportunistic sends have no delivery receipt — `.delivered` is fed only from
+        // `packetDelivered`, i.e. acknowledged link traffic. An opportunistic entry sits in
+        // `pendingDeliveries` for the full retry saga whether or not the message arrived, so no
+        // rule over this data could distinguish "delivered" from "not yet delivered". Clause 1
+        // above correctly EXCLUDES them from the link requirement. The consequence: send a small
+        // message to an offline peer and every layer reads green. The rule is right; the silence
+        // is not. An informational row — NOT a warn — makes the limitation visible without
+        // turning a structurally unobservable state into a false alarm.
+        let opportunisticPending = router.pendingDeliveries.values.filter { pending in
+            if case .opportunistic = pending.resend { return true }
+            return false
+        }.count
+
+        var finalRows = rows
+        if opportunisticPending > 0 {
+            finalRows.append(Row(
+                "note",
+                "\(opportunisticPending) opportunistic \(pluralize(opportunisticPending, "send", "sends")) "
+                + "in flight — opportunistic is unacknowledged; "
+                + "green here means no evidence of failure, not confirmed delivery"))
+        }
+
         guard clauses.isEmpty else {
             return Layer(title: "Delivery", health: .warn,
-                         reason: clauses.joined(separator: "; "), rows: rows)
+                         reason: clauses.joined(separator: "; "), rows: finalRows)
         }
-        return Layer(title: "Delivery", health: .ok, reason: nil, rows: rows)
+        return Layer(title: "Delivery", health: .ok, reason: nil, rows: finalRows)
     }
 
     /// Exhaustive on purpose: a new `ResendInfo` case must be adjudicated here, not defaulted.
@@ -516,5 +543,16 @@ extension DiagnosticsSnapshot {
         case .opportunistic:       return false   // packet-addressed; no link involved
         case .direct, .propagated: return true
         }
+    }
+}
+
+// MARK: - Shared helpers
+
+extension DiagnosticsSnapshot {
+    /// Returns `singular` when `count == 1`, `plural` otherwise.
+    /// Used in layer reason strings to keep plural agreement consistent across layers
+    /// — the same mistake (singular pronoun with plural noun) has recurred three times.
+    static func pluralize(_ count: Int, _ singular: String, _ plural: String) -> String {
+        count == 1 ? singular : plural
     }
 }

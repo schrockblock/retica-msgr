@@ -167,17 +167,17 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     #expect(state.node.client.endpoint.interfaces.isEmpty)
 
     let paths = layer(snapshot, "Paths")
-    #expect(paths.reason == "no interfaces registered — reachability is unknowable "
-                            + "until the socket is back; see Socket")
+    #expect(paths.reason == "no interfaces registered — reachability is unknowable; see Socket")
     #expect(paths.rows.contains { $0.value.contains("reachable=?") })
     #expect(!paths.rows.contains { $0.value.contains("reachable=NO") })
     // Socket is the layer that owns this fault, and it is not silent about it.
     #expect(layer(snapshot, "Socket").health != .ok)
 }
 
-// The mirror of the above: with no paths at all there is nothing for Paths to say, and it must
-// not invent a warn out of an empty table.
-@MainActor @Test func pathsAreOkWhenTheSocketIsDownAndNothingWasEverLearned() {
+// The mirror of the above: with no paths the rows are empty, but the warn is equally true —
+// reachability is unknowable whether or not anything was ever learned. Both branches should
+// report the same health so a reader cannot misread "Paths ok" as "routes fine".
+@MainActor @Test func pathsWarnWhenTheSocketIsDownEvenIfNothingWasEverLearned() {
     var state = healthyState()
     state.connection = .disconnected
     withTCP(&state) { tcp in
@@ -185,8 +185,8 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
         tcp.transport.interfaces = [:]
     }
     let paths = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Paths")
-    #expect(paths.health == .ok)
-    #expect(paths.reason == nil)
+    #expect(paths.health == .warn)
+    #expect(paths.reason == "no interfaces registered — reachability is unknowable; see Socket")
 }
 
 // MARK: - Peers (F20 cross-check)
@@ -273,6 +273,25 @@ private let otherPeerHash = Data(repeating: 0xDD, count: 16)
     #expect(delivery.reason == nil)
 }
 
+// Opportunistic sends are structurally unobservable — there is no delivery receipt, so an
+// entry sits in `pendingDeliveries` for the full retry saga whether or not the message arrived.
+// An informational row (NOT a warn) must appear so the reader of a pasted export understands
+// that green here means "no evidence of failure", not "confirmed delivery". The health MUST
+// stay `.ok`; this test pins that the row cannot escalate to a false alarm.
+@MainActor @Test func deliveryAddsAnInformationalNoteWhenOpportunisticSendsArePendingAndHealthStaysOk() {
+    var state = healthyState()
+    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+        resend: .opportunistic(destinationHash: peerHash, payload: Data()), attempts: 2)
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    // Health must not change — the row is informational, not a health signal.
+    #expect(delivery.health == .ok)
+    // The "note" row must be present and must mention that opportunistic is unacknowledged.
+    let note = delivery.rows.first { $0.label == "note" }
+    #expect(note != nil)
+    #expect(note?.value.contains("opportunistic") == true)
+    #expect(note?.value.contains("unacknowledged") == true)
+}
+
 // CLAUSE 1, other half — a method that DOES need a link still warns without one.
 @MainActor @Test func deliveryWarnsWhenADirectSendIsPendingWithNoLinkAtAll() {
     var state = healthyState()
@@ -292,6 +311,21 @@ private let otherPeerHash = Data(repeating: 0xDD, count: 16)
     let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
     #expect(delivery.health == .warn)
     #expect(delivery.reason == "1 message pending with no active link to its destination")
+}
+
+// CLAUSE 1 plural. The same rule must use plural grammar when two direct sends are stranded.
+// "its destination" with a plural subject was found and fixed here; this test pins the fix.
+private let messageHash2 = Data(repeating: 0x02, count: 32)
+
+@MainActor @Test func deliveryWarnsWithPluralGrammarWhenMultipleDirectSendsAreStranded() {
+    var state = healthyState()
+    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+        resend: .direct(destinationHash: peerHash, data: Data(), asResource: false), attempts: 1)
+    state.node.client.router.pendingDeliveries[messageHash2] = LXMFRouter.PendingDelivery(
+        resend: .direct(destinationHash: otherPeerHash, data: Data(), asResource: false), attempts: 1)
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .warn)
+    #expect(delivery.reason == "2 messages pending with no active link to their destination")
 }
 
 // CLAUSE 2 — correlation. A link to Alice says nothing about a message stranded to Bob. The old
@@ -342,6 +376,16 @@ private let otherPeerHash = Data(repeating: 0xDD, count: 16)
     #expect(delivery.health == .warn)
     #expect(delivery.reason
             == "1 destination waiting for a link (awaiting path or establishing)")
+}
+
+// CLAUSE 3 plural. Two parked destinations must produce plural grammar.
+@MainActor @Test func deliveryWarnsWithPluralGrammarWhenMultipleDestinationsAreParked() {
+    var state = healthyState()
+    state.node.client.router.directLinks[peerHash] = .awaitingPath
+    state.node.client.router.directLinks[otherPeerHash] = .establishing
+    let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
+    #expect(delivery.health == .warn)
+    #expect(delivery.reason == "2 destinations waiting for a link (awaiting path or establishing)")
 }
 
 @MainActor @Test func deliveryIsOkWithNothingPending() {
@@ -418,6 +462,24 @@ private let otherPeerHash = Data(repeating: 0xDD, count: 16)
     // the ONLY age it has — without it the row reads `up=- in=- data=-` and cannot tell
     // "in flight" from "about to blow the 15s deadline".
     #expect(links.rows.contains { $0.value.contains("req=12s") })
+}
+
+@MainActor @Test func linksWarnWithPluralGrammarWhenMultipleOutboundLinksAreStillEstablishing() {
+    var state = healthyState()
+    withTCP(&state) { tcp in
+        var link1 = LinkSession.State(
+            initiatorTo: Identity(), destinationHash: peerHash, interfaceID: tcp.interfaceID)
+        link1.linkID = Data(repeating: 0x0C, count: 16)
+        link1.requestedAt = fixedDate.addingTimeInterval(-5).timeIntervalSince1970
+        var link2 = LinkSession.State(
+            initiatorTo: Identity(), destinationHash: otherPeerHash, interfaceID: tcp.interfaceID)
+        link2.linkID = Data(repeating: 0x0E, count: 16)
+        link2.requestedAt = fixedDate.addingTimeInterval(-8).timeIntervalSince1970
+        tcp.links.append(contentsOf: [link1, link2])
+    }
+    let links = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Links")
+    #expect(links.health == .warn)
+    #expect(links.reason == "2 outbound links still establishing")
 }
 
 // The other half of the role/status split: a responder in `.pending` is a link SOMEONE ELSE is
@@ -591,16 +653,30 @@ private let otherPeerHash = Data(repeating: 0xDD, count: 16)
 // M7, second half. `String.padding(toLength:)` counts UTF-16 while `count` counts Characters, so
 // `padding(toLength: max(label.count, 20))` silently TRUNCATED any label whose UTF-16 length
 // exceeded its Character count — 25 emoji came out as 12 emoji and a replacement character.
-@MainActor @Test func aMultiByteLabelIsPaddedNotTruncatedInTheExport() {
-    var state = healthyState()
-    let name = String(repeating: "🙂", count: 25)
-    // Precondition: this is a label whose UTF-16 length exceeds max(Character count, 20).
-    #expect(name.count == 25)
-    #expect(name.utf16.count == 50)
-    state.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
-        displayName: name, stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+// Also asserts the PADDING half: a short label (fewer than 20 characters) must be padded to
+// the column width so the export's columns align. Removing the padding expression entirely left
+// all 34 tests green — this assertion is what distinguishes the real code from `let padded = label`.
+@MainActor @Test func aShortLabelIsPaddedToColumnWidthAndALongMultiByteLabelIsNotTruncatedInTheExport() {
+    // PART 1 — short label is padded to column width (20 chars).
+    var shortState = healthyState()
+    let shortName = "Hi"   // 2 characters, well under the 20-char column width
+    // Precondition: the label really is shorter than the column width.
+    #expect(shortName.count < 20)
+    shortState.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
+        displayName: shortName, stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+    let shortText = DiagnosticsSnapshot(from: shortState, at: fixedDate).text
+    // The row is rendered as "  <padded-label> <value>\n".
+    // A 2-char label padded to 20 produces 18 trailing spaces before the value.
+    #expect(shortText.contains("  \(shortName)\(String(repeating: " ", count: 18))"))
 
-    let text = DiagnosticsSnapshot(from: state, at: fixedDate).text
-    #expect(text.contains(name))
-    #expect(!text.contains("\u{FFFD}"))
+    // PART 2 — a label whose UTF-16 length exceeds max(Character count, 20) is not truncated.
+    var longState = healthyState()
+    let longName = String(repeating: "🙂", count: 25)
+    #expect(longName.count == 25)
+    #expect(longName.utf16.count == 50)
+    longState.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
+        displayName: longName, stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+    let longText = DiagnosticsSnapshot(from: longState, at: fixedDate).text
+    #expect(longText.contains(longName))
+    #expect(!longText.contains("\u{FFFD}"))
 }
