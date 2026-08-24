@@ -551,7 +551,12 @@ public struct AppFeature {
                 let openPeer = state.openPeerHex
                 return .run { [database] send in
                     try await database.write {
-                        try Message.where { $0.messageHash.eq(hex) }
+                        // With a PN configured, one message.hash gets two sagas: the propagation
+                        // leg succeeds early (`propagationAccepted` → "stored") while the
+                        // opportunistic leg — which has no data receipt in our stack — always times
+                        // out later. That late `deliveryFailed` must NOT clobber a propagation
+                        // success, so skip rows already marked propagated (F5.5).
+                        try Message.where { $0.messageHash.eq(hex) && $0.status.neq(MessageStatus.propagated) }
                             .update { $0.status = MessageStatus.failed }
                             .execute($0)
                     }

@@ -550,6 +550,36 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(store.state.threadMessages.first { $0.messageHash == hashHex }?.status == MessageStatus.propagated)
 }
 
+/// F5.5: with a PN configured, one message.hash gets TWO delivery sagas. The propagation leg
+/// succeeds early (~20s → `propagationAccepted` → "stored"); the opportunistic leg has no data
+/// receipt in our stack, so it always times out later (~50s → `deliveryFailed`). That later
+/// failure must NOT clobber the propagation success, or a message that was in fact stored on the
+/// PN is shown as failed.
+@MainActor @Test func deliveryFailedDoesNotOverwriteAPropagationSuccess() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = "hi"
+    }
+    await store.send(.sendTapped)
+    await store.receive { if case .node(.client(.sendMessage)) = $0 { return true }; return false }
+    let sent = try! await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }
+    let hashHex = sent.first!.messageHash
+    let hashData = Data(hexString: hashHex)!
+    // Propagation leg accepts first. Drain conversationsLoaded first so the stale "sending"
+    // threadLoaded from the sendTapped saga is dropped before we read the updated one.
+    await store.send(.node(.client(.delegate(.propagationAccepted(messageHash: hashData)))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadMessages.first { $0.messageHash == hashHex }?.status == MessageStatus.propagated)
+    // Opportunistic leg times out afterwards — the success must survive.
+    await store.send(.node(.client(.delegate(.deliveryFailed(messageHash: hashData)))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadMessages.first { $0.messageHash == hashHex }?.status == MessageStatus.propagated,
+            "a propagated message must not be marked failed when the opportunistic leg times out")
+}
+
 // MARK: - Propagation persistence (Task 7)
 
 /// Ingested entries are mirrored to the database so they survive relaunch.
