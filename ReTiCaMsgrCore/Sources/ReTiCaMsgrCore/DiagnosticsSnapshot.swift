@@ -55,6 +55,7 @@ public struct DiagnosticsSnapshot: Equatable {
         self.generatedAt = date
         self.layers = [
             Self.socketLayer(state),
+            Self.bleLayer(state),
             Self.identityLayer(state),
             Self.pathsLayer(state),
             Self.peersLayer(state, at: date),
@@ -127,6 +128,85 @@ extension DiagnosticsSnapshot {
         case .disconnected: return "disconnected"
         case .connecting:   return "connecting"
         case .connected:    return "connected"
+        }
+    }
+}
+
+// MARK: - Bluetooth
+
+extension DiagnosticsSnapshot {
+    /// BLE was invisible on this screen before A4-diagnostics: `endpoint.interfaces` surfaced per-peer
+    /// `ble:` interface IDs, but nothing named the adapter state or the connected peers as such. This
+    /// layer renders both, and — since S6 — the PRECISE terminal cause (permission denied / no radio)
+    /// as a problem with an actionable reason, rather than the old combined "is Bluetooth on?" guess.
+    ///
+    /// DENY LIST: the only BLE identifiers rendered are session TOKENS (embedded in the `ble:`
+    /// interface IDs) — on-wire HELLO handshake values, advertised in the clear by design, NOT key
+    /// material. `InterfaceProfile` (which carries `ifac`) is never rendered here.
+    static func bleLayer(_ state: AppFeature.State) -> Layer {
+        let enabled = state.bleEnabled
+        let status = state.node.client.endpoint.ble?.ble.status
+        let maxPeers = state.node.client.endpoint.ble?.ble.maxPeers
+
+        // Connected BLE peers are the `ble:`-prefixed registered interfaces (one per online peer).
+        let blePeerIDs = state.node.client.endpoint.interfaces.keys
+            .map(\.rawValue)
+            .filter { $0.hasPrefix("ble:") }
+            .sorted()
+
+        var rows = [Row("bluetooth", enabled ? "on" : "off")]
+        if enabled {
+            rows.append(Row("interface status", status.map(describe) ?? "n/a (starts on Connect)"))
+            if let maxPeers { rows.append(Row("peer cap", String(maxPeers))) }
+            rows.append(Row("connected peers", blePeerIDs.isEmpty ? "(none)" : String(blePeerIDs.count)))
+            rows.append(contentsOf: blePeerIDs.map { Row($0, "connected") })
+        }
+
+        guard enabled else {
+            // Off by choice is not a fault.
+            return Layer(title: "Bluetooth", health: .ok, reason: nil, rows: rows)
+        }
+
+        switch status {
+        case .unavailable(.unauthorized):
+            return Layer(title: "Bluetooth", health: .problem,
+                         reason: "Bluetooth permission denied — allow it for this app in Settings",
+                         rows: rows)
+        case .unavailable(.unsupported):
+            return Layer(title: "Bluetooth", health: .problem,
+                         reason: "this device has no Bluetooth LE radio", rows: rows)
+        case .unavailable:
+            // `.poweredOff`/`.other` are transient causes that never reach the terminal status, but
+            // the switch is exhaustive rather than defaulted — a new terminal cause must be adjudicated.
+            return Layer(title: "Bluetooth", health: .problem,
+                         reason: "Bluetooth adapter unavailable", rows: rows)
+        case .waitingForAdapter:
+            return Layer(title: "Bluetooth", health: .warn,
+                         reason: "waiting for the Bluetooth adapter — is Bluetooth turned on?",
+                         rows: rows)
+        case .stopped, .starting, .online, .none:
+            return Layer(title: "Bluetooth", health: .ok, reason: nil, rows: rows)
+        }
+    }
+
+    static func describe(_ status: BLEInterfaceStatus) -> String {
+        switch status {
+        case .stopped:                    return "stopped"
+        case .starting:                   return "starting"
+        case .online:                     return "online"
+        case .waitingForAdapter:          return "waiting for adapter"
+        case let .unavailable(cause):     return "unavailable (\(describe(cause)))"
+        }
+    }
+
+    /// Renders the cause NAME only — never the `.other` diagnostic payload, to keep rows bounded and
+    /// free of arbitrary text in the shareable export.
+    static func describe(_ cause: BLEAdapterUnavailable) -> String {
+        switch cause {
+        case .poweredOff:   return "powered off"
+        case .unauthorized: return "unauthorized"
+        case .unsupported:  return "unsupported"
+        case .other:        return "other"
         }
     }
 }

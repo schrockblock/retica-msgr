@@ -435,10 +435,10 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
     #expect(links.rows.contains { $0.label == "(none)" })
 }
 
-@MainActor @Test func snapshotHasAllSixLayersInOrder() {
+@MainActor @Test func snapshotHasAllLayersInOrder() {
     let snapshot = DiagnosticsSnapshot(from: healthyState(), at: fixedDate)
     #expect(snapshot.layers.map(\.title)
-            == ["Socket", "Identity", "Paths", "Peers", "Links", "Delivery"])
+            == ["Socket", "Bluetooth", "Identity", "Paths", "Peers", "Links", "Delivery"])
 }
 
 // C1. `.pending`, not `.handshake`. The two statuses are ROLE-DISJOINT in `LinkSession`:
@@ -687,4 +687,82 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
     let longText = DiagnosticsSnapshot(from: longState, at: fixedDate).text
     #expect(longText.contains(longName))
     #expect(!longText.contains("\u{FFFD}"))
+}
+
+// MARK: - Bluetooth (A4-diagnostics)
+
+/// Non-fatal layer lookup so a missing layer fails the assertion rather than crashing the suite.
+private func bluetoothLayer(_ snap: DiagnosticsSnapshot) -> DiagnosticsSnapshot.Layer? {
+    snap.layers.first { $0.title == "Bluetooth" }
+}
+
+@MainActor
+private func bleEnabledState(status: BLEInterfaceStatus, peers: [Data] = []) -> AppFeature.State {
+    var state = healthyState()
+    state.$bleEnabled.withLock { $0 = true }
+    var ble = BLEEndpoint.State()
+    ble.ble.status = status
+    state.node.client.endpoint.ble = ble
+    for token in peers {
+        state.node.client.endpoint.transport.interfaces[bleInterfaceID(token)] = .ble
+    }
+    return state
+}
+
+/// BLE off by default: the layer is present, healthy, and says so — not a fault, a choice.
+@MainActor @Test func bluetoothLayerIsOffAndOkWhenDisabled() {
+    let snap = DiagnosticsSnapshot(from: healthyState(), at: fixedDate)   // bleEnabled defaults false
+    let ble = bluetoothLayer(snap)
+    #expect(ble?.health == .ok)
+    #expect(ble?.rows.contains { $0.label == "bluetooth" && $0.value == "off" } == true)
+}
+
+/// Online with peers: healthy, and each connected BLE peer (a `ble:`-prefixed registered interface)
+/// is listed with a count. This is the whole point of A4-diagnostics — BLE peers were invisible.
+@MainActor @Test func bluetoothLayerListsConnectedPeersWhenOnline() {
+    let tokenA = Data(repeating: 0xA1, count: 16)
+    let tokenB = Data(repeating: 0xB2, count: 16)
+    let snap = DiagnosticsSnapshot(from: bleEnabledState(status: .online, peers: [tokenA, tokenB]),
+                                   at: fixedDate)
+    let ble = bluetoothLayer(snap)
+    #expect(ble?.health == .ok)
+    #expect(ble?.rows.contains { $0.label == "interface status" && $0.value == "online" } == true)
+    #expect(ble?.rows.contains { $0.label == "connected peers" && $0.value == "2" } == true)
+    #expect(ble?.rows.contains { $0.label == bleInterfaceID(tokenA).rawValue } == true)
+    #expect(ble?.rows.contains { $0.label == bleInterfaceID(tokenB).rawValue } == true)
+}
+
+/// `waitingForAdapter` (now only transient causes like Bluetooth being off) warns — actionable, but
+/// not a hard fault: the user can turn Bluetooth on.
+@MainActor @Test func bluetoothLayerWarnsWhileWaitingForAdapter() {
+    let snap = DiagnosticsSnapshot(from: bleEnabledState(status: .waitingForAdapter), at: fixedDate)
+    let ble = bluetoothLayer(snap)
+    #expect(ble?.health == .warn)
+    #expect(ble?.reason != nil)
+}
+
+/// A terminal `unauthorized` (S6) is a PROBLEM with an actionable reason — permission denied, open
+/// Settings. This is the precise cause the pre-S6 combined message could not state.
+@MainActor @Test func bluetoothLayerFlagsPermissionDeniedAsProblem() {
+    let snap = DiagnosticsSnapshot(from: bleEnabledState(status: .unavailable(.unauthorized)),
+                                   at: fixedDate)
+    let ble = bluetoothLayer(snap)
+    #expect(ble?.health == .problem)
+    #expect(ble?.reason?.contains("Settings") == true)
+    #expect(ble?.rows.contains { $0.label == "interface status" && $0.value.contains("unauthorized") } == true)
+}
+
+/// A terminal `unsupported` is a distinct problem — no radio, nothing to grant.
+@MainActor @Test func bluetoothLayerFlagsUnsupportedAsProblem() {
+    let snap = DiagnosticsSnapshot(from: bleEnabledState(status: .unavailable(.unsupported)),
+                                   at: fixedDate)
+    let ble = bluetoothLayer(snap)
+    #expect(ble?.health == .problem)
+    #expect(ble?.reason != nil)
+}
+
+/// The layer reaches the shared `text` export (the bug-report artifact), like every other layer.
+@MainActor @Test func bluetoothLayerAppearsInTextExport() {
+    let snap = DiagnosticsSnapshot(from: bleEnabledState(status: .online), at: fixedDate)
+    #expect(snap.text.contains("BLUETOOTH"))
 }
