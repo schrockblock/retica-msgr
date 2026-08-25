@@ -510,6 +510,90 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.receive { if case .node(.setNodeMode(true)) = $0 { return true }; return false }
 }
 
+// MARK: - Relay mode (R1)
+
+/// Turning relay mode ON installs this device's identity as the transport identity (the value every
+/// relay branch in `Transport` gates on) AND enables recursive path requests, so the node can both
+/// forward transit traffic and answer path requests for destinations it hasn't heard directly. The
+/// identity is asserted to be THIS device's, not just "some identity" — passing the wrong identity
+/// would sign relayed packets as someone else.
+@MainActor @Test func relayModeToggleEnablesRelayAndRecursivePaths() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let identity = Identity()
+    let store = makeStore(db, identity: identity) { $0.$relayEnabled.withLock { $0 = false } }
+    await store.send(.setRelayMode(true))
+    #expect(store.state.relayEnabled == true)
+    await store.receive { action in
+        if case let .node(.client(.endpoint(.enableRelay(id)))) = action {
+            #expect(id == identity)   // OUR identity — a relay signs transit with it
+            return true
+        }
+        return false
+    }
+    await store.receive { action in
+        if case .node(.client(.endpoint(.transport(.setRecursivePathRequests(true))))) = action { return true }
+        return false
+    }
+}
+
+/// Turning relay mode OFF clears the transport identity (relaying goes back to dead) and disables
+/// recursive path requests, so the device stops answering path requests for third parties. Clearing
+/// is the half that matters: leaving the identity installed would keep the node relaying after the
+/// user opted out.
+@MainActor @Test func relayModeToggleOffClearsTransportIdentityAndRecursivePaths() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { $0.$relayEnabled.withLock { $0 = true } }
+    await store.send(.setRelayMode(false))
+    #expect(store.state.relayEnabled == false)
+    await store.receive { action in
+        if case let .node(.client(.endpoint(.transport(.setTransportIdentity(id))))) = action {
+            #expect(id == nil)   // cleared, not left installed
+            return true
+        }
+        return false
+    }
+    await store.receive { action in
+        if case .node(.client(.endpoint(.transport(.setRecursivePathRequests(false))))) = action { return true }
+        return false
+    }
+}
+
+/// On connect, a persisted relay-mode setting is applied — the node relays again after relaunch.
+/// Without this, `relayEnabled` would survive in @Shared storage but never reach `Transport`, so a
+/// user who turned relay on once would silently stop relaying on the next launch.
+@MainActor @Test func persistedRelayModeIsAppliedOnConnect() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let identity = Identity()
+    let store = makeStore(db, identity: identity) { $0.$relayEnabled.withLock { $0 = true } }
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.receive { action in
+        if case let .node(.client(.endpoint(.enableRelay(id)))) = action {
+            #expect(id == identity)
+            return true
+        }
+        return false
+    }
+    await store.receive { action in
+        if case .node(.client(.endpoint(.transport(.setRecursivePathRequests(true))))) = action { return true }
+        return false
+    }
+}
+
+/// With relay mode OFF (the default), connecting must NOT install a transport identity or enable
+/// recursive path requests — relaying stays dead code until the user opts in. This is the
+/// anti-vacuity guard for the connect path: without it, `persistedRelayModeIsAppliedOnConnect` could
+/// pass simply because the app always enables relay.
+@MainActor @Test func relayNotAppliedOnConnectWhenDisabled() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { $0.$relayEnabled.withLock { $0 = false } }
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.transport.transportIdentity == nil)
+    #expect(store.state.node.client.endpoint.transport.recursivePathRequests == false)
+}
+
 @MainActor @Test func setPropagationNodeInvalidDoesNotConfigure() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())

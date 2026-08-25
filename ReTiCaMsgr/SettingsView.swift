@@ -90,6 +90,18 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Relay") {
+                    Toggle("Relay traffic for other nodes", isOn: Binding(
+                        get: { store.relayEnabled },
+                        set: { store.send(.setRelayMode($0)) }
+                    ))
+                    Text("Carries other users' messages through this device so the mesh reaches "
+                         + "further — it forwards transit traffic and answers path requests for "
+                         + "peers it hasn't met. Off by default. Uses more battery and data.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Run as Propagation Node") {
                     Toggle("Act as a propagation node", isOn: Binding(
                         get: { store.nodeModeEnabled },

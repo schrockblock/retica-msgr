@@ -60,6 +60,13 @@ public struct AppFeature {
         /// accept IN on. Conflating them would bind the listener to whatever remote port the user
         /// happened to dial. Defaults to 4242 (the RNS TCP default).
         @Shared(.appStorage("listenPort")) public var listenPort: Int = 4242
+        /// Opt-in: carry OTHER nodes' traffic through this device (Reticulum "transport" mode). OFF
+        /// by default — relaying installs this device's identity as the Transport identity, the value
+        /// every relay branch in `Transport` gates on, and turns on recursive path requests so the
+        /// node answers path requests for third parties. Applied on `interfaceConnected` (like
+        /// `nodeModeEnabled`) so a persisted setting survives relaunch, and immediately on toggle so
+        /// it takes effect without a reconnect.
+        @Shared(.appStorage("relayEnabled")) public var relayEnabled: Bool = false
 
         public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242) {
             self.identity = identity
@@ -90,6 +97,7 @@ public struct AppFeature {
         case closeConversation
         case startConversation(String)
         case setNodeMode(Bool)
+        case setRelayMode(Bool)
         case setPropagationNode(String)
         case setDisplayName(String)
         case syncTapped
@@ -326,6 +334,13 @@ public struct AppFeature {
                 }
                 if state.nodeModeEnabled {
                     effects.append(.send(.node(.setNodeMode(true))))
+                }
+                // Re-apply a persisted relay-mode setting so the node relays again after relaunch.
+                // Idempotent — setTransportIdentity/setRecursivePathRequests just overwrite the same
+                // shared Transport state on every reconnect. See `.setRelayMode`.
+                if state.relayEnabled {
+                    effects.append(.send(.node(.client(.endpoint(.enableRelay(state.identity))))))
+                    effects.append(.send(.node(.client(.endpoint(.transport(.setRecursivePathRequests(true)))))))
                 }
                 return .merge(effects)
 
@@ -577,6 +592,28 @@ public struct AppFeature {
             case let .setNodeMode(enabled):
                 state.$nodeModeEnabled.withLock { $0 = enabled }
                 return .send(.node(.setNodeMode(enabled)))
+
+            case let .setRelayMode(enabled):
+                // Persist, then apply immediately so toggling while connected takes effect without a
+                // reconnect (mirrors setNodeMode). Enabling installs THIS device's identity as the
+                // Transport identity (the gate every relay branch checks) and turns on recursive path
+                // requests; disabling clears the identity — relaying goes back to dead — and stops
+                // answering path requests for third parties. There is no `disableRelay` verb, so the
+                // clear goes through the raw transport action. The persisted flag is re-applied on
+                // interfaceConnected so it survives relaunch.
+                state.$relayEnabled.withLock { $0 = enabled }
+                if enabled {
+                    let identity = state.identity
+                    return .merge(
+                        .send(.node(.client(.endpoint(.enableRelay(identity))))),
+                        .send(.node(.client(.endpoint(.transport(.setRecursivePathRequests(true))))))
+                    )
+                } else {
+                    return .merge(
+                        .send(.node(.client(.endpoint(.transport(.setTransportIdentity(nil)))))),
+                        .send(.node(.client(.endpoint(.transport(.setRecursivePathRequests(false))))))
+                    )
+                }
 
             case let .setPropagationNode(hex):
                 state.$propagationNodeHex.withLock { $0 = hex }
