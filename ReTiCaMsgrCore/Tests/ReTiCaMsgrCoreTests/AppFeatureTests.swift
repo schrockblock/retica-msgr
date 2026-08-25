@@ -40,6 +40,17 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
             close: { _ in },
             stop: { }
         )
+        // A hermetic BLE driver: a never-emitting event stream and no-op verbs. The live value is
+        // FCB/CoreBluetooth; the unimplemented testValue would flag an issue the moment `.ble(.start)`
+        // fires. Peers are injected in-test via the peerOnline action, not this stream.
+        $0.bleDriver = BLEDriver(
+            start: { _ in AsyncStream { _ in } },
+            readDirectory: { _ in },
+            openChannel: { _, _ in },
+            send: { _, _ in },
+            closeChannel: { _ in },
+            stop: { }
+        )
     }
     store.exhaustivity = .off
     return store
@@ -129,6 +140,135 @@ private let peerB = String(repeating: "b", count: 32)
         return
     }
     #expect(server.interface.port == 5151)   // the LISTEN port, not the dial port 4243
+}
+
+// MARK: - BLE endpoint slot (A1)
+
+/// BLE is OPT-IN and OFF by default: a fresh state that has never toggled it must not grow a `ble`
+/// slot on connect. Nothing constructs the driver until the user asks for it.
+@MainActor @Test func onLaunchDoesNotAddBLESlotWhenBLEDisabled() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())   // bleEnabled defaults false
+    await store.send(.onLaunch)
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    #expect(store.state.node.client.endpoint.ble == nil)
+}
+
+/// Enabling BLE constructs the `ble` slot at connect time (Settings synced), so the container's
+/// `.start` brings the interface up. The live FCB/CoreBluetooth driver is auto-wired via the
+/// `\.bleDriver` dependency — nothing to inject here.
+@MainActor @Test func enablingBLEAddsSlotAtConnect() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { $0.$bleEnabled.withLock { $0 = true } }
+    await store.send(.onLaunch)
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    #expect(store.state.node.client.endpoint.ble != nil)
+}
+
+/// A re-sync (foreground / reconnect) must PRESERVE an already-running BLE slot rather than rebuild
+/// it — rebuilding would reset `peerInterfaces` and drop every live peer. We seed a fake peer into
+/// the slot and confirm it survives a second sync-triggering connect.
+@MainActor @Test func reconnectPreservesRunningBLESlotAndItsPeers() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { $0.$bleEnabled.withLock { $0 = true } }
+    // First connect builds the slot; a peer then comes online and is registered into it (via the
+    // real container wiring — `peerInterfaces` has an inaccessible setter, and this exercises the
+    // production path anyway).
+    await store.send(.connectTapped)
+    let token = Data(repeating: 0xAB, count: 16)
+    await store.send(.node(.client(.endpoint(.ble(.ble(.delegate(.peerOnline(token))))))))
+    #expect(store.state.node.client.endpoint.ble?.peerInterfaces[bleInterfaceID(token)] == token)
+
+    // A second connect re-runs syncEndpointHostPort. The slot (and its peer) must survive — a
+    // rebuild would reset peerInterfaces and drop the peer.
+    await store.send(.connectTapped)
+    let peers = store.state.node.client.endpoint.ble?.peerInterfaces ?? [:]
+    #expect(peers.count == 1, "a running BLE slot must be preserved across reconnect, not rebuilt")
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Toggling BLE OFF removes the slot on the next connect, so the interface stops.
+@MainActor @Test func disablingBLERemovesSlotAtConnect() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { state in
+        state.$bleEnabled.withLock { $0 = false }
+        state.node.client.endpoint.ble = BLEEndpoint.State()   // a leftover slot from a previous run
+    }
+    await store.send(.connectTapped)
+    #expect(store.state.node.client.endpoint.ble == nil)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+// MARK: - Per-interface connection model (A4)
+
+/// The headline A4 fix: with BLE and TCP both up, a BLE peer dropping must NOT mark the whole app
+/// offline. Before this, ANY `interfaceDisconnected` set `connection = .disconnected`, so one BLE
+/// peer walking away would flip the status to Disconnected while the TCP node stayed healthy.
+@MainActor @Test func bleDropKeepsConnectedWhileTCPIsUp() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    let blePeer = bleInterfaceID(Data(repeating: 0xAB, count: 16))
+
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(blePeer, .ble))))))
+    #expect(store.state.connection == .connected)
+
+    // The BLE peer drops — TCP is still up, so the app stays connected.
+    await store.send(.node(.client(.endpoint(.transport(.interfaceDisconnected(blePeer))))))
+    #expect(store.state.connection == .connected,
+            "a BLE peer dropping must not mark the app offline while TCP is healthy")
+
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+/// When the LAST connected interface drops, the app is disconnected. This is the other half of the
+/// per-interface model: status is "any interface up", so emptying the set flips to disconnected.
+@MainActor @Test func lastInterfaceDropMarksDisconnected() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    #expect(store.state.connection == .connected)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceDisconnected(InterfaceID("tcp")))))))
+    #expect(store.state.connection == .disconnected,
+            "the last interface dropping must mark the app disconnected")
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Foreground re-dial keys on the TCP interface specifically, not "any interface up". A live BLE
+/// peer must NOT suppress the TCP re-dial: iOS tears the TCP socket down while suspended, and if a
+/// BLE peer held `connection == .connected` the socket would never be rebuilt.
+@MainActor @Test func foregroundReDialsWhenTCPDownEvenWithBLEPeerUp() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { $0.$bleEnabled.withLock { $0 = true } }
+    let blePeer = bleInterfaceID(Data(repeating: 0xCD, count: 16))
+    // Only a BLE peer is up; TCP is not in the connected set.
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(blePeer, .ble))))))
+    #expect(store.state.connection == .connected)
+    await store.skipReceivedActions(strict: false)
+
+    await store.send(.foregrounded) { $0.connection = .connecting }
+    await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Conversely, when TCP is up, foreground must NOT re-dial — re-dialling a healthy socket would tear
+/// down every live link on each app switch (the original reason `.foregrounded` guards).
+@MainActor @Test func foregroundDoesNotReDialWhenTCPIsUp() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    #expect(store.state.connection == .connected)
+    await store.skipReceivedActions(strict: false)
+
+    await store.send(.foregrounded)   // no state change, no start effect
+    #expect(store.state.connection == .connected)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
 }
 
 @MainActor

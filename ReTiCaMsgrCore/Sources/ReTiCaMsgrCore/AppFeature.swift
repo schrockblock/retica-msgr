@@ -30,6 +30,13 @@ public struct AppFeature {
         @Shared(.appStorage("host")) public var host: String = "127.0.0.1"
         @Shared(.appStorage("port")) public var port: Int = 4242
         public var connection: Connection = .disconnected
+        /// The set of currently-connected Transport interfaces (TCP client, each accepted server
+        /// connection, each BLE peer). `connection` is derived from this: the app is `.connected`
+        /// while ANY interface is up. Session-only — rebuilt from live `interfaceConnected` /
+        /// `interfaceDisconnected` events, never persisted. Before this, the app collapsed every
+        /// interface into one bool, so a single BLE peer dropping marked the whole app offline while
+        /// TCP stayed healthy (punch-list A4).
+        public var connectedInterfaces: Set<InterfaceID> = []
         public var draft = ""
         // Derived list of peers, reloaded after every write.
         public var conversations: [Conversation] = []
@@ -67,6 +74,13 @@ public struct AppFeature {
         /// `nodeModeEnabled`) so a persisted setting survives relaunch, and immediately on toggle so
         /// it takes effect without a reconnect.
         @Shared(.appStorage("relayEnabled")) public var relayEnabled: Bool = false
+        /// Opt-in: also run a BLE interface so this device connects directly to nearby Reticulum
+        /// devices (other iPhones, Raspberry Pis) to send and relay over Bluetooth. OFF by default.
+        /// Gates whether the `ble` driver slot is present; decided at connect time in
+        /// `syncEndpointHostPort` (like `listenEnabled`), so toggling takes effect on the next
+        /// Connect. The live FCB/CoreBluetooth driver is auto-wired via `\.bleDriver` — nothing to
+        /// inject.
+        @Shared(.appStorage("bleEnabled")) public var bleEnabled: Bool = false
 
         public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242) {
             self.identity = identity
@@ -259,11 +273,14 @@ public struct AppFeature {
                 )
 
             case .foregrounded:
-                // Only re-dial when we are not already up: a healthy connection carries live links
-                // and re-dialling would tear them down on every app switch. If the socket died
-                // while suspended, the drop is processed as the app resumes and this branch (or the
-                // interface's own backoff) brings it back.
-                guard state.connection != .connected else { return .none }
+                // Only re-dial when the TCP socket specifically is down. iOS tears the TCP socket
+                // down while suspended, so foreground is when we rebuild it — but a live BLE peer
+                // must NOT suppress that: keying on the whole-app `.connected` bool would skip the
+                // re-dial whenever any BLE peer held the app "connected", leaving the dead socket
+                // unrebuilt (A4). A HEALTHY tcp interface still short-circuits, because re-dialling
+                // it would tear down its live links on every app switch.
+                let tcpID = state.node.client.endpoint.tcpClient?.interfaceID
+                if let tcpID, state.connectedInterfaces.contains(tcpID) { return .none }
                 state.connection = .connecting
                 syncEndpointHostPort(&state)
                 return .send(.node(.client(.endpoint(.start))))
@@ -300,7 +317,11 @@ public struct AppFeature {
                 state.connection = .disconnected
                 return .send(.node(.client(.endpoint(.stop))))
 
-            case .node(.client(.endpoint(.transport(.interfaceConnected)))):
+            case let .node(.client(.endpoint(.transport(.interfaceConnected(interfaceID, _))))):
+                // Per-interface tracking (A4): record WHICH interface came up. TCP client, each
+                // accepted server connection, and each BLE peer all surface here with a distinct
+                // InterfaceID. The app is `.connected` while any interface is up.
+                state.connectedInterfaces.insert(interfaceID)
                 state.connection = .connected
                 // Restore the Send gate for peers whose persisted path is now usable (interface just registered).
                 // The Transport Scope has already run (child reducers reduce before this Reduce body — see the
@@ -344,8 +365,13 @@ public struct AppFeature {
                 }
                 return .merge(effects)
 
-            case .node(.client(.endpoint(.transport(.interfaceDisconnected(_))))):
-                state.connection = .disconnected
+            case let .node(.client(.endpoint(.transport(.interfaceDisconnected(interfaceID))))):
+                // Per-interface tracking (A4): only THIS interface went away. The app stays
+                // `.connected` as long as another interface remains — so one BLE peer dropping no
+                // longer marks the whole app offline while TCP is healthy. Only when the set empties
+                // (the last interface departed) does the app become `.disconnected`.
+                state.connectedInterfaces.remove(interfaceID)
+                state.connection = state.connectedInterfaces.isEmpty ? .disconnected : .connected
                 return .none
 
             // --- Public-key requests: link lifecycle → request/response ---
@@ -791,6 +817,7 @@ private func syncEndpointHostPort(_ state: inout AppFeature.State) {
     let dialPort = UInt16(exactly: state.port)
     let listenEnabled = state.listenEnabled
     let listenPort = UInt16(exactly: state.listenPort)
+    let bleEnabled = state.bleEnabled
 
     state.node.client.endpoint.tcpClient?.interface.host = host
     if let dialPort {
@@ -808,6 +835,19 @@ private func syncEndpointHostPort(_ state: inout AppFeature.State) {
         }
     } else {
         state.node.client.endpoint.tcpServer = nil
+    }
+
+    // Add or remove the BLE driver slot to match the current setting (A1). Same in-place, optional-
+    // slot pattern as the listener: rebuilding only the OPTIONAL slot leaves the shared
+    // transport/linkPlane untouched. PRESERVE an already-running slot rather than rebuilding it on
+    // every re-dial — a fresh BLEEndpoint.State would reset `peerInterfaces` and drop every live
+    // BLE peer on each foreground/reconnect. Build a slot only when there is none.
+    if bleEnabled {
+        if state.node.client.endpoint.ble == nil {
+            state.node.client.endpoint.ble = BLEEndpoint.State()
+        }
+    } else {
+        state.node.client.endpoint.ble = nil
     }
 }
 

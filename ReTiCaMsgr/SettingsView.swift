@@ -90,6 +90,16 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Bluetooth") {
+                    // Standard Toggle in a Form row: the whole row is already hittable.
+                    Toggle("Connect over Bluetooth", isOn: $store.bleEnabled)
+                    Text("Connects directly to nearby Reticulum devices (other iPhones, Raspberry "
+                         + "Pis) over Bluetooth to send and relay messages — no Wi-Fi or shared "
+                         + "server needed. Off by default. Takes effect on the next Connect.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Relay") {
                     Toggle("Relay traffic for other nodes", isOn: Binding(
                         get: { store.relayEnabled },

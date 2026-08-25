@@ -33,9 +33,22 @@
 		49C39946301E7A5B003D6278 /* ReTiCaMsgrUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ReTiCaMsgrUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AAAAAAAA0000000000FF0001 /* Exceptions for "ReTiCaMsgr" folder in "ReTiCaMsgr" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 49C3992E301E7A55003D6278 /* ReTiCaMsgr */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		49C39931301E7A55003D6278 /* ReTiCaMsgr */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AAAAAAAA0000000000FF0001 /* Exceptions for "ReTiCaMsgr" folder in "ReTiCaMsgr" target */,
+			);
 			path = ReTiCaMsgr;
 			sourceTree = "<group>";
 		};
@@ -409,6 +422,8 @@
 				DEVELOPMENT_TEAM = HK6WSAR793;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ReTiCaMsgr/Info.plist;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Uses Bluetooth to connect directly to nearby Reticulum devices and relay messages.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -441,6 +456,8 @@
 				DEVELOPMENT_TEAM = HK6WSAR793;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ReTiCaMsgr/Info.plist;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Uses Bluetooth to connect directly to nearby Reticulum devices and relay messages.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
