@@ -201,6 +201,44 @@ private let peerB = String(repeating: "b", count: 32)
     await store.skipReceivedActions(strict: false)
 }
 
+// MARK: - Bluetooth permission / adapter alert (A5)
+
+/// A terminal `unauthorized` from the BLE adapter (permission denied) surfaces as a
+/// permission-denied alert the UI turns into an "Open Settings" prompt. The signal arrives on the
+/// BLE-only hatch — `.ble(.delegate(.adapterUnavailable))` — which nothing consumed before S6/A5.
+@MainActor @Test func bleUnauthorizedSurfacesPermissionDeniedAlert() async {
+    let db = try! AppDatabase.makeInMemory()
+    // A BLE slot must be present for the .ble delegate to route (in production the slot is what
+    // emitted the delegate); without it TransportEndpoint's ifLet warns on a child action to nil.
+    let store = makeStore(db, identity: Identity()) { $0.node.client.endpoint.ble = BLEEndpoint.State() }
+    await store.send(.node(.client(.endpoint(.ble(.delegate(.adapterUnavailable(.unauthorized)))))))
+    #expect(store.state.bluetoothAlert == .permissionDenied)
+}
+
+/// A terminal `unsupported` (no BLE LE radio) surfaces as a distinct alert — a different message,
+/// not an "Open Settings" prompt (there is nothing to grant).
+@MainActor @Test func bleUnsupportedSurfacesUnsupportedAlert() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { $0.node.client.endpoint.ble = BLEEndpoint.State() }
+    await store.send(.node(.client(.endpoint(.ble(.delegate(.adapterUnavailable(.unsupported)))))))
+    #expect(store.state.bluetoothAlert == .unsupported)
+}
+
+/// A fresh connect attempt clears a stale alert — the user may have granted permission and is
+/// retrying, so the denial must not stick on screen past the next attempt (it re-fires if still
+/// denied). Without this, a one-time denial would be shown forever.
+@MainActor @Test func connectClearsStaleBluetoothAlert() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.$bleEnabled.withLock { $0 = true }
+        s.bluetoothAlert = .permissionDenied
+    }
+    await store.send(.connectTapped)
+    #expect(store.state.bluetoothAlert == nil)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
 // MARK: - Per-interface connection model (A4)
 
 /// The headline A4 fix: with BLE and TCP both up, a BLE peer dropping must NOT mark the whole app

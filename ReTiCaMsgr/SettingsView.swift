@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 import ComposableArchitecture
 import ReTiCaMsgrCore
 
@@ -14,6 +15,7 @@ struct SettingsView: View {
     @State private var pnInput: String = ""
     @State private var nameInput: String = ""
     @State private var showingAddress = false
+    @Environment(\.openURL) private var openURL
 
     private var connectionColor: Color {
         switch store.connection {
@@ -93,11 +95,29 @@ struct SettingsView: View {
                 Section("Bluetooth") {
                     // Standard Toggle in a Form row: the whole row is already hittable.
                     Toggle("Connect over Bluetooth", isOn: $store.bleEnabled)
-                    Text("Connects directly to nearby Reticulum devices (other iPhones, Raspberry "
-                         + "Pis) over Bluetooth to send and relay messages — no Wi-Fi or shared "
-                         + "server needed. Off by default. Takes effect on the next Connect.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if store.bluetoothAlert == .permissionDenied {
+                        Text("Bluetooth permission is denied. Allow it in Settings to connect to "
+                             + "nearby devices.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                openURL(url)
+                            }
+                        }
+                    } else if store.bluetoothAlert == .unsupported {
+                        Text("This device doesn’t support Bluetooth LE, so Bluetooth connections "
+                             + "aren’t available.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    } else {
+                        Text("Connects directly to nearby Reticulum devices (other iPhones, "
+                             + "Raspberry Pis) over Bluetooth to send and relay messages — no Wi-Fi "
+                             + "or shared server needed. Off by default. Takes effect on the next "
+                             + "Connect.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Relay") {

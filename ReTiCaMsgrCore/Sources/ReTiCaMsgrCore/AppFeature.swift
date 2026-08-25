@@ -5,12 +5,23 @@ import Sharing
 import SQLiteData
 import GRDB
 import ReTiCA
+import ReTiCAInterfaces
 import ReTiCANode
 import ReTiCATransport
 
 @Reducer
 public struct AppFeature {
     public enum Connection: Equatable { case disconnected, connecting, connected }
+
+    /// A terminal Bluetooth-adapter problem worth surfacing to the user (A5). Mapped from the BLE
+    /// interface's `adapterUnavailable` delegate, which only fires for causes retrying cannot fix.
+    /// `poweredOff`/transient causes never reach here — those stay on the library's internal retry.
+    public enum BluetoothAlert: Equatable {
+        /// Permission denied. The UI offers an "Open Settings" prompt (the toggle lives there).
+        case permissionDenied
+        /// No Bluetooth LE radio (e.g. a Mac without the hardware). Informational — nothing to grant.
+        case unsupported
+    }
 
     /// Status of a public-key request for one peer.
     public enum PublicKeyRequestStatus: Equatable {
@@ -37,6 +48,10 @@ public struct AppFeature {
         /// interface into one bool, so a single BLE peer dropping marked the whole app offline while
         /// TCP stayed healthy (punch-list A4).
         public var connectedInterfaces: Set<InterfaceID> = []
+        /// Set when the BLE adapter is terminally unavailable (permission denied / no radio); drives
+        /// the Settings permission surface (A5). Session-only — cleared on each connect attempt so a
+        /// resolved denial doesn't stick, and re-set if the adapter is still unavailable.
+        public var bluetoothAlert: BluetoothAlert? = nil
         public var draft = ""
         // Derived list of peers, reloaded after every write.
         public var conversations: [Conversation] = []
@@ -372,6 +387,17 @@ public struct AppFeature {
                 // (the last interface departed) does the app become `.disconnected`.
                 state.connectedInterfaces.remove(interfaceID)
                 state.connection = state.connectedInterfaces.isEmpty ? .disconnected : .connected
+                return .none
+
+            case let .node(.client(.endpoint(.ble(.delegate(.adapterUnavailable(cause)))))):
+                // A5: the BLE adapter is terminally unavailable. Map the cause to a user-facing alert.
+                // Only terminal causes arrive here (the library keeps transient ones on its retry
+                // loop), so poweredOff/other are defensively ignored rather than shown as a fault.
+                switch cause {
+                case .unauthorized:       state.bluetoothAlert = .permissionDenied
+                case .unsupported:        state.bluetoothAlert = .unsupported
+                case .poweredOff, .other: break
+                }
                 return .none
 
             // --- Public-key requests: link lifecycle → request/response ---
@@ -836,6 +862,11 @@ private func syncEndpointHostPort(_ state: inout AppFeature.State) {
     } else {
         state.node.client.endpoint.tcpServer = nil
     }
+
+    // A fresh connect attempt clears any stale Bluetooth alert (A5): the user may have resolved the
+    // permission and is retrying. If the adapter is still unavailable, the library re-emits and the
+    // alert re-appears; if it now works, the denial correctly disappears.
+    state.bluetoothAlert = nil
 
     // Add or remove the BLE driver slot to match the current setting (A1). Same in-place, optional-
     // slot pattern as the listener: rebuilding only the OPTIONAL slot leaves the shared
