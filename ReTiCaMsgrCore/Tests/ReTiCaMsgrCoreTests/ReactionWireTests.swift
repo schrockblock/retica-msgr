@@ -81,3 +81,52 @@ private let target32 = Data(repeating: 0xAB, count: 32)
 @Test func quickReactionsAreTheAgreedSix() {
     #expect(QuickReactions.default == ["❤️", "👍", "👎", "😂", "😮", "😢"])
 }
+
+// MARK: - Cross-device hash pinning (final-review Fix B)
+//
+// Reactions target a message by its LXMF hash, so the hash the receiver computes after unpacking
+// must equal the sender's `msg.hash`. These tests document (they do not fix) existing ReTiCA
+// behaviour — see LXMessage.unpack, which recomputes the hash from the on-wire payload.
+
+@Test func unpackedHashEqualsSenderHash() throws {
+    let sender = Identity()
+    let m = LXMessage.create(
+        source: sender,
+        destinationHash: Data(repeating: 0x11, count: 16),
+        timestamp: 1700000000.25,
+        title: Data(),
+        content: Data("hello".utf8),
+        fields: []
+    )
+    #expect(LXMessage.unpack(m.packed)?.hash == m.hash)
+}
+
+@Test func unpackedHashEqualsSenderHashWithReactionFields() throws {
+    let sender = Identity()
+    let m = LXMessage.create(
+        source: sender,
+        destinationHash: Data(repeating: 0x11, count: 16),
+        timestamp: 1700000000.25,
+        title: Data(),
+        content: Data(),
+        fields: ReactionWire.encode(target: target32, emoji: "❤️")
+    )
+    #expect(LXMessage.unpack(m.packed)?.hash == m.hash)
+}
+
+/// A stamped copy attaches a delivery stamp via `withStamp` without changing `hash`/`signature`
+/// (LXMessage.withStamp doc comment). `unpack` must still recompute the same hash from the
+/// 4-element payload (the stamp is excluded from the hash, per LXMessage.unpack).
+@Test func unpackedHashEqualsSenderHashWithStamp() throws {
+    let sender = Identity()
+    let m = LXMessage.create(
+        source: sender,
+        destinationHash: Data(repeating: 0x11, count: 16),
+        timestamp: 1700000000.25,
+        title: Data(),
+        content: Data("hello".utf8),
+        fields: []
+    )
+    let stamped = m.withStamp(Data(repeating: 0xFF, count: LXStamper.stampSize))
+    #expect(LXMessage.unpack(stamped.packed)?.hash == stamped.hash)
+}
