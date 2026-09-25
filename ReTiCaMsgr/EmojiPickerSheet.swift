@@ -11,26 +11,33 @@ struct EmojiPickerSheet: View {
     private let columns = [GridItem(.adaptive(minimum: 44), spacing: 4)]
 
     var body: some View {
+        let searchResults: [EmojiCatalog.Entry] = query.isEmpty ? [] : catalog.search(query)
         NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 4) {
-                    if query.isEmpty {
-                        ForEach(catalog.groups) { group in
-                            Section {
-                                cells(group.emojis)
-                            } header: {
-                                Text(group.name)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, 8)
+            Group {
+                if !query.isEmpty && searchResults.isEmpty {
+                    ContentUnavailableView.search(text: query)
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 4) {
+                            if query.isEmpty {
+                                ForEach(catalog.groups) { group in
+                                    Section {
+                                        cells(group.emojis)
+                                    } header: {
+                                        Text(group.name)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(.top, 8)
+                                    }
+                                }
+                            } else {
+                                cells(searchResults)
                             }
                         }
-                    } else {
-                        cells(catalog.search(query))
+                        .padding(.horizontal)
                     }
                 }
-                .padding(.horizontal)
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search emoji")
             .navigationTitle("React")
