@@ -28,6 +28,9 @@ struct ReactionPaletteMenu: View {
             }
             .pickerStyle(.palette)
             .labelsHidden()
+            // Close the context menu on an emoji tap, like iMessage. Without this a palette
+            // selection leaves the menu open (observed on iOS 26.4).
+            .menuActionDismissBehavior(.enabled)
 
             Button { onMore() } label: {
                 Label("More Reactions", systemImage: "face.smiling")
