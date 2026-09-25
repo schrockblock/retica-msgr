@@ -11,6 +11,8 @@ struct ReactionPaletteMenu: View {
     let current: String?
     let onSelect: (String) -> Void
     let onMore: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         Group {
@@ -21,7 +23,7 @@ struct ReactionPaletteMenu: View {
                 set: { onSelect($0) }
             )) {
                 ForEach(QuickReactions.default, id: \.self) { emoji in
-                    Text(emoji)
+                    emojiLabel(emoji)
                         .tag(emoji)
                         .accessibilityLabel(current == emoji ? "Remove \(emoji)" : "React \(emoji)")
                 }
@@ -36,5 +38,24 @@ struct ReactionPaletteMenu: View {
                 Label("More Reactions", systemImage: "face.smiling")
             }
         }
+    }
+
+    /// Enabled: the plain emoji `Text`. Disabled (peer unreachable): a pre-dimmed bitmap, because
+    /// the palette flattens its items into menu elements and ignores `.opacity` / `.foregroundStyle`
+    /// on the label (observed on iOS 26.4), so the only way to show it disabled is to bake the
+    /// alpha into the image. `.alwaysOriginal` keeps the menu from template-tinting it.
+    @ViewBuilder
+    private func emojiLabel(_ emoji: String) -> some View {
+        if isEnabled {
+            Text(emoji)
+        } else {
+            Image(uiImage: dimmedEmoji(emoji))
+        }
+    }
+
+    private func dimmedEmoji(_ emoji: String) -> UIImage {
+        let renderer = ImageRenderer(content: Text(emoji).font(.footnote).opacity(0.35))
+        renderer.scale = displayScale
+        return (renderer.uiImage ?? UIImage()).withRenderingMode(.alwaysOriginal)
     }
 }
