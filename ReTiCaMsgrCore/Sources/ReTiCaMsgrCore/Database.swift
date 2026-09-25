@@ -72,6 +72,18 @@ public enum AppDatabase {
                 t.column("learnedAt", .datetime).notNull()
             }
         }
+        m.registerMigration("createReactions") { db in
+            // One row per (message, reactor): Signal/iMessage semantics, one reaction per person.
+            // Removals are tombstones (emoji = "") so a late, older add can't resurrect them.
+            // sentAt is REAL seconds-since-1970 so last-writer-wins comparisons are exact.
+            try db.create(table: "reactions") { t in
+                t.column("messageHash", .text).notNull()
+                t.column("reactorHex", .text).notNull()
+                t.column("emoji", .text).notNull()
+                t.column("sentAt", .double).notNull()
+                t.primaryKey(["messageHash", "reactorHex"])
+            }
+        }
         return m
     }
 
