@@ -580,6 +580,33 @@ public struct AppFeature {
                     wire=\(wireBytes, privacy: .public)B \
                     validated=\(validated, privacy: .public)
                     """)
+                let seenHashHex = m.hash.hexString
+                let seenNow = date.now
+                let openPeer = state.openPeerHex
+                switch ReactionWire.decode(m.fields) {
+                case let .reaction(target, emoji):
+                    // Reactions never become bubbles and never touch the conversation list.
+                    // Unvalidated ones can't be attributed, so only the seen hash is recorded.
+                    let reaction: Reaction? = validated
+                        ? Reaction(messageHash: target.hexString, reactorHex: incomingPeer,
+                                   emoji: emoji, sentAt: m.timestamp)
+                        : nil
+                    return .run { [database] send in
+                        try await database.write { db in
+                            if let reaction { try Reaction.apply(reaction, db) }
+                            try recordSeenHash(seenHashHex, at: seenNow, db)
+                        }
+                        if reaction != nil, incomingPeer == openPeer {
+                            try await reloadThread(database, incomingPeer, send)
+                        }
+                    }
+                case .malformed:
+                    return .run { [database] _ in
+                        try await database.write { try recordSeenHash(seenHashHex, at: seenNow, $0) }
+                    }
+                case .notReaction:
+                    break
+                }
                 let row = Message(
                     id: UUID(),
                     peerHex: incomingPeer,
@@ -588,11 +615,8 @@ public struct AppFeature {
                     timestamp: date.now,
                     status: MessageStatus.received,
                     validated: validated,
-                    messageHash: ""
+                    messageHash: seenHashHex
                 )
-                let openPeer = state.openPeerHex
-                let seenHashHex = m.hash.hexString
-                let seenNow = date.now
                 return .run { [database] send in
                     try await database.write { db in
                         try Message.insert { row }.execute(db)
@@ -601,11 +625,7 @@ public struct AppFeature {
                         // previous session should already be in seen, but a re-deliver would be
                         // wrong regardless). Then prune to RingSet.capacity so the table mirrors
                         // the in-memory ring and doesn't grow without bound.
-                        try SeenHashRow.where { $0.hashHex.eq(seenHashHex) }.delete().execute(db)
-                        try SeenHashRow.insert {
-                            SeenHashRow(hashHex: seenHashHex, storedAt: seenNow)
-                        }.execute(db)
-                        try pruneSeenHashes(db)
+                        try recordSeenHash(seenHashHex, at: seenNow, db)
                     }
                     try await reloadConversations(database, send)
                     if incomingPeer == openPeer {
@@ -954,4 +974,11 @@ private func pruneSeenHashes(_ db: GRDB.Database) throws {
             LIMIT MAX(0, (SELECT COUNT(*) FROM seenHashRows) - \(capacity))
         )
         """)
+}
+
+/// Upsert a seen-hash row and prune to the ring capacity (shared by text and reaction receives).
+private func recordSeenHash(_ hashHex: String, at now: Date, _ db: GRDB.Database) throws {
+    try SeenHashRow.where { $0.hashHex.eq(hashHex) }.delete().execute(db)
+    try SeenHashRow.insert { SeenHashRow(hashHex: hashHex, storedAt: now) }.execute(db)
+    try pruneSeenHashes(db)
 }

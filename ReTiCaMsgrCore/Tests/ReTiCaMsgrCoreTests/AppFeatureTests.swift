@@ -1872,3 +1872,100 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.skipReceivedActions(strict: false)
     await store.finish()
 }
+
+// MARK: - Reactions: receive path
+
+private func reactionMessage(from sender: Identity, to me: Identity, target: Data, emoji: String,
+                             at ts: Double, content: String = "") -> LXMessage {
+    LXMessage.create(
+        source: sender,
+        destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+        timestamp: ts,
+        title: Data(),
+        content: Data(content.utf8),
+        fields: ReactionWire.encode(target: target, emoji: emoji)
+    )
+}
+
+@MainActor @Test func incomingTextMessageStoresItsHash() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me)
+    let m = LXMessage.create(source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+                             timestamp: 1700000000.5, title: Data(), content: Data("hi".utf8))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    let rows = try! await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.map(\.messageHash) == [m.hash.hexString])
+}
+
+@MainActor @Test func incomingReactionIsStoredAndNotABubble() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = LXMessage.deliveryHash(identityHash: sender.hash).hexString
+    let target = Data(repeating: 0x42, count: 32)
+    let store = makeStore(db, identity: me)
+    let m = reactionMessage(from: sender, to: me, target: target, emoji: "😂", at: 1700000001)
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let messages = try! await db.read { try Message.all.fetchAll($0) }
+    let reactions = try! await db.read { try Reaction.all.fetchAll($0) }
+    let seen = try! await db.read { try SeenHashRow.all.fetchAll($0) }
+    #expect(messages.isEmpty)
+    #expect(reactions == [Reaction(messageHash: target.hexString, reactorHex: senderHex, emoji: "😂", sentAt: 1700000001)])
+    #expect(seen.map(\.hashHex) == [m.hash.hexString])
+    #expect(store.state.conversations.isEmpty)
+}
+
+@MainActor @Test func reactionWithFallbackContentIsNotABubble() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me)
+    let m = reactionMessage(from: sender, to: me, target: Data(repeating: 1, count: 32), emoji: "❤️",
+                            at: 1700000001, content: "Reacted ❤️ to \"hi\"")
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let messages = try! await db.read { try Message.all.fetchAll($0) }
+    let reactions = try! await db.read { try Reaction.all.fetchAll($0) }
+    #expect(messages.isEmpty)
+    #expect(reactions.count == 1)
+}
+
+@MainActor @Test func unvalidatedReactionIsDropped() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me)
+    let m = reactionMessage(from: Identity(), to: me, target: Data(repeating: 1, count: 32), emoji: "❤️", at: 1)
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: false)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let messages = try! await db.read { try Message.all.fetchAll($0) }
+    let reactions = try! await db.read { try Reaction.all.fetchAll($0) }
+    let seen = try! await db.read { try SeenHashRow.all.fetchAll($0) }
+    #expect(messages.isEmpty)
+    #expect(reactions.isEmpty)
+    #expect(seen.count == 1)
+}
+
+@MainActor @Test func malformedReactionIsDroppedNotABubble() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me)
+    let m = LXMessage.create(source: Identity(), destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+                             timestamp: 1, title: Data(), content: Data(),
+                             fields: [.init(0xFB, .string("reticamsgr.reaction"))])
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let messages = try! await db.read { try Message.all.fetchAll($0) }
+    let reactions = try! await db.read { try Reaction.all.fetchAll($0) }
+    let seen = try! await db.read { try SeenHashRow.all.fetchAll($0) }
+    #expect(messages.isEmpty)
+    #expect(reactions.isEmpty)
+    #expect(seen.count == 1)
+}

@@ -2,8 +2,8 @@ import Foundation
 import SQLiteData
 
 /// A single chat message row. `peerHex` is the other party's lxmf.delivery hash (hex);
-/// `messageHash` is the LXMessage.hash of an outgoing message (hex), used to correlate
-/// deliveryFailed.
+/// `messageHash` is the LXMessage.hash (hex) — correlates deliveryFailed for outgoing rows and is
+/// the reaction target for all rows.
 @Table
 public struct Message: Identifiable, Equatable, Sendable {
     public var id: UUID
@@ -13,7 +13,7 @@ public struct Message: Identifiable, Equatable, Sendable {
     public var timestamp: Date
     public var status: String        // MessageStatus.*
     public var validated: Bool       // incoming: signature validated
-    public var messageHash: String   // outgoing: LXMessage.hash hex ("" for incoming)
+    public var messageHash: String   // LXMessage.hash hex ("" for incoming rows stored before reactions shipped)
 
     public init(
         id: UUID,
