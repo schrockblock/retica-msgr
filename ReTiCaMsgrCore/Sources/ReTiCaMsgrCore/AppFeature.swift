@@ -58,6 +58,12 @@ public struct AppFeature {
         // The peer whose thread is currently open (drives navigation), and its messages.
         public var openPeerHex: String? = nil
         public var threadMessages: [Message] = []
+        /// Visible reaction rows for the open thread: reactor is me or the open peer only, so a
+        /// third party who knows a message hash can't inject a badge into this conversation.
+        /// Always assign through `setThreadReactionRows` so `threadReactions` stays in sync.
+        public var threadReactionRows: [Reaction] = []
+        /// Badge data keyed by message hash hex. Derived from `threadReactionRows`.
+        public var threadReactions: [String: [ReactionSummary.Item]] = [:]
         // Peers with a known path (from pathLearned); gates Send in the UI. Session-only.
         public var reachablePeers: Set<String> = []
         // In-flight / settled public-key requests, keyed by the peer's delivery-destination hash hex.
@@ -110,6 +116,11 @@ public struct AppFeature {
             _host = Shared(wrappedValue: host, .appStorage("host"))
             _port = Shared(wrappedValue: port, .appStorage("port"))
         }
+
+        public mutating func setThreadReactionRows(_ rows: [Reaction]) {
+            threadReactionRows = rows
+            threadReactions = ReactionSummary.byMessage(rows, me: myAddressHex)
+        }
     }
 
     public enum Action: Equatable, BindableAction {
@@ -135,7 +146,8 @@ public struct AppFeature {
         case announceRowTapped(destinationHashHex: String)
         case sendTapped
         case conversationsLoaded([Conversation])
-        case threadLoaded([Message])
+        case threadLoaded([Message], reactions: [Reaction] = [])
+        case reactionSelected(messageHash: String, emoji: String)
         case rehydratePropagationStore([Data])
         /// Restore the router's dedup sets (seen-message hashes + downloaded transient IDs) from the
         /// previous session. Sent on launch after reading the three durability tables.
@@ -462,6 +474,7 @@ public struct AppFeature {
             case .closeConversation:
                 state.openPeerHex = nil
                 state.threadMessages = []
+                state.setThreadReactionRows([])
                 state.draft = ""
                 return .none
 
@@ -502,6 +515,40 @@ public struct AppFeature {
                         try await database.write { try Message.insert { row }.execute($0) }
                         try await reloadThread(database, peerHex, send)
                         try await reloadConversations(database, send)
+                    }
+                )
+
+            case let .reactionSelected(messageHash, emoji):
+                guard !messageHash.isEmpty,
+                      let target = Data(hexString: messageHash),
+                      let peerHex = state.openPeerHex,
+                      let peer = Data(hexString: peerHex) else { return .none }
+                let me = state.myAddressHex
+                let mine = state.threadReactionRows.first { $0.messageHash == messageHash && $0.reactorHex == me }
+                // Same emoji again = remove (Signal/iMessage toggle).
+                let newEmoji = mine?.emoji == emoji ? "" : emoji
+                // Strictly monotonic per reactor so two taps in one clock tick still apply in order
+                // on both ends (Reaction.apply ignores equal timestamps).
+                let sentAt = max(date.now.timeIntervalSince1970, (mine?.sentAt ?? 0) + 0.001)
+                let msg = LXMessage.create(
+                    source: state.identity,
+                    destinationHash: peer,
+                    timestamp: sentAt,
+                    title: Data(),
+                    content: Data(),
+                    fields: ReactionWire.encode(target: target, emoji: newEmoji)
+                )
+                let row = Reaction(messageHash: messageHash, reactorHex: me, emoji: newEmoji, sentAt: sentAt)
+                // Optimistic: update in-memory rows now so a second tap before the reload sees it.
+                state.setThreadReactionRows(
+                    state.threadReactionRows.filter { !($0.messageHash == messageHash && $0.reactorHex == me) } + [row]
+                )
+                let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+                return .merge(
+                    .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
+                    .run { [database] send in
+                        try await database.write { try Reaction.apply(row, $0) }
+                        try await reloadThread(database, peerHex, send)
                     }
                 )
 
@@ -657,8 +704,10 @@ public struct AppFeature {
                 state.conversations = rows
                 return .none
 
-            case let .threadLoaded(rows):
+            case let .threadLoaded(rows, reactions):
                 state.threadMessages = rows
+                let allowed: Set<String> = [state.myAddressHex, state.openPeerHex ?? ""]
+                state.setThreadReactionRows(reactions.filter { allowed.contains($0.reactorHex) })
                 return .none
 
             case let .setNodeMode(enabled):
@@ -925,10 +974,13 @@ private func reloadConversations(_ database: any DatabaseWriter, _ send: Send<Ap
 }
 
 private func reloadThread(_ database: any DatabaseWriter, _ peerHex: String, _ send: Send<AppFeature.Action>) async throws {
-    let rows = try await database.read {
-        try Message.where { $0.peerHex.eq(peerHex) }.order(by: \.timestamp).fetchAll($0)
+    let (rows, reactions) = try await database.read { db in
+        let rows = try Message.where { $0.peerHex.eq(peerHex) }.order(by: \.timestamp).fetchAll(db)
+        let hashes = rows.map(\.messageHash).filter { !$0.isEmpty }
+        let reactions = hashes.isEmpty ? [] : try Reaction.where { $0.messageHash.in(hashes) }.fetchAll(db)
+        return (rows, reactions)
     }
-    await send(.threadLoaded(rows))
+    await send(.threadLoaded(rows, reactions: reactions))
 }
 
 /// Persist the full `learned` snapshot to `learnedDestinationRows`, replacing the table atomically.

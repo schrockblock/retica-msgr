@@ -1969,3 +1969,140 @@ private func reactionMessage(from sender: Identity, to me: Identity, target: Dat
     #expect(reactions.isEmpty)
     #expect(seen.count == 1)
 }
+
+// MARK: - Reactions: thread state + reactionSelected
+
+@MainActor
+private func sentReaction(_ store: TestStoreOf<AppFeature>) async -> (target: Data, emoji: String)? {
+    var out: (Data, String)?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action,
+           case let .reaction(t, e) = ReactionWire.decode(msg.fields) {
+            out = (t, e)
+            return true
+        }
+        return false
+    }
+    return out
+}
+
+@MainActor @Test func reactionSelectedSetsSendsAndShowsBadge() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let hash = String(repeating: "c", count: 64)
+    try! await seed(db, [msg(1, peerA, "yo", 1000, outgoing: false, status: MessageStatus.received, hash: hash)])
+    let store = makeStore(db, identity: me) { $0.openPeerHex = peerA }
+    await store.send(.reactionSelected(messageHash: hash, emoji: "❤️"))
+    let sent = await sentReaction(store)
+    #expect(sent?.target == Data(hexString: hash))
+    #expect(sent?.emoji == "❤️")
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadReactions[hash] == [.init(emoji: "❤️", count: 1, includesMe: true)])
+    let rows = try! await db.read { try Reaction.all.fetchAll($0) }
+    #expect(rows.map(\.reactorHex) == [store.state.myAddressHex])
+}
+
+@MainActor @Test func reactionSelectedReplacesMyEmoji() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hash = String(repeating: "c", count: 64)
+    try! await seed(db, [msg(1, peerA, "yo", 1000, outgoing: false, status: MessageStatus.received, hash: hash)])
+    let store = makeStore(db, identity: Identity()) { $0.openPeerHex = peerA }
+    await store.send(.reactionSelected(messageHash: hash, emoji: "❤️"))
+    _ = await sentReaction(store)
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    await store.send(.reactionSelected(messageHash: hash, emoji: "😂"))
+    let sent = await sentReaction(store)
+    #expect(sent?.emoji == "😂")
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadReactions[hash] == [.init(emoji: "😂", count: 1, includesMe: true)])
+}
+
+/// Review Focus 1: the test clock is frozen, so both taps see the same `date.now`. The second
+/// (toggle-off) must still win — own sentAt is forced strictly monotonic.
+@MainActor @Test func reactionSelectedTogglesOffWithFrozenClock() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hash = String(repeating: "c", count: 64)
+    try! await seed(db, [msg(1, peerA, "yo", 1000, outgoing: false, status: MessageStatus.received, hash: hash)])
+    let store = makeStore(db, identity: Identity()) { $0.openPeerHex = peerA }
+    await store.send(.reactionSelected(messageHash: hash, emoji: "❤️"))
+    _ = await sentReaction(store)
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    await store.send(.reactionSelected(messageHash: hash, emoji: "❤️"))
+    let sent = await sentReaction(store)
+    #expect(sent?.emoji == "")
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadReactions[hash] == nil)
+    let rows = try! await db.read { try Reaction.all.fetchAll($0) }
+    #expect(rows.map(\.emoji) == [""])
+}
+
+@MainActor @Test func reactionSelectedWithEmptyHashIsNoOp() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { $0.openPeerHex = peerA }
+    await store.send(.reactionSelected(messageHash: "", emoji: "❤️"))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try! await db.read { try Reaction.all.fetchAll($0) }
+    #expect(rows.isEmpty)
+}
+
+@MainActor @Test func reactionFromThirdPartyIsNotShownInThread() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hash = String(repeating: "c", count: 64)
+    try! await seed(db, [msg(1, peerA, "yo", 1000, outgoing: false, status: MessageStatus.received, hash: hash)])
+    try! await db.write { try Reaction.apply(Reaction(messageHash: hash, reactorHex: peerB, emoji: "👎", sentAt: 1), $0) }
+    let store = makeStore(db, identity: Identity())
+    await store.send(.openConversation(peerA))
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadReactions.isEmpty)
+    #expect(store.state.threadReactionRows.isEmpty)
+}
+
+/// Review Focus 3.
+@MainActor @Test func peerReactionOnMyOutgoingMessageShows() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = LXMessage.deliveryHash(identityHash: sender.hash).hexString
+    let hash = String(repeating: "d", count: 64)
+    try! await seed(db, [msg(1, senderHex, "mine", 1000, outgoing: true, hash: hash)])
+    let store = makeStore(db, identity: me)
+    await store.send(.openConversation(senderHex))
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    let m = reactionMessage(from: sender, to: me, target: Data(hexString: hash)!, emoji: "👍", at: 1700000002)
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadReactions[hash] == [.init(emoji: "👍", count: 1, includesMe: false)])
+}
+
+/// Review Focus 2.
+@MainActor @Test func reactionBeforeTargetShowsOnceTargetArrives() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = LXMessage.deliveryHash(identityHash: sender.hash).hexString
+    let text = LXMessage.create(source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+                                timestamp: 1700000000, title: Data(), content: Data("late".utf8))
+    let reaction = reactionMessage(from: sender, to: me, target: text.hash, emoji: "😮", at: 1700000001)
+    let store = makeStore(db, identity: me) { $0.openPeerHex = senderHex }
+    await store.send(.node(.client(.delegate(.messageReceived(message: reaction, signatureValidated: true)))))
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    await store.send(.node(.client(.delegate(.messageReceived(message: text, signatureValidated: true)))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadMessages.map(\.body) == ["late"])
+    #expect(store.state.threadReactions[text.hash.hexString] == [.init(emoji: "😮", count: 1, includesMe: false)])
+}
+
+@MainActor @Test func closeConversationClearsReactions() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hash = String(repeating: "c", count: 64)
+    try! await seed(db, [msg(1, peerA, "yo", 1000, outgoing: false, status: MessageStatus.received, hash: hash)])
+    let store = makeStore(db, identity: Identity()) { $0.openPeerHex = peerA }
+    await store.send(.reactionSelected(messageHash: hash, emoji: "❤️"))
+    _ = await sentReaction(store)
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    await store.send(.closeConversation)
+    #expect(store.state.threadReactions.isEmpty)
+    #expect(store.state.threadReactionRows.isEmpty)
+}
