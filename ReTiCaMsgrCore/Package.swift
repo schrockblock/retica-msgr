@@ -24,7 +24,8 @@ let package = Package(
             dependencies: [
                 .product(name: "ReTiCANode", package: "ReTiCA"),
                 .product(name: "SQLiteData", package: "sqlite-data"),
-            ]
+            ],
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "ReTiCaMsgrCoreTests",
