@@ -690,7 +690,12 @@ public struct AppFeature {
                         // opportunistic leg — which has no data receipt in our stack — always times
                         // out later. That late `deliveryFailed` must NOT clobber a propagation
                         // success, so skip rows already marked propagated (F5.5).
-                        try Message.where { $0.messageHash.eq(hex) && $0.status.neq(MessageStatus.propagated) }
+                        // `messageHash` alone is not unique: an incoming row and an outgoing row can
+                        // share a hash (a conversation with your own address), so scope to outgoing
+                        // rows only or this would also rewrite the incoming row's status.
+                        try Message.where {
+                            $0.messageHash.eq(hex) && $0.status.neq(MessageStatus.propagated) && $0.isOutgoing
+                        }
                             .update { $0.status = MessageStatus.failed }
                             .execute($0)
                     }
@@ -790,7 +795,9 @@ public struct AppFeature {
                 let openPeer = state.openPeerHex
                 return .run { [database] send in
                     try await database.write {
-                        try Message.where { $0.messageHash.eq(hex) }
+                        // Same hash-collision hazard as `deliveryFailed` above: scope to outgoing
+                        // rows only so an incoming row sharing this hash isn't rewritten.
+                        try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing }
                             .update { $0.status = MessageStatus.propagated }
                             .execute($0)
                     }

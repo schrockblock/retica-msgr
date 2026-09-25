@@ -842,6 +842,44 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
             "a propagated message must not be marked failed when the opportunistic leg times out")
 }
 
+// MARK: - Hash-keyed status updates scoped to outgoing rows (final-review Fix A)
+
+/// `messageHash` alone is not unique: an incoming row and an outgoing row can share a hash (a
+/// conversation with your own address). `deliveryFailed` must only rewrite the outgoing row's
+/// status, not the incoming row that happens to share the same hash.
+@MainActor @Test func deliveryFailedOnlyTouchesOutgoingRow() async {
+    let db = try! AppDatabase.makeInMemory()
+    let sharedHash = String(repeating: "d", count: 32)
+    try! await seed(db, [
+        msg(1, peerA, "outgoing", 1000, outgoing: true, status: MessageStatus.sending, hash: sharedHash),
+        msg(2, peerA, "incoming", 1000, outgoing: false, status: MessageStatus.received, hash: sharedHash),
+    ])
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.client(.delegate(.deliveryFailed(messageHash: Data(hexString: sharedHash)!)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try! await db.read { try Message.where { $0.messageHash.eq(sharedHash) }.fetchAll($0) }
+    #expect(rows.first { $0.isOutgoing }?.status == MessageStatus.failed)
+    #expect(rows.first { !$0.isOutgoing }?.status == MessageStatus.received)
+}
+
+/// Same hash-collision hazard for `propagationAccepted`.
+@MainActor @Test func propagationAcceptedOnlyTouchesOutgoingRow() async {
+    let db = try! AppDatabase.makeInMemory()
+    let sharedHash = String(repeating: "e", count: 32)
+    try! await seed(db, [
+        msg(1, peerA, "outgoing", 1000, outgoing: true, status: MessageStatus.sending, hash: sharedHash),
+        msg(2, peerA, "incoming", 1000, outgoing: false, status: MessageStatus.received, hash: sharedHash),
+    ])
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.client(.delegate(.propagationAccepted(messageHash: Data(hexString: sharedHash)!)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try! await db.read { try Message.where { $0.messageHash.eq(sharedHash) }.fetchAll($0) }
+    #expect(rows.first { $0.isOutgoing }?.status == MessageStatus.propagated)
+    #expect(rows.first { !$0.isOutgoing }?.status == MessageStatus.received)
+}
+
 // MARK: - Propagation persistence (Task 7)
 
 /// Ingested entries are mirrored to the database so they survive relaunch.
