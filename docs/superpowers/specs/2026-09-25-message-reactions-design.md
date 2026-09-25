@@ -45,9 +45,12 @@ A reaction is a standalone LXMF message to the peer with empty `title`, empty `c
 | `FIELD_CUSTOM_DATA` (`0xFC`) | map `{ "target": bin, "emoji": str }` |
 
 - `target` — the raw LXMF hash (bytes) of the message being reacted to. Accepted length 16–32 bytes.
-- `emoji` — the reaction, UTF-8, at most 32 bytes. **Empty string = "I removed my reaction."**
+- `emoji` — the reaction, UTF-8, at most 64 bytes (room for any ZWJ sequence with skin tones a
+  future client might send). **Empty string = "I removed my reaction."**
 - Ordering clock is the reaction LXMessage's own `timestamp` (sender's clock). Each reactor only
-  ever overwrites their own reaction, so comparisons are always within one clock.
+  ever overwrites their own reaction, so comparisons are always within one clock. The sender makes
+  its own timestamps strictly monotonic per message (`max(now, previous + 0.001)`), so two taps in
+  one clock tick still apply in order on both ends.
 - Sent via the existing `.sendMessage(message:alsoViaPropagation:)`, so reactions get direct
   delivery and propagation-node store-and-forward exactly like text. Fire-and-forget: no delivery
   status or failure UI for reactions.
@@ -158,7 +161,7 @@ green verification.
 
 - **`ReactionWire`**: round-trip through a real `LXMessage.create` → pack → unpack; empty emoji
   round-trips as removal; decode returns *not a reaction* for no/other custom type; *malformed* for
-  missing target, bad target length, non-string emoji, emoji > 32 bytes.
+  missing target, bad target length, non-string emoji, emoji > 64 bytes.
 - **`Reaction.apply`**: newer replaces; older ignored; equal ignored; tombstone beats late older add.
 - **`ReactionSummary`**: tombstones dropped; count and `includesMe` correct; ordering by earliest
   `sentAt`.
