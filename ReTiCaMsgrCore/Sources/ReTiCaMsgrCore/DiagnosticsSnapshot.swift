@@ -537,11 +537,14 @@ extension DiagnosticsSnapshot {
             .map(\.1)
 
         let pendingRows = router.pendingDeliveries
-            .map { hash, pending -> (String, Row) in
+            .map { key, pending -> (String, Row) in
                 let (method, dest) = describe(pending.resend)
-                return (hash.hexString, Row(hash.hexString,
-                                            "method=\(method) dest=\(dest.hexString) "
-                                            + "attempts=\(pending.attempts)"))
+                let hash = key.messageHash.hexString
+                // One message can now have two pending copies (delivery + propagated); sorting by
+                // hash then method keeps the row order deterministic.
+                return (hash + " " + method, Row(hash,
+                                                 "method=\(method) dest=\(dest.hexString) "
+                                                 + "attempts=\(pending.attempts)"))
             }
             .sorted { $0.0 < $1.0 }
             .map(\.1)

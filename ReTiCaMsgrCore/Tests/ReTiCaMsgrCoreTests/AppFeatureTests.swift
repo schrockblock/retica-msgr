@@ -375,7 +375,7 @@ private let peerB = String(repeating: "b", count: 32)
         title: Data(),
         content: Data("hi".utf8)
     )
-    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
     #expect(store.state.threadMessages.contains { $0.body == "hi" })
@@ -399,7 +399,7 @@ private let peerB = String(repeating: "b", count: 32)
         title: Data(),
         content: Data("elsewhere".utf8)
     )
-    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     // Drain any remaining in-flight effects and pending received actions (non-strict: ok if none).
     await store.finish()
@@ -1051,7 +1051,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         title: Data(),
         content: Data("hello".utf8)
     )
-    await store1.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store1.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
     await store1.receive { if case .conversationsLoaded = $0 { return true }; return false }
     try await Task.sleep(nanoseconds: 50_000_000)
 
@@ -1149,7 +1149,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let m = LXMessage.create(source: sender,
                               destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
                               timestamp: 1700000000.5, title: Data(), content: Data("x".utf8))
-    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     try await Task.sleep(nanoseconds: 50_000_000)
 
@@ -1238,7 +1238,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store2.send(.sendTapped)
     var opportunisticPayload: Data?
     await store2.receive { action in
-        if case let .node(.client(.router(.delegate(.sendOpportunistic(dest, payload))))) = action,
+        if case let .node(.client(.router(.delegate(.sendOpportunistic(dest, payload, _))))) = action,
            dest == peerDeliveryHash {
             opportunisticPayload = payload
             return true
@@ -1940,7 +1940,7 @@ private func reactionMessage(from sender: Identity, to me: Identity, target: Dat
     let store = makeStore(db, identity: me)
     let m = LXMessage.create(source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
                              timestamp: 1700000000.5, title: Data(), content: Data("hi".utf8))
-    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     let rows = try! await db.read { try Message.all.fetchAll($0) }
     #expect(rows.map(\.messageHash) == [m.hash.hexString])
@@ -1954,7 +1954,7 @@ private func reactionMessage(from sender: Identity, to me: Identity, target: Dat
     let target = Data(repeating: 0x42, count: 32)
     let store = makeStore(db, identity: me)
     let m = reactionMessage(from: sender, to: me, target: target, emoji: "😂", at: 1700000001)
-    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
     await store.finish()
     await store.skipReceivedActions(strict: false)
     let messages = try! await db.read { try Message.all.fetchAll($0) }
@@ -1973,7 +1973,7 @@ private func reactionMessage(from sender: Identity, to me: Identity, target: Dat
     let store = makeStore(db, identity: me)
     let m = reactionMessage(from: sender, to: me, target: Data(repeating: 1, count: 32), emoji: "❤️",
                             at: 1700000001, content: "Reacted ❤️ to \"hi\"")
-    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
     await store.finish()
     await store.skipReceivedActions(strict: false)
     let messages = try! await db.read { try Message.all.fetchAll($0) }
@@ -1987,7 +1987,7 @@ private func reactionMessage(from sender: Identity, to me: Identity, target: Dat
     let me = Identity()
     let store = makeStore(db, identity: me)
     let m = reactionMessage(from: Identity(), to: me, target: Data(repeating: 1, count: 32), emoji: "❤️", at: 1)
-    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: false)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: false, method: .opportunistic)))))
     await store.finish()
     await store.skipReceivedActions(strict: false)
     let messages = try! await db.read { try Message.all.fetchAll($0) }
@@ -2005,7 +2005,7 @@ private func reactionMessage(from sender: Identity, to me: Identity, target: Dat
     let m = LXMessage.create(source: Identity(), destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
                              timestamp: 1, title: Data(), content: Data(),
                              fields: [.init(0xFB, .string("reticamsgr.reaction"))])
-    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
     await store.finish()
     await store.skipReceivedActions(strict: false)
     let messages = try! await db.read { try Message.all.fetchAll($0) }
@@ -2116,7 +2116,7 @@ private func sentReaction(_ store: TestStoreOf<AppFeature>) async -> (target: Da
     await store.send(.openConversation(senderHex))
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
     let m = reactionMessage(from: sender, to: me, target: Data(hexString: hash)!, emoji: "👍", at: 1700000002)
-    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
     #expect(store.state.threadReactions[hash] == [.init(emoji: "👍", count: 1, includesMe: false)])
 }
@@ -2131,9 +2131,9 @@ private func sentReaction(_ store: TestStoreOf<AppFeature>) async -> (target: Da
                                 timestamp: 1700000000, title: Data(), content: Data("late".utf8))
     let reaction = reactionMessage(from: sender, to: me, target: text.hash, emoji: "😮", at: 1700000001)
     let store = makeStore(db, identity: me) { $0.openPeerHex = senderHex }
-    await store.send(.node(.client(.delegate(.messageReceived(message: reaction, signatureValidated: true)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: reaction, signatureValidated: true, method: .opportunistic)))))
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
-    await store.send(.node(.client(.delegate(.messageReceived(message: text, signatureValidated: true)))))
+    await store.send(.node(.client(.delegate(.messageReceived(message: text, signatureValidated: true, method: .opportunistic)))))
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
     #expect(store.state.threadMessages.map(\.body) == ["late"])

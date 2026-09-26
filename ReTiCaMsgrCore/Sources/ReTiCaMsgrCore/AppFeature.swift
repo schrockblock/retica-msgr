@@ -602,7 +602,7 @@ public struct AppFeature {
                     }
                 )
 
-            case let .node(.client(.delegate(.messageReceived(m, validated)))):
+            case let .node(.client(.delegate(.messageReceived(m, validated, _)))):   // arrival method unused for now
                 let incomingPeer = m.sourceHash.hexString
                 // DIAGNOSTIC (2026-08-21) — remove once the empty-body question is settled.
                 //

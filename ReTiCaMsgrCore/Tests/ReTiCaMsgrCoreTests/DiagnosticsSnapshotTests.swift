@@ -274,7 +274,7 @@ private let otherPeerHash = Data(repeating: 0xDD, count: 16)
 // screen must avoid.
 @MainActor @Test func deliveryIsOkWhenTheOnlyPendingSendIsOpportunisticAndNeedsNoLink() {
     var state = healthyState()
-    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+    state.node.client.router.pendingDeliveries[.delivery(messageHash)] = LXMFRouter.PendingDelivery(
         resend: .opportunistic(destinationHash: peerHash, payload: Data()), attempts: 2)
     let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
     #expect(delivery.health == .ok)
@@ -288,7 +288,7 @@ private let otherPeerHash = Data(repeating: 0xDD, count: 16)
 // stay `.ok`; this test pins that the row cannot escalate to a false alarm.
 @MainActor @Test func deliveryAddsAnInformationalNoteWhenOpportunisticSendsArePendingAndHealthStaysOk() {
     var state = healthyState()
-    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+    state.node.client.router.pendingDeliveries[.delivery(messageHash)] = LXMFRouter.PendingDelivery(
         resend: .opportunistic(destinationHash: peerHash, payload: Data()), attempts: 2)
     let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
     // Health must not change — the row is informational, not a health signal.
@@ -303,7 +303,7 @@ private let otherPeerHash = Data(repeating: 0xDD, count: 16)
 // CLAUSE 1, other half — a method that DOES need a link still warns without one.
 @MainActor @Test func deliveryWarnsWhenADirectSendIsPendingWithNoLinkAtAll() {
     var state = healthyState()
-    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+    state.node.client.router.pendingDeliveries[.delivery(messageHash)] = LXMFRouter.PendingDelivery(
         resend: .direct(destinationHash: peerHash, data: Data(), asResource: false), attempts: 2)
     let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
     #expect(delivery.health == .warn)
@@ -314,7 +314,7 @@ private let otherPeerHash = Data(repeating: 0xDD, count: 16)
 @MainActor @Test func deliveryWarnsWhenAPropagatedSendIsPendingWithNoLinkToThePropagationNode() {
     var state = healthyState()
     state.node.client.router.outboundPropagationNode = otherPeerHash
-    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+    state.node.client.router.pendingDeliveries[.propagated(messageHash)] = LXMFRouter.PendingDelivery(
         resend: .propagated(destinationHash: otherPeerHash, data: Data()), attempts: 1)
     let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
     #expect(delivery.health == .warn)
@@ -327,9 +327,9 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 
 @MainActor @Test func deliveryWarnsWithPluralGrammarWhenMultipleDirectSendsAreStranded() {
     var state = healthyState()
-    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+    state.node.client.router.pendingDeliveries[.delivery(messageHash)] = LXMFRouter.PendingDelivery(
         resend: .direct(destinationHash: peerHash, data: Data(), asResource: false), attempts: 1)
-    state.node.client.router.pendingDeliveries[messageHash2] = LXMFRouter.PendingDelivery(
+    state.node.client.router.pendingDeliveries[.delivery(messageHash2)] = LXMFRouter.PendingDelivery(
         resend: .direct(destinationHash: otherPeerHash, data: Data(), asResource: false), attempts: 1)
     let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
     #expect(delivery.health == .warn)
@@ -340,7 +340,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 // rule asked only "is ANY link active anywhere", so this state read green.
 @MainActor @Test func deliveryWarnsWhenTheActiveLinkIsToADifferentDestinationThanThePendingSend() {
     var state = healthyState()
-    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+    state.node.client.router.pendingDeliveries[.delivery(messageHash)] = LXMFRouter.PendingDelivery(
         resend: .direct(destinationHash: peerHash, data: Data(), asResource: false), attempts: 1)
     state.node.client.router.directLinks[otherPeerHash] =
         .active(linkID: Data(repeating: 0x0C, count: 16))
@@ -352,7 +352,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 // CLAUSE 2, the satisfied case: the link is to the pending message's OWN destination.
 @MainActor @Test func deliveryIsOkWhenTheActiveLinkIsToThePendingSendsOwnDestination() {
     var state = healthyState()
-    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+    state.node.client.router.pendingDeliveries[.delivery(messageHash)] = LXMFRouter.PendingDelivery(
         resend: .direct(destinationHash: peerHash, data: Data(), asResource: false), attempts: 1)
     state.node.client.router.directLinks[peerHash] =
         .active(linkID: Data(repeating: 0x0C, count: 16))
@@ -406,7 +406,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 // wrong-reason failure this screen keeps hitting.
 @MainActor @Test func deliveryStatesBothClausesWhenAStrandedMessageAndAParkedDestinationCoexist() {
     var state = healthyState()
-    state.node.client.router.pendingDeliveries[messageHash] = LXMFRouter.PendingDelivery(
+    state.node.client.router.pendingDeliveries[.delivery(messageHash)] = LXMFRouter.PendingDelivery(
         resend: .direct(destinationHash: peerHash, data: Data(), asResource: false), attempts: 3)
     state.node.client.router.directLinks[peerHash] = .establishing
     let delivery = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Delivery")
