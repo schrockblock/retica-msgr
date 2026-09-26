@@ -42,4 +42,7 @@ public enum MessageStatus {
     public static let failed = "failed"
     public static let received = "received"
     public static let propagated = "stored"
+    /// The recipient proved receipt (`deliveryConfirmed`). Beats "stored": a delivered row is
+    /// never downgraded by a later `propagationAccepted` or `deliveryFailed`.
+    public static let delivered = "delivered"
 }

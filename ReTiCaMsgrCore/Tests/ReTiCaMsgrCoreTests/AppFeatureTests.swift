@@ -820,9 +820,9 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(store.state.threadMessages.first { $0.messageHash == hashHex }?.status == MessageStatus.propagated)
 }
 
-/// F5.5: with a PN configured, one message.hash gets TWO delivery sagas. The propagation leg
-/// succeeds early (~20s → `propagationAccepted` → "stored"); the opportunistic leg has no data
-/// receipt in our stack, so it always times out later (~50s → `deliveryFailed`). That later
+/// F5.5: with a PN configured, one message.hash gets TWO copies. The propagated copy can succeed
+/// (`propagationAccepted` → "stored"). ReTiCA now proves opportunistic sends and never reports
+/// `deliveryFailed` after a success, but the app keeps the guard as a defensive check: a late
 /// failure must NOT clobber the propagation success, or a message that was in fact stored on the
 /// PN is shown as failed.
 @MainActor @Test func deliveryFailedDoesNotOverwriteAPropagationSuccess() async {
@@ -886,6 +886,78 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let rows = try! await db.read { try Message.where { $0.messageHash.eq(sharedHash) }.fetchAll($0) }
     #expect(rows.first { $0.isOutgoing }?.status == MessageStatus.propagated)
     #expect(rows.first { !$0.isOutgoing }?.status == MessageStatus.received)
+}
+
+// MARK: - Delivery proofs (ReTiCA single-packet proofs final-review F1)
+
+/// ReTiCA now proves opportunistic sends, so a proving peer yields `deliveryConfirmed` and never
+/// a later `deliveryFailed`. The outgoing row must move off "sending" to "delivered" and the
+/// thread must reload, or a delivered message reads "sending" forever.
+@MainActor @Test func deliveryConfirmedMarksDeliveredAndReloads() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = "hi"
+    }
+    await store.send(.sendTapped)
+    await store.receive { if case .node(.client(.sendMessage)) = $0 { return true }; return false }
+    let sent = try! await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }
+    let hashHex = sent.first!.messageHash
+    let hashData = Data(hexString: hashHex)!
+    // Drain conversationsLoaded first so the stale "sending" threadLoaded from the sendTapped
+    // saga is dropped before we read the updated one.
+    await store.send(.node(.client(.delegate(.deliveryConfirmed(messageHash: hashData)))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadMessages.first { $0.messageHash == hashHex }?.status == MessageStatus.delivered)
+}
+
+/// Same hash-collision hazard as `deliveryFailed`/`propagationAccepted`: only the outgoing row
+/// sharing the hash may be marked delivered. The incoming row must keep "received".
+@MainActor @Test func deliveryConfirmedOnlyTouchesOutgoingRow() async {
+    let db = try! AppDatabase.makeInMemory()
+    let sharedHash = String(repeating: "f", count: 32)
+    try! await seed(db, [
+        msg(1, peerA, "outgoing", 1000, outgoing: true, status: MessageStatus.sending, hash: sharedHash),
+        msg(2, peerA, "incoming", 1000, outgoing: false, status: MessageStatus.received, hash: sharedHash),
+    ])
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.client(.delegate(.deliveryConfirmed(messageHash: Data(hexString: sharedHash)!)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try! await db.read { try Message.where { $0.messageHash.eq(sharedHash) }.fetchAll($0) }
+    #expect(rows.first { $0.isOutgoing }?.status == MessageStatus.delivered)
+    #expect(rows.first { !$0.isOutgoing }?.status == MessageStatus.received)
+}
+
+/// With a PN configured, the propagated copy can be accepted after the delivery copy was
+/// already proved. Delivered beats stored: the row must stay "delivered".
+@MainActor @Test func propagationAcceptedDoesNotOverwriteADelivery() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hash = String(repeating: "1", count: 32)
+    try! await seed(db, [msg(1, peerA, "outgoing", 1000, outgoing: true, status: MessageStatus.delivered, hash: hash)])
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.client(.delegate(.propagationAccepted(messageHash: Data(hexString: hash)!)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try! await db.read { try Message.where { $0.messageHash.eq(hash) }.fetchAll($0) }
+    #expect(rows.first?.status == MessageStatus.delivered,
+            "a late propagationAccepted must not downgrade a delivered message to stored")
+}
+
+/// The router never reports failure after a success, but the app guards anyway: a
+/// `deliveryFailed` arriving for a delivered row must leave it "delivered".
+@MainActor @Test func deliveryFailedDoesNotOverwriteADelivery() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hash = String(repeating: "2", count: 32)
+    try! await seed(db, [msg(1, peerA, "outgoing", 1000, outgoing: true, status: MessageStatus.delivered, hash: hash)])
+    let store = makeStore(db, identity: Identity())
+    await store.send(.node(.client(.delegate(.deliveryFailed(messageHash: Data(hexString: hash)!)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try! await db.read { try Message.where { $0.messageHash.eq(hash) }.fetchAll($0) }
+    #expect(rows.first?.status == MessageStatus.delivered,
+            "a deliveryFailed must not mark a delivered message failed")
 }
 
 // MARK: - Propagation persistence (Task 7)

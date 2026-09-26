@@ -685,16 +685,20 @@ public struct AppFeature {
                 let openPeer = state.openPeerHex
                 return .run { [database] send in
                     try await database.write {
-                        // With a PN configured, one message.hash gets two sagas: the propagation
-                        // leg succeeds early (`propagationAccepted` → "stored") while the
-                        // opportunistic leg — which has no data receipt in our stack — always times
-                        // out later. That late `deliveryFailed` must NOT clobber a propagation
-                        // success, so skip rows already marked propagated (F5.5).
+                        // With a PN configured, one message.hash gets two copies: the propagated
+                        // copy (`propagationAccepted` → "stored") and the delivery copy
+                        // (`deliveryConfirmed` → "delivered"). ReTiCA now proves opportunistic
+                        // sends and never reports `deliveryFailed` after either copy succeeded, so
+                        // a failure should not reach a stored or delivered row. The status guards
+                        // below remain as a defensive check so a success is never clobbered (F5.5).
                         // `messageHash` alone is not unique: an incoming row and an outgoing row can
                         // share a hash (a conversation with your own address), so scope to outgoing
                         // rows only or this would also rewrite the incoming row's status.
                         try Message.where {
-                            $0.messageHash.eq(hex) && $0.status.neq(MessageStatus.propagated) && $0.isOutgoing
+                            $0.messageHash.eq(hex)
+                                && $0.status.neq(MessageStatus.propagated)
+                                && $0.status.neq(MessageStatus.delivered)
+                                && $0.isOutgoing
                         }
                             .update { $0.status = MessageStatus.failed }
                             .execute($0)
@@ -797,8 +801,32 @@ public struct AppFeature {
                     try await database.write {
                         // Same hash-collision hazard as `deliveryFailed` above: scope to outgoing
                         // rows only so an incoming row sharing this hash isn't rewritten.
-                        try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing }
+                        // Delivered beats stored: the propagated copy can be accepted after the
+                        // delivery copy was already proved, so leave delivered rows alone.
+                        try Message.where {
+                            $0.messageHash.eq(hex) && $0.status.neq(MessageStatus.delivered) && $0.isOutgoing
+                        }
                             .update { $0.status = MessageStatus.propagated }
+                            .execute($0)
+                    }
+                    try await reloadConversations(database, send)
+                    if let openPeer {
+                        try await reloadThread(database, openPeer, send)
+                    }
+                }
+
+            case let .node(.client(.delegate(.deliveryConfirmed(hash)))):
+                // The recipient proved receipt of the delivery copy (for opportunistic sends, via
+                // ReTiCA single-packet proofs). Without this a delivered message would read "sending"
+                // forever, because a proving peer never yields a later `deliveryFailed`.
+                let hex = hash.hexString
+                let openPeer = state.openPeerHex
+                return .run { [database] send in
+                    try await database.write {
+                        // Same hash-collision hazard as `deliveryFailed` above: scope to outgoing
+                        // rows only so an incoming row sharing this hash isn't rewritten.
+                        try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing }
+                            .update { $0.status = MessageStatus.delivered }
                             .execute($0)
                     }
                     try await reloadConversations(database, send)
