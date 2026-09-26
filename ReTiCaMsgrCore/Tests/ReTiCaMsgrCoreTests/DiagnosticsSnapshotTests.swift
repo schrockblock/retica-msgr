@@ -700,7 +700,7 @@ private func bluetoothLayer(_ snap: DiagnosticsSnapshot) -> DiagnosticsSnapshot.
 private func bleEnabledState(status: BLEInterfaceStatus, peers: [Data] = []) -> AppFeature.State {
     var state = healthyState()
     state.$bleEnabled.withLock { $0 = true }
-    var ble = BLEEndpoint.State()
+    var ble = BLEEndpoint.State(localIdentity: state.identity.hash)
     ble.ble.status = status
     state.node.client.endpoint.ble = ble
     for token in peers {

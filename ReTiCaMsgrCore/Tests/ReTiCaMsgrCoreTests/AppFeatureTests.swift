@@ -45,8 +45,8 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
         // fires. Peers are injected in-test via the peerOnline action, not this stream.
         $0.bleDriver = BLEDriver(
             start: { _ in AsyncStream { _ in } },
-            readDirectory: { _ in },
-            openChannel: { _, _ in },
+            readIdentity: { _ in },
+            openChannel: { _ in },
             send: { _, _ in },
             closeChannel: { _ in },
             stop: { }
@@ -159,10 +159,13 @@ private let peerB = String(repeating: "b", count: 32)
 /// `\.bleDriver` dependency — nothing to inject here.
 @MainActor @Test func enablingBLEAddsSlotAtConnect() async {
     let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity()) { $0.$bleEnabled.withLock { $0 = true } }
+    let identity = Identity()
+    let store = makeStore(db, identity: identity) { $0.$bleEnabled.withLock { $0 = true } }
     await store.send(.onLaunch)
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     #expect(store.state.node.client.endpoint.ble != nil)
+    // ble v2.2: the slot announces the node's own 16-byte identity hash to BLE peers.
+    #expect(store.state.node.client.endpoint.ble?.ble.localIdentity == identity.hash)
 }
 
 /// A re-sync (foreground / reconnect) must PRESERVE an already-running BLE slot rather than rebuild
@@ -193,7 +196,8 @@ private let peerB = String(repeating: "b", count: 32)
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity()) { state in
         state.$bleEnabled.withLock { $0 = false }
-        state.node.client.endpoint.ble = BLEEndpoint.State()   // a leftover slot from a previous run
+        // a leftover slot from a previous run
+        state.node.client.endpoint.ble = BLEEndpoint.State(localIdentity: state.identity.hash)
     }
     await store.send(.connectTapped)
     #expect(store.state.node.client.endpoint.ble == nil)
@@ -210,7 +214,9 @@ private let peerB = String(repeating: "b", count: 32)
     let db = try! AppDatabase.makeInMemory()
     // A BLE slot must be present for the .ble delegate to route (in production the slot is what
     // emitted the delegate); without it TransportEndpoint's ifLet warns on a child action to nil.
-    let store = makeStore(db, identity: Identity()) { $0.node.client.endpoint.ble = BLEEndpoint.State() }
+    let store = makeStore(db, identity: Identity()) {
+        $0.node.client.endpoint.ble = BLEEndpoint.State(localIdentity: $0.identity.hash)
+    }
     await store.send(.node(.client(.endpoint(.ble(.delegate(.adapterUnavailable(.unauthorized)))))))
     #expect(store.state.bluetoothAlert == .permissionDenied)
 }
@@ -219,7 +225,9 @@ private let peerB = String(repeating: "b", count: 32)
 /// not an "Open Settings" prompt (there is nothing to grant).
 @MainActor @Test func bleUnsupportedSurfacesUnsupportedAlert() async {
     let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity()) { $0.node.client.endpoint.ble = BLEEndpoint.State() }
+    let store = makeStore(db, identity: Identity()) {
+        $0.node.client.endpoint.ble = BLEEndpoint.State(localIdentity: $0.identity.hash)
+    }
     await store.send(.node(.client(.endpoint(.ble(.delegate(.adapterUnavailable(.unsupported)))))))
     #expect(store.state.bluetoothAlert == .unsupported)
 }

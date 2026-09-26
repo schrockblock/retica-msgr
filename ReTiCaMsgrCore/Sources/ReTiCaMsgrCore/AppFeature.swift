@@ -951,7 +951,9 @@ private func syncEndpointHostPort(_ state: inout AppFeature.State) {
     // BLE peer on each foreground/reconnect. Build a slot only when there is none.
     if bleEnabled {
         if state.node.client.endpoint.ble == nil {
-            state.node.client.endpoint.ble = BLEEndpoint.State()
+            // ble-reticulum v2.2 identifies this device to peers by its 16-byte identity hash —
+            // the same identity the LXMF node was built with (`State.init`).
+            state.node.client.endpoint.ble = BLEEndpoint.State(localIdentity: state.identity.hash)
         }
     } else {
         state.node.client.endpoint.ble = nil
