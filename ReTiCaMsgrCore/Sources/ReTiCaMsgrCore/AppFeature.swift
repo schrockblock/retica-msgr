@@ -602,7 +602,7 @@ public struct AppFeature {
                     }
                 )
 
-            case let .node(.client(.delegate(.messageReceived(m, validated, _)))):   // arrival method unused for now
+            case let .node(.client(.delegate(.messageReceived(m, validated, method)))):
                 let incomingPeer = m.sourceHash.hexString
                 // DIAGNOSTIC (2026-08-21) — remove once the empty-body question is settled.
                 //
@@ -662,7 +662,14 @@ public struct AppFeature {
                     timestamp: date.now,
                     status: MessageStatus.received,
                     validated: validated,
-                    messageHash: seenHashHex
+                    messageHash: seenHashHex,
+                    senderTimestamp: MessageMetadata.senderTimestamp(m.timestamp),
+                    arrivalMethod: MessageMetadata.arrivalMethod(method),
+                    wireSize: m.receivedBytes?.count,
+                    titleSize: m.title.count,
+                    contentSize: m.content.count,
+                    fieldKeys: MessageMetadata.fieldKeys(m.fields),
+                    stampState: MessageMetadata.stampState(m)
                 )
                 return .run { [database] send in
                     try await database.write { db in

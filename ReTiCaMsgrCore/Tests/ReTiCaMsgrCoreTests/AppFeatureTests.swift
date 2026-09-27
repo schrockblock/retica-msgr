@@ -2284,3 +2284,109 @@ private func sentReaction(_ store: TestStoreOf<AppFeature>) async -> (target: Da
     #expect(fields == [.init(0x40, .intMap([.init(0x00, .bin(Data(hexString: hash)!)),
                                             .init(0x01, .bin(Data("❤️".utf8)))]))])
 }
+
+// MARK: - Message Info: receive path
+
+/// An incoming message exactly as it arrives off the wire. It is packed then unpacked, so
+/// `receivedBytes` is set as in production.
+private func wireMessage(from sender: Identity, to me: Identity, at ts: Double, title: String = "",
+                         content: String = "hi", fields: [MsgPackValue.IntPair] = []) -> LXMessage {
+    let built = LXMessage.create(source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+                                 timestamp: ts, title: Data(title.utf8), content: Data(content.utf8),
+                                 fields: fields)
+    return LXMessage.unpack(built.packed)!
+}
+
+/// Deliver one message to a fresh store and database, and return every stored row once all
+/// effects have finished. The read uses `try await` (not `try?` falling back to `[]`) so that a
+/// broken row fails the test with a thrown error instead of silently reading as "no rows".
+@MainActor
+private func receiveAndFetch(_ m: LXMessage, me: Identity,
+                             method: LXMFRouter.DeliveryMethod = .opportunistic) async throws -> [Message] {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: me)
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: method)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    return try await db.read { try Message.all.fetchAll($0) }
+}
+
+@MainActor @Test func infoReceiveStoresSenderTimestampSizesAndEmptyFieldKeys() async throws {
+    let me = Identity()
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900.5, title: "T", content: "hello")
+    let rows = try await receiveAndFetch(m, me: me)
+    #expect(rows.count == 1)
+    let row = try #require(rows.first)
+    #expect(row.senderTimestamp == Date(timeIntervalSince1970: 1699999900.5))
+    #expect(row.timestamp == Date(timeIntervalSince1970: 1700000000))   // still our clock
+    #expect(row.wireSize != nil)
+    #expect(row.wireSize == m.receivedBytes?.count)
+    #expect(row.titleSize == 1)
+    #expect(row.contentSize == 5)
+    #expect(row.fieldKeys == "")
+    #expect(row.stampState == StampState.none)
+    #expect(row.sentViaPropagation == nil)
+    #expect(row.storedAt == nil)
+    #expect(row.deliveredAt == nil)
+    #expect(row.failedAt == nil)
+}
+
+@MainActor @Test func infoReceiveRecordsEachArrivalMethod() async throws {
+    let me = Identity()
+    let cases: [(LXMFRouter.DeliveryMethod, String)] = [
+        (.opportunistic, ArrivalMethod.opportunistic),
+        (.direct, ArrivalMethod.direct),
+        (.propagated, ArrivalMethod.propagated),
+    ]
+    for (method, expected) in cases {
+        let rows = try await receiveAndFetch(wireMessage(from: Identity(), to: me, at: 1699999999), me: me, method: method)
+        #expect(rows.map(\.arrivalMethod) == [expected], "\(method)")
+    }
+}
+
+@MainActor @Test func infoReceiveRecordsFieldKeysInWireOrder() async throws {
+    let me = Identity()
+    // 0xFB first, so a sorted encoding would differ. A foreign custom type is not a reaction.
+    let m = wireMessage(from: Identity(), to: me, at: 1699999999, fields: [
+        .init(0xFB, .string("someone.else")),
+        .init(0x02, .bin(Data([1]))),
+    ])
+    let rows = try await receiveAndFetch(m, me: me)
+    #expect(rows.map(\.fieldKeys) == ["0xfb,0x02"])
+}
+
+@MainActor @Test func infoReceiveRecordsStampState() async throws {
+    let me = Identity()
+    let sender = Identity()
+    let stamp = Data(repeating: 0xFF, count: LXStamper.stampSize)
+    let plain = wireMessage(from: sender, to: me, at: 1699999999, content: "none")
+    let stampedBuilt = LXMessage.create(source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+                                        timestamp: 1699999999, title: Data(), content: Data("stamped".utf8))
+    let stamped = LXMessage.unpack(stampedBuilt.withStamp(stamp).packed)!
+    let cases: [(LXMessage, String)] = [
+        (plain, StampState.none),
+        (stamped, StampState.unchecked),
+        (stamped.withStampValidation(valid: true), StampState.valid),
+        (stamped.withStampValidation(valid: false), StampState.invalid),
+    ]
+    for (m, expected) in cases {
+        let rows = try await receiveAndFetch(m, me: me)
+        #expect(rows.map(\.stampState) == [expected], "\(expected)")
+    }
+}
+
+@MainActor @Test func infoReceiveReactionStillCreatesNoRow() async throws {
+    let me = Identity()
+    let m = reactionMessage(from: Identity(), to: me, target: Data(repeating: 9, count: 32), emoji: "👍",
+                            at: 1700000001)
+    let rows = try await receiveAndFetch(LXMessage.unpack(m.packed)!, me: me)
+    #expect(rows.isEmpty)
+}
+
+/// Review Focus 1, end to end: a broken sender clock still produces a bubble that loads.
+@MainActor @Test func infoReceiveOutOfRangeSenderTimestampStillStoresTheMessage() async throws {
+    let me = Identity()
+    let rows = try await receiveAndFetch(wireMessage(from: Identity(), to: me, at: 1e18, content: "broken clock"), me: me)
+    #expect(rows.map(\.body) == ["broken clock"])
+    #expect(rows.first?.senderTimestamp == nil)
+}
