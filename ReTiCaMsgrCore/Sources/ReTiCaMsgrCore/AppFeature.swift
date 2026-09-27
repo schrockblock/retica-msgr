@@ -138,6 +138,19 @@ public struct AppFeature {
             threadReactionRows = rows
             threadReactions = ReactionSummary.byMessage(rows, me: myAddressHex)
         }
+
+        /// The open peer's display name from its LXMF delivery announce (`learnedPeers`, the table
+        /// the Announces list shows), trimmed. nil when no conversation is open, no announce was
+        /// heard, or the name is blank, so labels fall back to "Them" rather than "".
+        public var openPeerDisplayName: String? {
+            guard let hex = openPeerHex,
+                  let hash = Data(hexString: hex),
+                  let name = node.client.learnedPeers[hash]?.displayName?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty
+            else { return nil }
+            return name
+        }
     }
 
     public enum Action: Equatable, BindableAction {
