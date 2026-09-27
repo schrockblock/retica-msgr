@@ -1991,7 +1991,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.finish()
 }
 
-// MARK: - Reactions: receive path
+// MARK: - Reactions: receive path (ReactionWire.encode = standard 0x40 format)
 
 private func reactionMessage(from sender: Identity, to me: Identity, target: Data, emoji: String,
                              at ts: Double, content: String = "") -> LXMessage {
@@ -2223,4 +2223,64 @@ private func sentReaction(_ store: TestStoreOf<AppFeature>) async -> (target: Da
     await store.send(.closeConversation)
     #expect(store.state.threadReactions.isEmpty)
     #expect(store.state.threadReactionRows.isEmpty)
+}
+
+// MARK: - Reactions: standard FIELD_REACTION (0x40)
+
+@MainActor @Test func stdReactionWithFallbackContentIsNotABubble() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = LXMessage.deliveryHash(identityHash: sender.hash).hexString
+    let target = Data(repeating: 0x43, count: 32)
+    let store = makeStore(db, identity: me)
+    // Built by hand, not via ReactionWire.encode, so this pins the wire shape a foreign client sends.
+    let m = LXMessage.create(
+        source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+        timestamp: 1700000001, title: Data(), content: Data("Reacted ❤️ to a message".utf8),
+        fields: [.init(0x40, .intMap([.init(0x00, .bin(target)), .init(0x01, .bin(Data("❤️".utf8)))]))]
+    )
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let messages = try! await db.read { try Message.all.fetchAll($0) }
+    let reactions = try! await db.read { try Reaction.all.fetchAll($0) }
+    #expect(messages.isEmpty)
+    #expect(reactions == [Reaction(messageHash: target.hexString, reactorHex: senderHex, emoji: "❤️", sentAt: 1700000001)])
+}
+
+@MainActor @Test func stdReactionMalformedIsDroppedNotABubble() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me)
+    let m = LXMessage.create(
+        source: Identity(), destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+        timestamp: 1, title: Data(), content: Data("fallback text".utf8),
+        fields: [.init(0x40, .intMap([.init(0x00, .bin(Data(repeating: 1, count: 8))),
+                                      .init(0x01, .bin(Data("❤️".utf8)))]))]
+    )
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let messages = try! await db.read { try Message.all.fetchAll($0) }
+    let reactions = try! await db.read { try Reaction.all.fetchAll($0) }
+    let seen = try! await db.read { try SeenHashRow.all.fetchAll($0) }
+    #expect(messages.isEmpty)
+    #expect(reactions.isEmpty)
+    #expect(seen.count == 1)
+}
+
+@MainActor @Test func stdReactionSelectedSendsTheStandardFormat() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hash = String(repeating: "c", count: 64)
+    try! await seed(db, [msg(1, peerA, "yo", 1000, outgoing: false, status: MessageStatus.received, hash: hash)])
+    let store = makeStore(db, identity: Identity()) { $0.openPeerHex = peerA }
+    await store.send(.reactionSelected(messageHash: hash, emoji: "❤️"))
+    var fields: [MsgPackValue.IntPair]?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(sent, _))) = action { fields = sent.fields; return true }
+        return false
+    }
+    #expect(fields == [.init(0x40, .intMap([.init(0x00, .bin(Data(hexString: hash)!)),
+                                            .init(0x01, .bin(Data("❤️".utf8)))]))])
 }
