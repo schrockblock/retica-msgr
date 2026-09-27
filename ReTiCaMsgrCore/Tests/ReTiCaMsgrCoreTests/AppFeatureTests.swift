@@ -2565,3 +2565,117 @@ private func rowsByHashAndDirection(_ db: any DatabaseWriter) async -> [String: 
     #expect(rows["\(h)/in"]?.deliveredAt == nil)
     #expect(rows["\(h)/in"]?.status == MessageStatus.received)
 }
+
+// MARK: - Replies: target and send
+
+/// Non-uniform, so a byte-order bug in hex handling changes the value.
+private let replyTargetHash = "00112233445566778899aabbccddeeff0123456789abcdeffedcba9876543210"
+
+/// Send `draft` with `target` set, and return the LXMessage handed to the node, the stored row and
+/// the reply target afterwards. Waits for `conversationsLoaded`, the last action of the send saga.
+@MainActor
+private func replySendAndFetch(draft: String, target: AppFeature.ReplyTarget?)
+    async -> (sent: LXMessage?, row: Message?, targetAfter: AppFeature.ReplyTarget?) {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = draft
+        s.replyTarget = target
+    }
+    await store.send(.sendTapped)
+    var sent: LXMessage?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action { sent = msg; return true }
+        return false
+    }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    let row = try! await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }.first
+    return (sent, row, store.state.replyTarget)
+}
+
+@MainActor @Test func replyTargetTappedSetsTarget() async {
+    let original = msg(1, peerA, "see you at 6", 1000, outgoing: false, status: MessageStatus.received,
+                       hash: replyTargetHash)
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.threadMessages = [original]
+    }
+    await store.send(.replyTapped(uuid(1)))
+    #expect(store.state.replyTarget
+            == AppFeature.ReplyTarget(messageHash: replyTargetHash, body: "see you at 6", isOutgoing: false))
+}
+
+/// Review Focus 3: a hashless bubble, or an id from a menu that outlived a reload, changes nothing.
+@MainActor @Test func replyTargetTappedIgnoresHashlessAndUnknownMessages() async {
+    let existing = AppFeature.ReplyTarget(messageHash: replyTargetHash, body: "earlier", isOutgoing: true)
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.threadMessages = [msg(1, peerA, "legacy", 1000, outgoing: false, status: MessageStatus.received, hash: "")]
+        s.replyTarget = existing
+    }
+    await store.send(.replyTapped(uuid(1)))    // hashless: cannot be replied to
+    #expect(store.state.replyTarget == existing)
+    await store.send(.replyTapped(uuid(99)))   // not in the thread
+    #expect(store.state.replyTarget == existing)
+}
+
+@MainActor @Test func replyTargetCancelledClearsTarget() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.replyTarget = AppFeature.ReplyTarget(messageHash: replyTargetHash, body: "x", isOutgoing: false)
+    }
+    await store.send(.replyCancelled)
+    #expect(store.state.replyTarget == nil)
+}
+
+@MainActor @Test func replyTargetClearedOnCloseConversation() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.replyTarget = AppFeature.ReplyTarget(messageHash: replyTargetHash, body: "x", isOutgoing: false)
+    }
+    await store.send(.closeConversation)
+    #expect(store.state.replyTarget == nil)
+}
+
+@MainActor @Test func replyTargetSendCarriesReplyFieldsAndStoresColumns() async throws {
+    // Padded and over 100 characters, so the test fails unless trimQuote is applied.
+    let longBody = "  " + String(repeating: "x", count: 120) + "\n"
+    let expectedQuote = String(repeating: "x", count: 100) + "…"
+    let (sent, row, after) = await replySendAndFetch(
+        draft: "sure",
+        target: AppFeature.ReplyTarget(messageHash: replyTargetHash, body: longBody, isOutgoing: false)
+    )
+    let wire = try #require(sent)
+    #expect(wire.content == Data("sure".utf8))
+    let decoded = try #require(ReplyWire.decode(wire.fields))
+    #expect(decoded.replyTo == Data(hexString: replyTargetHash))
+    #expect(decoded.quote == expectedQuote)
+    let stored = try #require(row)
+    #expect(stored.body == "sure")
+    #expect(stored.replyToHash == replyTargetHash)
+    #expect(stored.replyQuote == expectedQuote)
+    #expect(stored.fieldKeys == "0x30,0x31")
+    #expect(after == nil)
+}
+
+@MainActor @Test func replyTargetAbsentSendsNoReplyFields() async throws {
+    let (sent, row, _) = await replySendAndFetch(draft: "plain", target: nil)
+    let wire = try #require(sent)
+    #expect(wire.fields.isEmpty)
+    #expect(ReplyWire.decode(wire.fields) == nil)
+    let stored = try #require(row)
+    #expect(stored.replyToHash == nil)
+    #expect(stored.replyQuote == nil)
+}
+
+/// Review Focus 2: nothing was sent, so the reply bar stays.
+@MainActor @Test func replyTargetKeptWhenSendIsRejected() async {
+    let target = AppFeature.ReplyTarget(messageHash: replyTargetHash, body: "x", isOutgoing: false)
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = ""
+        s.replyTarget = target
+    }
+    await store.send(.sendTapped)
+    #expect(store.state.replyTarget == target)
+}

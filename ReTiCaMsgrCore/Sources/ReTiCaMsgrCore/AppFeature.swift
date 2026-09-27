@@ -33,6 +33,21 @@ public struct AppFeature {
         case failed(reason: String)
     }
 
+    /// The message a reply is being composed to. Set from the long-press menu, shown above the text
+    /// field, and cleared by send, cancel or leaving the conversation. `body` is the untrimmed
+    /// original: `ReplyWire.trimQuote` runs at display and at send.
+    public struct ReplyTarget: Equatable, Sendable {
+        public var messageHash: String
+        public var body: String
+        public var isOutgoing: Bool
+
+        public init(messageHash: String, body: String, isOutgoing: Bool) {
+            self.messageHash = messageHash
+            self.body = body
+            self.isOutgoing = isOutgoing
+        }
+    }
+
     @ObservableState
     public struct State: Equatable {
         public var node: LXMFServiceNode.State
@@ -53,6 +68,8 @@ public struct AppFeature {
         /// resolved denial doesn't stick, and re-set if the adapter is still unavailable.
         public var bluetoothAlert: BluetoothAlert? = nil
         public var draft = ""
+        /// The message being replied to, or nil. Session-only.
+        public var replyTarget: ReplyTarget? = nil
         // Derived list of peers, reloaded after every write.
         public var conversations: [Conversation] = []
         // The peer whose thread is currently open (drives navigation), and its messages.
@@ -148,6 +165,10 @@ public struct AppFeature {
         case conversationsLoaded([Conversation])
         case threadLoaded([Message], reactions: [Reaction] = [])
         case reactionSelected(messageHash: String, emoji: String)
+        /// Long-press → Reply. Ignored for a hashless message or one no longer in the thread.
+        case replyTapped(Message.ID)
+        /// The ✕ on the reply bar.
+        case replyCancelled
         case rehydratePropagationStore([Data])
         /// Restore the router's dedup sets (seen-message hashes + downloaded transient IDs) from the
         /// previous session. Sent on launch after reading the three durability tables.
@@ -476,6 +497,7 @@ public struct AppFeature {
                 state.threadMessages = []
                 state.setThreadReactionRows([])
                 state.draft = ""
+                state.replyTarget = nil
                 return .none
 
             case let .startConversation(hex):
@@ -488,6 +510,19 @@ public struct AppFeature {
                 guard !text.isEmpty,
                       let peerHex = state.openPeerHex,
                       let peer = Data(hexString: peerHex) else { return .none }
+                // A reply carries the original's full hash and a trimmed quote in the standard LXMF
+                // fields 0x30 / 0x31. The quote is trimmed once, and the same string goes on the wire
+                // and in the row. A target whose hash does not decode is sent as a plain message.
+                var replyFields: [MsgPackValue.IntPair] = []
+                var replyToHash: String? = nil
+                var replyQuote: String? = nil
+                if let target = state.replyTarget,
+                   let replyTo = Data(hexString: target.messageHash), !replyTo.isEmpty {
+                    let quote = ReplyWire.trimQuote(target.body)
+                    replyFields = ReplyWire.encode(replyTo: replyTo, quote: quote)
+                    replyToHash = target.messageHash
+                    replyQuote = quote
+                }
                 let title = Data()
                 let content = Data(text.utf8)
                 let now = date.now
@@ -496,7 +531,8 @@ public struct AppFeature {
                     destinationHash: peer,
                     timestamp: now.timeIntervalSince1970,
                     title: title,
-                    content: content
+                    content: content,
+                    fields: replyFields
                 )
                 let alsoViaPropagation = !state.propagationNodeHex.isEmpty
                 // Outgoing Info metadata. `wireSize` is the unstamped packed size: LXMFNode adds any
@@ -515,9 +551,12 @@ public struct AppFeature {
                     wireSize: msg.packed.count,
                     titleSize: msg.title.count,
                     contentSize: msg.content.count,
-                    fieldKeys: MessageMetadata.fieldKeys(msg.fields)
+                    fieldKeys: MessageMetadata.fieldKeys(msg.fields),
+                    replyToHash: replyToHash,
+                    replyQuote: replyQuote
                 )
                 state.draft = ""
+                state.replyTarget = nil
                 return .merge(
                     .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
                     .run { [database] send in
@@ -560,6 +599,20 @@ public struct AppFeature {
                         try await reloadThread(database, peerHex, send)
                     }
                 )
+
+            case let .replyTapped(id):
+                // Only a message with an LXMF hash can be replied to: the hash is what FIELD_REPLY_TO
+                // carries. A hashless legacy row, or an id from a menu that outlived a thread reload,
+                // leaves any reply already in progress alone.
+                guard let message = state.threadMessages.first(where: { $0.id == id }),
+                      !message.messageHash.isEmpty else { return .none }
+                state.replyTarget = ReplyTarget(
+                    messageHash: message.messageHash, body: message.body, isOutgoing: message.isOutgoing)
+                return .none
+
+            case .replyCancelled:
+                state.replyTarget = nil
+                return .none
 
             case let .node(.client(.endpoint(.delegate(.pathLearned(h, _))))):
                 // LXMFNode's Scope reducer has already run and updated state.node.client.learnedPeers[h]
