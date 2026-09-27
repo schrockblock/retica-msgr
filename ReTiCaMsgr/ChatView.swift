@@ -14,6 +14,11 @@ struct ChatView: View {
     @Bindable var store: StoreOf<AppFeature>
     @State private var pickerTarget: PickerTarget?
     @State private var infoTarget: InfoTarget?
+    /// The bubble briefly outlined after a quote tap scrolled to it.
+    @State private var highlightedMessageID: Message.ID?
+    /// Bumped per quote tap, so only the latest tap's timer clears the highlight.
+    @State private var highlightGeneration = 0
+    @FocusState private var draftFocused: Bool
 
     private var peerReachable: Bool {
         guard let peer = store.openPeerHex else { return false }
@@ -25,10 +30,20 @@ struct ChatView: View {
     }
 
     var body: some View {
+        let peerName = store.openPeerDisplayName
         VStack(spacing: 0) {
-            List(store.threadMessages) { message in
-                let reactions = store.threadReactions[message.messageHash] ?? []
-                MessageBubble(message: message, reactions: reactions)
+            ScrollViewReader { proxy in
+                List(store.threadMessages) { message in
+                    let reactions = store.threadReactions[message.messageHash] ?? []
+                    let replyPreview = ReplyPreview.resolve(for: message, in: store.threadMessages, peerName: peerName)
+                    MessageBubble(
+                        message: message,
+                        reactions: reactions,
+                        replyPreview: replyPreview,
+                        isHighlighted: highlightedMessageID == message.id,
+                        onQuoteTap: { showOriginal($0, proxy: proxy) }
+                    )
+                    .id(message.id)
                     .listRowSeparator(.hidden)
                     .contextMenu {
                         if !message.messageHash.isEmpty {
@@ -38,6 +53,11 @@ struct ChatView: View {
                                 onMore: { pickerTarget = PickerTarget(messageHash: message.messageHash) }
                             )
                             .disabled(!peerReachable)
+                            // Not gated on reachability: composing works offline, and Send is gated itself.
+                            Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                                store.send(.replyTapped(message.id))
+                                draftFocused = true
+                            }
                         }
                         Button("Info", systemImage: "info.circle") {
                             infoTarget = InfoTarget(id: message.id)
@@ -46,20 +66,33 @@ struct ChatView: View {
                             UIPasteboard.general.string = message.body
                         }
                     } preview: {
-                        BubbleText(message: message)
+                        BubbleText(message: message, replyPreview: replyPreview)
                             .padding(8)
                     }
-            }
-            .listStyle(.plain)
-            .sheet(item: $infoTarget) { target in
-                MessageInfoSheet(store: store, messageID: target.id)
+                }
+                .listStyle(.plain)
+                .sheet(item: $infoTarget) { target in
+                    MessageInfoSheet(store: store, messageID: target.id)
+                }
             }
 
             Divider()
 
+            if let target = store.replyTarget {
+                let trimmedQuote = ReplyWire.trimQuote(target.body)
+                ReplyComposerBar(
+                    senderLabel: ReplyPreview.senderLabel(originalIsOutgoing: target.isOutgoing, peerName: peerName),
+                    // A whitespace-only original trims to "", so it shows the same "not available"
+                    // text as the resolver rather than an empty line (P1).
+                    text: trimmedQuote.isEmpty ? ReplyPreview.unavailable : trimmedQuote,
+                    onCancel: { store.send(.replyCancelled) }
+                )
+            }
+
             HStack(spacing: 8) {
                 TextField("Message", text: $store.draft)
                     .textFieldStyle(.roundedBorder)
+                    .focused($draftFocused)
                 Button("Send") { store.send(.sendTapped) }
                     .disabled(!canSend)
             }
@@ -71,6 +104,19 @@ struct ChatView: View {
             EmojiPickerSheet { emoji in
                 store.send(.reactionSelected(messageHash: target.messageHash, emoji: emoji))
             }
+        }
+    }
+
+    /// Scroll the original to the middle of the list, outline it, then fade the outline over ~1 s.
+    private func showOriginal(_ id: Message.ID, proxy: ScrollViewProxy) {
+        withAnimation { proxy.scrollTo(id, anchor: .center) }
+        highlightGeneration += 1
+        let generation = highlightGeneration
+        highlightedMessageID = id
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))   // let the scroll land first
+            guard generation == highlightGeneration else { return }
+            withAnimation(.easeOut(duration: 1)) { highlightedMessageID = nil }
         }
     }
 }
@@ -87,12 +133,23 @@ private struct InfoTarget: Identifiable {
 struct MessageBubble: View {
     let message: Message
     var reactions: [ReactionSummary.Item] = []
+    var replyPreview: ReplyPreview.Resolved? = nil
+    var isHighlighted = false
+    var onQuoteTap: ((Message.ID) -> Void)? = nil
 
     var body: some View {
         HStack {
             if message.isOutgoing { Spacer() }
             VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 2) {
-                BubbleText(message: message)
+                BubbleText(message: message, replyPreview: replyPreview, onQuoteTap: onQuoteTap)
+                    .overlay(
+                        // Drawn 4 pt outside the bubble, so the accent ring shows on the blue
+                        // outgoing bubble too.
+                        RoundedRectangle(cornerRadius: 20)
+                            .stroke(Color.accentColor, lineWidth: 3)
+                            .padding(-4)
+                            .opacity(isHighlighted ? 1 : 0)
+                    )
                 if !reactions.isEmpty {
                     ReactionBadge(items: reactions)
                         .padding(.top, -10)
@@ -110,16 +167,24 @@ struct MessageBubble: View {
 }
 
 /// The rounded bubble alone — also the context-menu preview, so the lifted view is just the bubble.
+/// A reply shows its quote block above the text.
 struct BubbleText: View {
     let message: Message
+    var replyPreview: ReplyPreview.Resolved? = nil
+    var onQuoteTap: ((Message.ID) -> Void)? = nil
 
     var body: some View {
-        Text(message.body)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(message.isOutgoing ? Color.blue : Color(.systemGray5))
-            .foregroundStyle(message.isOutgoing ? .white : .primary)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+        VStack(alignment: .leading, spacing: 6) {
+            if let replyPreview {
+                QuoteBlock(preview: replyPreview, onOutgoingBubble: message.isOutgoing, onTap: onQuoteTap)
+            }
+            Text(message.body)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(message.isOutgoing ? Color.blue : Color(.systemGray5))
+        .foregroundStyle(message.isOutgoing ? .white : .primary)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
 
