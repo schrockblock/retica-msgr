@@ -699,8 +699,9 @@ public struct AppFeature {
             case let .node(.client(.delegate(.deliveryFailed(hash)))):
                 let hex = hash.hexString
                 let openPeer = state.openPeerHex
+                let milestoneAt: Date? = date.now
                 return .run { [database] send in
-                    try await database.write {
+                    try await database.write { db in
                         // With a PN configured, one message.hash gets two copies: the propagated
                         // copy (`propagationAccepted` → "stored") and the delivery copy
                         // (`deliveryConfirmed` → "delivered"). ReTiCA now proves opportunistic
@@ -717,7 +718,12 @@ public struct AppFeature {
                                 && $0.isOutgoing
                         }
                             .update { $0.status = MessageStatus.failed }
-                            .execute($0)
+                            .execute(db)
+                        // Info milestone: the FIRST failure time. Recorded even when the guard above
+                        // kept the status, and never overwritten by a repeat.
+                        try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing && $0.failedAt.is(nil) }
+                            .update { $0.failedAt = milestoneAt }
+                            .execute(db)
                     }
                     try await reloadConversations(database, send)
                     if let openPeer {
@@ -813,8 +819,9 @@ public struct AppFeature {
             case let .node(.client(.delegate(.propagationAccepted(hash)))):
                 let hex = hash.hexString
                 let openPeer = state.openPeerHex
+                let milestoneAt: Date? = date.now
                 return .run { [database] send in
-                    try await database.write {
+                    try await database.write { db in
                         // Same hash-collision hazard as `deliveryFailed` above: scope to outgoing
                         // rows only so an incoming row sharing this hash isn't rewritten.
                         // Delivered beats stored: the propagated copy can be accepted after the
@@ -823,7 +830,12 @@ public struct AppFeature {
                             $0.messageHash.eq(hex) && $0.status.neq(MessageStatus.delivered) && $0.isOutgoing
                         }
                             .update { $0.status = MessageStatus.propagated }
-                            .execute($0)
+                            .execute(db)
+                        // Info milestone: the FIRST acceptance time, including a late acceptance
+                        // after "delivered" (the status stays delivered, the time is still news).
+                        try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing && $0.storedAt.is(nil) }
+                            .update { $0.storedAt = milestoneAt }
+                            .execute(db)
                     }
                     try await reloadConversations(database, send)
                     if let openPeer {
@@ -837,13 +849,18 @@ public struct AppFeature {
                 // forever, because a proving peer never yields a later `deliveryFailed`.
                 let hex = hash.hexString
                 let openPeer = state.openPeerHex
+                let milestoneAt: Date? = date.now
                 return .run { [database] send in
-                    try await database.write {
+                    try await database.write { db in
                         // Same hash-collision hazard as `deliveryFailed` above: scope to outgoing
                         // rows only so an incoming row sharing this hash isn't rewritten.
                         try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing }
                             .update { $0.status = MessageStatus.delivered }
-                            .execute($0)
+                            .execute(db)
+                        // Info milestone: the FIRST proof time. A repeat proof never moves it.
+                        try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing && $0.deliveredAt.is(nil) }
+                            .update { $0.deliveredAt = milestoneAt }
+                            .execute(db)
                     }
                     try await reloadConversations(database, send)
                     if let openPeer {

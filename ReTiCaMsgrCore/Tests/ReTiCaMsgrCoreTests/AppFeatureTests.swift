@@ -2434,3 +2434,134 @@ private func sendAndFetch(propagationNode: String) async -> (LXMessage?, Message
     let (_, row) = await sendAndFetch(propagationNode: String(repeating: "c", count: 32))
     #expect(try #require(row).sentViaPropagation == true)
 }
+
+// MARK: - Message Info: milestone timestamps
+
+private let infoT0 = Date(timeIntervalSince1970: 1700000000)   // makeStore's frozen \.date
+
+@MainActor
+private func sendAndSettle(_ store: TestStoreOf<AppFeature>, _ action: AppFeature.Action) async {
+    await store.send(action)
+    await store.finish()
+}
+
+private func hashData(_ hex: String) -> Data { Data(hexString: hex)! }
+
+private func rowsByHashAndDirection(_ db: any DatabaseWriter) async -> [String: Message] {
+    let rows = try! await db.read { try Message.all.fetchAll($0) }
+    return Dictionary(uniqueKeysWithValues: rows.map { ("\($0.messageHash)/\($0.isOutgoing ? "out" : "in")", $0) })
+}
+
+@MainActor @Test func infoMilestoneFirstEventsSetTheirColumns() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hD = String(repeating: "31", count: 16)
+    let hS = String(repeating: "32", count: 16)
+    let hF = String(repeating: "33", count: 16)
+    try! await seed(db, [
+        msg(1, peerA, "d", 1000, status: MessageStatus.sending, hash: hD),
+        msg(2, peerA, "s", 1000, status: MessageStatus.sending, hash: hS),
+        msg(3, peerA, "f", 1000, status: MessageStatus.sending, hash: hF),
+    ])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(hD))))))
+    await sendAndSettle(store, .node(.client(.delegate(.propagationAccepted(messageHash: hashData(hS))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(hF))))))
+    await store.skipReceivedActions(strict: false)
+    let rows = await rowsByHashAndDirection(db)
+    #expect(rows["\(hD)/out"]?.deliveredAt == infoT0)
+    #expect(rows["\(hD)/out"]?.storedAt == nil)
+    #expect(rows["\(hD)/out"]?.failedAt == nil)
+    #expect(rows["\(hS)/out"]?.storedAt == infoT0)
+    #expect(rows["\(hS)/out"]?.deliveredAt == nil)
+    #expect(rows["\(hS)/out"]?.failedAt == nil)
+    #expect(rows["\(hF)/out"]?.failedAt == infoT0)
+    #expect(rows["\(hF)/out"]?.storedAt == nil)
+    #expect(rows["\(hF)/out"]?.deliveredAt == nil)
+}
+
+@MainActor @Test func infoMilestoneRepeatEventDoesNotMoveTheTime() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hD = String(repeating: "41", count: 16)
+    let hS = String(repeating: "42", count: 16)
+    let hF = String(repeating: "43", count: 16)
+    try! await seed(db, [
+        msg(1, peerA, "d", 1000, status: MessageStatus.sending, hash: hD),
+        msg(2, peerA, "s", 1000, status: MessageStatus.sending, hash: hS),
+        msg(3, peerA, "f", 1000, status: MessageStatus.sending, hash: hF),
+    ])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(hD))))))
+    await sendAndSettle(store, .node(.client(.delegate(.propagationAccepted(messageHash: hashData(hS))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(hF))))))
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(60))   // the clock moves on
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(hD))))))
+    await sendAndSettle(store, .node(.client(.delegate(.propagationAccepted(messageHash: hashData(hS))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(hF))))))
+    await store.skipReceivedActions(strict: false)
+    let rows = await rowsByHashAndDirection(db)
+    #expect(rows["\(hD)/out"]?.deliveredAt == infoT0)
+    #expect(rows["\(hS)/out"]?.storedAt == infoT0)
+    #expect(rows["\(hF)/out"]?.failedAt == infoT0)
+}
+
+@MainActor @Test func infoMilestoneLateStoredAfterDeliveredIsStillRecorded() async {
+    let db = try! AppDatabase.makeInMemory()
+    let h = String(repeating: "51", count: 16)
+    try! await seed(db, [msg(1, peerA, "x", 1000, status: MessageStatus.delivered, hash: h)])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.propagationAccepted(messageHash: hashData(h))))))
+    await store.skipReceivedActions(strict: false)
+    let row = await rowsByHashAndDirection(db)["\(h)/out"]
+    #expect(row?.status == MessageStatus.delivered)
+    #expect(row?.storedAt == infoT0)
+}
+
+/// Review Focus 3: the status guard keeps "delivered", but Info still learns the failure time.
+@MainActor @Test func infoMilestoneFailureAfterDeliveredKeepsStatusButRecordsTime() async {
+    let db = try! AppDatabase.makeInMemory()
+    let h = String(repeating: "52", count: 16)
+    try! await seed(db, [msg(1, peerA, "x", 1000, status: MessageStatus.delivered, hash: h)])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(h))))))
+    await store.skipReceivedActions(strict: false)
+    let row = await rowsByHashAndDirection(db)["\(h)/out"]
+    #expect(row?.status == MessageStatus.delivered)
+    #expect(row?.failedAt == infoT0)
+}
+
+@MainActor @Test func infoMilestoneFalseFailureThenStoredRecordsBoth() async {
+    let db = try! AppDatabase.makeInMemory()
+    let h = String(repeating: "53", count: 16)
+    try! await seed(db, [msg(1, peerA, "x", 1000, status: MessageStatus.sending, hash: h)])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(h))))))
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(45))
+    await sendAndSettle(store, .node(.client(.delegate(.propagationAccepted(messageHash: hashData(h))))))
+    await store.skipReceivedActions(strict: false)
+    let row = await rowsByHashAndDirection(db)["\(h)/out"]
+    #expect(row?.status == MessageStatus.propagated)
+    #expect(row?.failedAt == infoT0)
+    #expect(row?.storedAt == infoT0.addingTimeInterval(45))
+}
+
+@MainActor @Test func infoMilestoneIncomingRowsSharingTheHashAreUntouched() async {
+    let db = try! AppDatabase.makeInMemory()
+    let h = String(repeating: "54", count: 16)
+    try! await seed(db, [
+        msg(1, peerA, "out", 1000, outgoing: true, status: MessageStatus.sending, hash: h),
+        msg(2, peerA, "in", 1000, outgoing: false, status: MessageStatus.received, hash: h),
+    ])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(h))))))
+    await sendAndSettle(store, .node(.client(.delegate(.propagationAccepted(messageHash: hashData(h))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(h))))))
+    await store.skipReceivedActions(strict: false)
+    let rows = await rowsByHashAndDirection(db)
+    #expect(rows["\(h)/out"]?.failedAt == infoT0)
+    #expect(rows["\(h)/out"]?.storedAt == infoT0)
+    #expect(rows["\(h)/out"]?.deliveredAt == infoT0)
+    #expect(rows["\(h)/in"]?.failedAt == nil)
+    #expect(rows["\(h)/in"]?.storedAt == nil)
+    #expect(rows["\(h)/in"]?.deliveredAt == nil)
+    #expect(rows["\(h)/in"]?.status == MessageStatus.received)
+}
