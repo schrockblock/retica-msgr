@@ -101,3 +101,56 @@ import SQLiteData
     #expect(back.stampState == "valid")
     #expect(back == m)
 }
+
+// MARK: - Message replies (addReplies)
+
+/// A row written before `addReplies` existed reads back as "not a reply".
+@Test func replyMigrationLegacyRowReadsBackWithNilReplyColumns() throws {
+    let queue = try DatabaseQueue()
+    try AppDatabase.migrator().migrate(queue, upTo: "addMessageInfo")
+    // Raw SQL: the Swift `Message` type already has the new columns, so it cannot insert into the
+    // old schema. Values use the encodings SQLiteData writes: lowercase UUID text, ISO-8601 ms text.
+    try queue.write { db in
+        try db.execute(
+            sql: """
+                INSERT INTO messages (id, peerHex, isOutgoing, body, timestamp, status, validated, messageHash, fieldKeys)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: ["00000000-0000-0000-0000-000000000003", String(repeating: "a", count: 32),
+                        0, "before replies", "2023-11-14 22:13:20.000", MessageStatus.received, 1,
+                        String(repeating: "c", count: 64), ""]
+        )
+    }
+    try AppDatabase.migrator().migrate(queue)
+    let rows = try queue.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    let row = try #require(rows.first)
+    #expect(row.body == "before replies")
+    #expect(row.fieldKeys == "")
+    #expect(row.replyToHash == nil)
+    #expect(row.replyQuote == nil)
+}
+
+/// Both columns round-trip. Literal expectations, not only `back == m`, so a model that drops a
+/// field on init cannot pass by dropping it on both sides.
+@Test func replyMigrationRoundTripsReplyColumns() throws {
+    let db = try AppDatabase.makeInMemory()
+    let m = Message(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000004")!,
+        peerHex: String(repeating: "b", count: 32),
+        isOutgoing: false,
+        body: "yes!",
+        timestamp: Date(timeIntervalSince1970: 1700000000),
+        status: MessageStatus.received,
+        validated: true,
+        messageHash: String(repeating: "d", count: 64),
+        fieldKeys: "0x30,0x31",
+        replyToHash: "00112233445566778899aabbccddeeff0123456789abcdeffedcba9876543210",
+        replyQuote: "are you coming? ☕"
+    )
+    try db.write { try Message.insert { m }.execute($0) }
+    let back = try #require(try db.read { try Message.all.fetchAll($0) }.first)
+    #expect(back.replyToHash == "00112233445566778899aabbccddeeff0123456789abcdeffedcba9876543210")
+    #expect(back.replyQuote == "are you coming? ☕")
+    #expect(back == m)
+}

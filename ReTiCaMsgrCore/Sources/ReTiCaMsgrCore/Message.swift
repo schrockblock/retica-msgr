@@ -6,7 +6,8 @@ import SQLiteData
 /// the reaction target for all rows.
 ///
 /// The optional fields after `messageHash` are debugging metadata for the Info sheet, added by the
-/// `addMessageInfo` migration. Rows stored before it read back `nil` for all of them.
+/// `addMessageInfo` migration, then the reply fields, added by `addReplies`. Rows stored before a
+/// migration read back `nil` for its fields.
 @Table
 public struct Message: Identifiable, Equatable, Sendable {
     public var id: UUID
@@ -36,6 +37,12 @@ public struct Message: Identifiable, Equatable, Sendable {
     public var fieldKeys: String?
     /// Incoming only: StampState.*
     public var stampState: String?
+    /// Replies (LXMF FIELD_REPLY_TO 0x30): lowercase hex of the original's full LXMF hash.
+    /// nil when this message is not a reply.
+    public var replyToHash: String?
+    /// Replies (LXMF FIELD_REPLY_QUOTE 0x31): the quote as sent or received, already trimmed.
+    /// nil when not a reply, or when a received quote was missing or unusable.
+    public var replyQuote: String?
 
     public init(
         id: UUID,
@@ -56,7 +63,9 @@ public struct Message: Identifiable, Equatable, Sendable {
         titleSize: Int? = nil,
         contentSize: Int? = nil,
         fieldKeys: String? = nil,
-        stampState: String? = nil
+        stampState: String? = nil,
+        replyToHash: String? = nil,
+        replyQuote: String? = nil
     ) {
         self.id = id
         self.peerHex = peerHex
@@ -77,6 +86,8 @@ public struct Message: Identifiable, Equatable, Sendable {
         self.contentSize = contentSize
         self.fieldKeys = fieldKeys
         self.stampState = stampState
+        self.replyToHash = replyToHash
+        self.replyQuote = replyQuote
     }
 }
 

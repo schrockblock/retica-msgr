@@ -101,6 +101,14 @@ public enum AppDatabase {
                 t.add(column: "stampState", .text)
             }
         }
+        m.registerMigration("addReplies") { db in
+            // Message replies: LXMF FIELD_REPLY_TO (0x30) as hex, FIELD_REPLY_QUOTE (0x31) as text.
+            // Nullable: rows stored before this migration, and every non-reply, read back NULL.
+            try db.alter(table: "messages") { t in
+                t.add(column: "replyToHash", .text)
+                t.add(column: "replyQuote", .text)
+            }
+        }
         return m
     }
 
