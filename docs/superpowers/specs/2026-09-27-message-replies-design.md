@@ -54,6 +54,10 @@ A message can be replied to from its long-press menu:
   - If the text has at most 100 `Character`s, it is used unchanged.
   - Otherwise it becomes the first 100 `Character`s + "…".
   - Leading and trailing whitespace and newlines are trimmed first.
+  - **Amendment (plan time):** after the character cut, whole trailing characters are dropped until
+    the result, including "…", is at most `maxQuoteBytes` (400) UTF-8 bytes. Without this, 100 wide
+    characters (for example ZWJ family emoji at 25 bytes each) would exceed the receiver's decode cap
+    and be dropped by every client running this app. Plain text is unaffected.
 
 ## Data model
 
