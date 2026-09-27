@@ -503,6 +503,9 @@ public struct AppFeature {
 
             case let .openConversation(peerHex):
                 state.openPeerHex = peerHex
+                // Review fix: a target from the previous conversation must not survive the switch —
+                // it would point at a message the new thread doesn't even contain.
+                state.replyTarget = nil
                 return .run { [database] send in try await reloadThread(database, peerHex, send) }
 
             case .closeConversation:
@@ -516,6 +519,8 @@ public struct AppFeature {
             case let .startConversation(hex):
                 guard let data = Data(hexString: hex), data.count == 16 else { return .none }
                 state.openPeerHex = hex
+                // Review fix: same as `openConversation` — clear any stale target from before.
+                state.replyTarget = nil
                 return .run { [database] send in try await reloadThread(database, hex, send) }
 
             case .sendTapped:
@@ -534,7 +539,9 @@ public struct AppFeature {
                     let quote = ReplyWire.trimQuote(target.body)
                     replyFields = ReplyWire.encode(replyTo: replyTo, quote: quote)
                     replyToHash = target.messageHash
-                    replyQuote = quote
+                    // Review fix: an empty trimmed quote (a whitespace-only original) is stored as
+                    // nil, matching the wire, which now omits 0x31 for an empty quote too.
+                    replyQuote = quote.isEmpty ? nil : quote
                 }
                 let title = Data()
                 let content = Data(text.utf8)

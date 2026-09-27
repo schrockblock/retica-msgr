@@ -111,7 +111,8 @@ private func replyFields(replyTo: MsgPackValue?, quote: MsgPackValue?) -> [MsgPa
     let replyTo = MsgPackValue.bin(originalHash)
     let cases: [(String, MsgPackValue?)] = [
         ("0x31 missing", nil),
-        ("0x31 not bin", .string("hi")),
+        // Neither bin nor string: `.uint` is not a valid quote carrier under either fix-2 branch.
+        ("0x31 wrong type", .uint(1)),
         ("0x31 401 bytes", .bin(Data(repeating: 0x61, count: 401))),
         ("0x31 invalid UTF-8", .bin(Data([0xFF, 0xFE, 0xFD]))),
     ]
@@ -123,4 +124,32 @@ private func replyFields(replyTo: MsgPackValue?, quote: MsgPackValue?) -> [MsgPa
     }
     let atLimit = ReplyWire.decode(replyFields(replyTo: replyTo, quote: .bin(Data(repeating: 0x61, count: 400))))
     #expect(atLimit?.quote == String(repeating: "a", count: 400))
+}
+
+// MARK: - Review fixes
+
+/// Controller ruling F1, fix 2: a string-typed 0x31 (as well as bin) is a valid quote carrier,
+/// under the same 400-byte UTF-8 cap. A string is already valid UTF-8, so only the byte cap applies.
+@Test func replyFixQuoteAcceptedAsString() {
+    let replyTo = MsgPackValue.bin(originalHash)
+    let short = ReplyWire.decode(replyFields(replyTo: replyTo, quote: .string("Hi")))
+    #expect(short?.replyTo == originalHash)
+    #expect(short?.quote == "Hi")
+
+    let tooLong = String(repeating: "a", count: 401)
+    #expect(tooLong.utf8.count > 400)
+    let long = ReplyWire.decode(replyFields(replyTo: replyTo, quote: .string(tooLong)))
+    #expect(long?.replyTo == originalHash)
+    #expect(long?.quote == nil)
+}
+
+/// Controller ruling F1, fix 3: `encode` leaves the 0x31 pair out entirely when the quote is empty,
+/// rather than emitting an empty string/bin. Only key 0x30 is present, and decoding it back gives a
+/// nil quote (not an empty-string one).
+@Test func replyFixEncodeOmitsEmptyQuote() {
+    let fields = ReplyWire.encode(replyTo: originalHash, quote: "")
+    #expect(fields.map(\.key) == [ReplyWire.fieldReplyTo])
+    let decoded = ReplyWire.decode(fields)
+    #expect(decoded?.replyTo == originalHash)
+    #expect(decoded?.quote == nil)
 }

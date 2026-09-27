@@ -32,6 +32,7 @@ struct QuoteBlock: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(preview.senderLabel)
                     .font(.caption.weight(.semibold))
+                    .lineLimit(1)
                 Text(preview.text)
                     .font(.caption)
                     .lineLimit(2)
@@ -67,12 +68,14 @@ struct ReplyComposerBar: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Replying to \(senderLabel)")
                     .font(.caption.weight(.semibold))
+                    .lineLimit(1)
                 Text(text)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
             Button(action: onCancel) {
                 Image(systemName: "xmark")
                     .font(.body.weight(.semibold))

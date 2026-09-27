@@ -17,12 +17,14 @@ public enum ReplyWire {
     public static let replyToLengths = 16...32
     public static let ellipsis = "…"
 
-    /// The two reply fields. `quote` goes on the wire as given: pass `trimQuote(...)` output.
+    /// The reply fields. `quote` goes on the wire as given: pass `trimQuote(...)` output. An empty
+    /// quote (a whitespace-only original) omits `0x31` entirely, rather than sending an empty value.
     public static func encode(replyTo: Data, quote: String) -> [MsgPackValue.IntPair] {
-        [
-            .init(fieldReplyTo, .bin(replyTo)),
-            .init(fieldReplyQuote, .bin(Data(quote.utf8))),
-        ]
+        var fields: [MsgPackValue.IntPair] = [.init(fieldReplyTo, .bin(replyTo))]
+        if !quote.isEmpty {
+            fields.append(.init(fieldReplyQuote, .bin(Data(quote.utf8))))
+        }
+        return fields
     }
 
     /// `nil` when the message is not a reply: 0x30 missing, not bin, or not 16–32 bytes (0x31 is
@@ -34,15 +36,24 @@ public enum ReplyWire {
         return (replyTo, decodeQuote(fields))
     }
 
+    /// `0x31` may arrive as msgpack `bin` or `str`, under the same 400-byte UTF-8 cap either way. A
+    /// `str` is already valid UTF-8 by construction, so only the byte cap applies to it; a `bin`
+    /// additionally needs the strict round-trip check, since arbitrary bytes may not be valid UTF-8.
     private static func decodeQuote(_ fields: [MsgPackValue.IntPair]) -> String? {
-        guard case let .bin(bytes)? = fields.first(where: { $0.key == fieldReplyQuote })?.value,
-              bytes.count <= maxQuoteBytes
-        else { return nil }
-        // Strict UTF-8, as in ReactionWire: `String(decoding:)` repairs invalid bytes with U+FFFD,
-        // so the bytes are valid exactly when they survive a round trip unchanged.
-        let text = String(decoding: bytes, as: UTF8.self)
-        guard Data(text.utf8) == bytes else { return nil }
-        return text
+        switch fields.first(where: { $0.key == fieldReplyQuote })?.value {
+        case let .bin(bytes):
+            guard bytes.count <= maxQuoteBytes else { return nil }
+            // Strict UTF-8, as in ReactionWire: `String(decoding:)` repairs invalid bytes with
+            // U+FFFD, so the bytes are valid exactly when they survive a round trip unchanged.
+            let text = String(decoding: bytes, as: UTF8.self)
+            guard Data(text.utf8) == bytes else { return nil }
+            return text
+        case let .string(s):
+            guard s.utf8.count <= maxQuoteBytes else { return nil }
+            return s
+        default:
+            return nil
+        }
     }
 
     /// The quote for a reply: surrounding whitespace and newlines trimmed, then at most

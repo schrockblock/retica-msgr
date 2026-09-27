@@ -2680,6 +2680,48 @@ private func replySendAndFetch(draft: String, target: AppFeature.ReplyTarget?)
     #expect(store.state.replyTarget == target)
 }
 
+// MARK: - Replies: review fixes
+
+/// Controller ruling F1, fix 1: opening a different conversation, whether via `.openConversation`
+/// or `.startConversation`, must not leave a stale target pointed at a message the new thread
+/// doesn't even contain.
+@MainActor @Test func replyFixTargetClearedWhenConversationChanges() async {
+    let db = try! AppDatabase.makeInMemory()
+    let target = AppFeature.ReplyTarget(messageHash: replyTargetHash, body: "x", isOutgoing: false)
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.replyTarget = target
+    }
+    await store.send(.openConversation(peerB))
+    #expect(store.state.replyTarget == nil)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+
+    let store2 = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.replyTarget = target
+    }
+    await store2.send(.startConversation(peerB))
+    #expect(store2.state.replyTarget == nil)
+    await store2.finish()
+    await store2.skipReceivedActions(strict: false)
+}
+
+/// Controller ruling F1, fix 3: a blank reply target (whitespace-only body trims to "") must not
+/// leave a `0x31` field on the wire, nor an empty-string `replyQuote` in the stored row.
+@MainActor @Test func replyFixSendBlankTargetOmitsQuote() async throws {
+    let (sent, row, _) = await replySendAndFetch(
+        draft: "ok",
+        target: AppFeature.ReplyTarget(messageHash: replyTargetHash, body: "   \n\t  ", isOutgoing: false)
+    )
+    let wire = try #require(sent)
+    #expect(wire.fields.map(\.key) == [0x30])
+    #expect(ReplyWire.decode(wire.fields)?.quote == nil)
+    let stored = try #require(row)
+    #expect(stored.replyToHash == replyTargetHash)
+    #expect(stored.replyQuote == nil)
+}
+
 // MARK: - Replies: receive path
 
 /// Non-uniform 32-byte original hash.
