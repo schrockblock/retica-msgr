@@ -13,6 +13,7 @@ import ReTiCaMsgrCore
 struct ChatView: View {
     @Bindable var store: StoreOf<AppFeature>
     @State private var pickerTarget: PickerTarget?
+    @State private var infoTarget: InfoTarget?
 
     private var peerReachable: Bool {
         guard let peer = store.openPeerHex else { return false }
@@ -38,6 +39,9 @@ struct ChatView: View {
                             )
                             .disabled(!peerReachable)
                         }
+                        Button("Info", systemImage: "info.circle") {
+                            infoTarget = InfoTarget(id: message.id)
+                        }
                         Button("Copy", systemImage: "doc.on.doc") {
                             UIPasteboard.general.string = message.body
                         }
@@ -47,6 +51,9 @@ struct ChatView: View {
                     }
             }
             .listStyle(.plain)
+            .sheet(item: $infoTarget) { target in
+                MessageInfoSheet(store: store, messageID: target.id)
+            }
 
             Divider()
 
@@ -71,6 +78,10 @@ struct ChatView: View {
 private struct PickerTarget: Identifiable {
     let messageHash: String
     var id: String { messageHash }
+}
+
+private struct InfoTarget: Identifiable {
+    let id: UUID
 }
 
 struct MessageBubble: View {
