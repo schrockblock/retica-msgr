@@ -176,6 +176,53 @@ green with no new known issues.
   - tap to copy works, checked by pasting into the draft field;
   - a milestone that arrives while the sheet is open updates it.
 
+## Addendum: reactions move to the standard `FIELD_REACTION` (0x40)
+
+**Agreed:** 2026-09-27.
+
+Reference LXMF 1.1.0 (`LXMF/LXMF.py:25,109-110`) defines `FIELD_REACTION = 0x40`, a dict with these keys:
+- `REACTION_TO` (`0x00`): the full `LXMessage.hash` of the target, as bytes;
+- `REACTION_CONTENT` (`0x01`): the reaction, as UTF-8 bytes.
+
+The emoji-reactions feature shipped on 2026-09-25 uses a custom `0xFB "reticamsgr.reaction"` / `0xFC`
+format instead, because the standard was missed at the time. No known client implements `0x40` yet;
+Sideband's core has no reaction handling. The standard doesn't define removal, so we choose the
+convention below.
+
+- **Send:**
+  - Every reaction is sent as `fields[0x40] = .intMap([0x00: .bin(target), 0x01: .bin(emoji UTF-8)])`.
+  - The legacy `0xFB`/`0xFC` fields are no longer sent.
+  - **Removal is sent as empty `REACTION_CONTENT` bytes.**
+  - Last-writer-wins and the monotonic own `sentAt` are unchanged, because both use the LXMF message
+    timestamp.
+- **Receive:**
+  - Both formats are accepted. A well-formed `0x40` is tried first, then the legacy `0xFB` format.
+  - A message whose `0x40` field decodes as a reaction is handled as a reaction and never becomes a
+    bubble, whatever its content.
+  - A `0x40` field that is present but malformed is dropped, not rendered. Malformed means any of:
+    - not an int-keyed map;
+    - `0x00` missing or not bin, or its length outside 16–32;
+    - `0x01` missing or not bin;
+    - content over `ReactionWire.maxEmojiBytes` (64);
+    - content that isn't valid UTF-8.
+  - A message with neither format is a normal message.
+- **Code:**
+  - `ReactionWire.encode` emits the standard format.
+  - `ReactionWire.decode` returns the same `Decoded` cases for both formats.
+  - Constants `fieldReaction = 0x40`, `reactionTo = 0x00` and `reactionContent = 0x01` are added.
+  - The legacy decoding path is kept.
+  - Nothing else in the reaction pipeline changes.
+- **Tests:**
+  - A round trip through a real `LXMessage.create` → pack → unpack in the standard format, including
+    removal as empty bytes.
+  - The legacy format still decodes.
+  - When both fields are present, the standard format wins.
+  - Each malformed standard case listed above is dropped.
+  - A standard-format reaction with fallback text in `content` is not a bubble (AppFeature).
+  - `reactionSelected` sends the standard format.
+  - Existing reaction tests are updated to the new encoding.
+  - The usual mutation check.
+
 ## Out of scope
 
 - Everything in `docs/superpowers/backlog-retica-followups.md`: hops, interface, retry count, and
