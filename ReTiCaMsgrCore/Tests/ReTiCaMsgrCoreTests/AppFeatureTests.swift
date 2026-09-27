@@ -2390,3 +2390,47 @@ private func receiveAndFetch(_ m: LXMessage, me: Identity,
     #expect(rows.map(\.body) == ["broken clock"])
     #expect(rows.first?.senderTimestamp == nil)
 }
+
+// MARK: - Message Info: send path
+
+/// Send "hello" and return the LXMessage handed to the node plus the stored row. The test waits for
+/// `conversationsLoaded`, the last action of the send saga, so the insert has happened. It does not
+/// call `finish()`: `sendMessage` starts node effects that are not this test's business.
+@MainActor
+private func sendAndFetch(propagationNode: String) async -> (LXMessage?, Message?) {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = "hello"
+        s.$propagationNodeHex.withLock { $0 = propagationNode }
+    }
+    await store.send(.sendTapped)
+    var sent: LXMessage?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action { sent = msg; return true }
+        return false
+    }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    let row = try! await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }.first
+    return (sent, row)
+}
+
+@MainActor @Test func infoSendStoresSizesFieldKeysAndSendTime() async throws {
+    let (sent, row) = await sendAndFetch(propagationNode: "")
+    let wire = try #require(sent)
+    let stored = try #require(row)
+    #expect(stored.senderTimestamp == Date(timeIntervalSince1970: 1700000000))
+    #expect(stored.senderTimestamp == stored.timestamp)
+    #expect(stored.wireSize == wire.packed.count)
+    #expect(stored.titleSize == 0)
+    #expect(stored.contentSize == 5)
+    #expect(stored.fieldKeys == "")
+    #expect(stored.sentViaPropagation == false)
+    #expect(stored.arrivalMethod == nil)
+    #expect(stored.stampState == nil)
+}
+
+@MainActor @Test func infoSendRecordsPropagationNodeCopy() async throws {
+    let (_, row) = await sendAndFetch(propagationNode: String(repeating: "c", count: 32))
+    #expect(try #require(row).sentViaPropagation == true)
+}

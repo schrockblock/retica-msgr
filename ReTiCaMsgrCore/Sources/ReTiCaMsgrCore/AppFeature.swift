@@ -490,24 +490,33 @@ public struct AppFeature {
                       let peer = Data(hexString: peerHex) else { return .none }
                 let title = Data()
                 let content = Data(text.utf8)
+                let now = date.now
                 let msg = LXMessage.create(
                     source: state.identity,
                     destinationHash: peer,
-                    timestamp: date.now.timeIntervalSince1970,
+                    timestamp: now.timeIntervalSince1970,
                     title: title,
                     content: content
                 )
+                let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+                // Outgoing Info metadata. `wireSize` is the unstamped packed size: LXMFNode adds any
+                // stamp downstream, where the app cannot see it (hence no stampState either).
                 let row = Message(
                     id: UUID(),
                     peerHex: peerHex,
                     isOutgoing: true,
                     body: text,
-                    timestamp: date.now,
+                    timestamp: now,
                     status: MessageStatus.sending,
                     validated: false,
-                    messageHash: msg.hash.hexString
+                    messageHash: msg.hash.hexString,
+                    senderTimestamp: now,
+                    sentViaPropagation: alsoViaPropagation,
+                    wireSize: msg.packed.count,
+                    titleSize: msg.title.count,
+                    contentSize: msg.content.count,
+                    fieldKeys: MessageMetadata.fieldKeys(msg.fields)
                 )
-                let alsoViaPropagation = !state.propagationNodeHex.isEmpty
                 state.draft = ""
                 return .merge(
                     .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
