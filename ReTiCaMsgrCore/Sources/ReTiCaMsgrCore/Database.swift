@@ -3,7 +3,7 @@ import GRDB
 import SQLiteData
 
 public enum AppDatabase {
-    /// GRDB migrator creating the `messages` table.
+    /// GRDB migrator for the app's tables. Migrations are append-only: never edit a shipped one.
     static func migrator() -> DatabaseMigrator {
         var m = DatabaseMigrator()
         m.registerMigration("createMessages") { db in
@@ -82,6 +82,23 @@ public enum AppDatabase {
                 t.column("emoji", .text).notNull()
                 t.column("sentAt", .double).notNull()
                 t.primaryKey(["messageHash", "reactorHex"])
+            }
+        }
+        m.registerMigration("addMessageInfo") { db in
+            // Debugging metadata for the message Info sheet. Every column is nullable: rows stored
+            // before this migration read back NULL, which the sheet shows as "—".
+            try db.alter(table: "messages") { t in
+                t.add(column: "senderTimestamp", .datetime)
+                t.add(column: "arrivalMethod", .text)
+                t.add(column: "sentViaPropagation", .boolean)
+                t.add(column: "storedAt", .datetime)
+                t.add(column: "deliveredAt", .datetime)
+                t.add(column: "failedAt", .datetime)
+                t.add(column: "wireSize", .integer)
+                t.add(column: "titleSize", .integer)
+                t.add(column: "contentSize", .integer)
+                t.add(column: "fieldKeys", .text)
+                t.add(column: "stampState", .text)
             }
         }
         return m

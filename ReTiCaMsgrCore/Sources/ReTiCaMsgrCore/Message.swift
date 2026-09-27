@@ -4,6 +4,9 @@ import SQLiteData
 /// A single chat message row. `peerHex` is the other party's lxmf.delivery hash (hex);
 /// `messageHash` is the LXMessage.hash (hex) — correlates deliveryFailed for outgoing rows and is
 /// the reaction target for all rows.
+///
+/// The optional fields after `messageHash` are debugging metadata for the Info sheet, added by the
+/// `addMessageInfo` migration. Rows stored before it read back `nil` for all of them.
 @Table
 public struct Message: Identifiable, Equatable, Sendable {
     public var id: UUID
@@ -15,6 +18,25 @@ public struct Message: Identifiable, Equatable, Sendable {
     public var validated: Bool       // incoming: signature validated
     public var messageHash: String   // LXMessage.hash hex ("" for incoming rows stored before reactions shipped)
 
+    /// The LXMF timestamp: the sender's clock for incoming rows, the send time for outgoing rows.
+    public var senderTimestamp: Date?
+    /// Incoming only: ArrivalMethod.*
+    public var arrivalMethod: String?
+    /// Outgoing only: a propagation node was configured at send, so a PN copy was also sent.
+    public var sentViaPropagation: Bool?
+    /// Outgoing only: the FIRST time each milestone happened. Never overwritten.
+    public var storedAt: Date?
+    public var deliveredAt: Date?
+    public var failedAt: Date?
+    /// Bytes on the wire (incoming: as received; outgoing: as packed before stamping).
+    public var wireSize: Int?
+    public var titleSize: Int?
+    public var contentSize: Int?
+    /// Lowercase two-digit hex LXMF field keys in wire order, e.g. "0x02,0xfb". "" when none.
+    public var fieldKeys: String?
+    /// Incoming only: StampState.*
+    public var stampState: String?
+
     public init(
         id: UUID,
         peerHex: String,
@@ -23,7 +45,18 @@ public struct Message: Identifiable, Equatable, Sendable {
         timestamp: Date,
         status: String,
         validated: Bool,
-        messageHash: String
+        messageHash: String,
+        senderTimestamp: Date? = nil,
+        arrivalMethod: String? = nil,
+        sentViaPropagation: Bool? = nil,
+        storedAt: Date? = nil,
+        deliveredAt: Date? = nil,
+        failedAt: Date? = nil,
+        wireSize: Int? = nil,
+        titleSize: Int? = nil,
+        contentSize: Int? = nil,
+        fieldKeys: String? = nil,
+        stampState: String? = nil
     ) {
         self.id = id
         self.peerHex = peerHex
@@ -33,6 +66,17 @@ public struct Message: Identifiable, Equatable, Sendable {
         self.status = status
         self.validated = validated
         self.messageHash = messageHash
+        self.senderTimestamp = senderTimestamp
+        self.arrivalMethod = arrivalMethod
+        self.sentViaPropagation = sentViaPropagation
+        self.storedAt = storedAt
+        self.deliveredAt = deliveredAt
+        self.failedAt = failedAt
+        self.wireSize = wireSize
+        self.titleSize = titleSize
+        self.contentSize = contentSize
+        self.fieldKeys = fieldKeys
+        self.stampState = stampState
     }
 }
 
@@ -45,4 +89,23 @@ public enum MessageStatus {
     /// The recipient proved receipt (`deliveryConfirmed`). Beats "stored": a delivered row is
     /// never downgraded by a later `propagationAccepted` or `deliveryFailed`.
     public static let delivered = "delivered"
+}
+
+/// How an incoming message reached us (`Message.arrivalMethod`), from ReTiCA's
+/// `LXMFRouter.DeliveryMethod`.
+public enum ArrivalMethod {
+    public static let opportunistic = "opportunistic"
+    public static let direct = "direct"
+    public static let propagated = "propagated"
+}
+
+/// The delivery-stamp state of an incoming message (`Message.stampState`), from `LXMessage`'s
+/// `stamp` / `stampChecked` / `stampValid`.
+public enum StampState {
+    /// No stamp was attached.
+    public static let none = "none"
+    /// A stamp was attached but no stamp cost is configured, so it was never checked.
+    public static let unchecked = "unchecked"
+    public static let valid = "valid"
+    public static let invalid = "invalid"
 }
