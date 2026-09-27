@@ -2679,3 +2679,63 @@ private func replySendAndFetch(draft: String, target: AppFeature.ReplyTarget?)
     await store.send(.sendTapped)
     #expect(store.state.replyTarget == target)
 }
+
+// MARK: - Replies: receive path
+
+/// Non-uniform 32-byte original hash.
+private let replyOriginalHash = Data((0..<32).map { UInt8(($0 * 37 + 11) & 0xFF) })
+
+@MainActor @Test func replyReceiveStoresBothColumns() async throws {
+    let me = Identity()
+    let m = wireMessage(from: Identity(), to: me, at: 1699999999, content: "yes!",
+                        fields: ReplyWire.encode(replyTo: replyOriginalHash, quote: "are you coming?"))
+    let rows = try await receiveAndFetch(m, me: me)
+    #expect(rows.count == 1)
+    let row = try #require(rows.first)
+    #expect(row.body == "yes!")
+    #expect(row.replyToHash == replyOriginalHash.hexString)
+    #expect(row.replyQuote == "are you coming?")
+    #expect(row.fieldKeys == "0x30,0x31")
+}
+
+@MainActor @Test func replyReceiveInvalidQuoteStoresHashOnly() async throws {
+    let me = Identity()
+    let m = wireMessage(from: Identity(), to: me, at: 1699999999, content: "yes!", fields: [
+        .init(0x30, .bin(replyOriginalHash)),
+        .init(0x31, .bin(Data([0xFF, 0xFE]))),   // invalid UTF-8
+    ])
+    let rows = try await receiveAndFetch(m, me: me)
+    #expect(rows.count == 1)
+    let row = try #require(rows.first)
+    #expect(row.replyToHash == replyOriginalHash.hexString)
+    #expect(row.replyQuote == nil)
+}
+
+/// A reaction wins over reply fields: no bubble, reply fields ignored. A malformed reaction beside
+/// reply fields is still dropped.
+@MainActor @Test func replyReceiveReactionWithReplyFieldsIsOnlyAReaction() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = LXMessage.deliveryHash(identityHash: sender.hash).hexString
+    let target = Data(repeating: 0x44, count: 32)
+    let store = makeStore(db, identity: me)
+    let m = LXMessage.create(
+        source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+        timestamp: 1700000001, title: Data(), content: Data("Reacted 👍".utf8),
+        fields: ReactionWire.encode(target: target, emoji: "👍")
+            + ReplyWire.encode(replyTo: replyOriginalHash, quote: "hi")
+    )
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let messages = try await db.read { try Message.all.fetchAll($0) }
+    let reactions = try await db.read { try Reaction.all.fetchAll($0) }
+    #expect(messages.isEmpty)
+    #expect(reactions == [Reaction(messageHash: target.hexString, reactorHex: senderHex, emoji: "👍", sentAt: 1700000001)])
+
+    let malformed = wireMessage(from: sender, to: me, at: 1700000002, content: "fallback",
+                                fields: [.init(0x40, .bin(Data([1])))]
+                                    + ReplyWire.encode(replyTo: replyOriginalHash, quote: "hi"))
+    #expect(try await receiveAndFetch(malformed, me: me).isEmpty)
+}

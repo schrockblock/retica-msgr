@@ -716,6 +716,9 @@ public struct AppFeature {
                 case .notReaction:
                     break
                 }
+                // Standard LXMF reply fields (0x30 / 0x31). Only an ordinary message gets here: a
+                // reaction that also carries reply fields was handled above, reply fields ignored.
+                let reply = ReplyWire.decode(m.fields)
                 let row = Message(
                     id: UUID(),
                     peerHex: incomingPeer,
@@ -731,7 +734,9 @@ public struct AppFeature {
                     titleSize: m.title.count,
                     contentSize: m.content.count,
                     fieldKeys: MessageMetadata.fieldKeys(m.fields),
-                    stampState: MessageMetadata.stampState(m)
+                    stampState: MessageMetadata.stampState(m),
+                    replyToHash: reply?.replyTo.hexString,
+                    replyQuote: reply?.quote
                 )
                 return .run { [database] send in
                     try await database.write { db in
