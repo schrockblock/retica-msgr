@@ -25,14 +25,9 @@ it a better mesh-debugging tool but are dropped inside ReTiCA before the app hea
 ## Delivery-status correctness (left from the single-packet proofs work)
 
 See ReTiCA spec `docs/superpowers/specs/2026-09-26-single-packet-proofs-design.md`, "Amendments at
-planning time", item 3.
+planning time", item 3. (The false "failed" with a propagation node configured is fixed by ReTiCA's
+transfer-aware delivery work, `2026-09-27-transfer-aware-delivery-design.md` §6.)
 
-- **False "failed" with a propagation node configured.** While the propagated copy sits in
-  LXMFNode's propagation-node stamp search, `LXMFRouter.isOutstanding` doesn't count it, so if the
-  delivery copy runs out first, `deliveryFailed` fires (and can fire again if the propagated copy
-  later fails). The app then shows "failed" until "stored" overwrites it. Fix: a "propagated copy
-  pending" marker registered when the search starts, honoured by `isOutstanding`, cleared when the
-  copy is armed (or via `fail` on `cancelPropagationStamps`).
 - **Delivery-stamp search gaps.** `.cancelDeliveryStamps` emits `deliveryFailed` directly
   (bypassing `fail`), and a delivery copy still in its stamp search isn't counted as outstanding.
   Affects peers with a delivery stamp cost.

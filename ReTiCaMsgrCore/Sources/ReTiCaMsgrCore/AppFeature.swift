@@ -774,7 +774,12 @@ public struct AppFeature {
                     }
                 }
 
-            case let .node(.client(.delegate(.deliveryFailed(hash)))):
+            // A rejection (the recipient refused the transfer) and a cancel (the user stopped the
+            // send) mean the message will not go out, same as a failure. The files feature will style
+            // them apart; until then they share the "failed" status and the failure milestone.
+            case let .node(.client(.delegate(.deliveryFailed(hash)))),
+                 let .node(.client(.delegate(.deliveryRejected(hash)))),
+                 let .node(.client(.delegate(.deliveryCancelled(hash)))):
                 let hex = hash.hexString
                 let openPeer = state.openPeerHex
                 let milestoneAt: Date? = date.now

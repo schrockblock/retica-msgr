@@ -2781,3 +2781,56 @@ private let replyOriginalHash = Data((0..<32).map { UInt8(($0 * 37 + 11) & 0xFF)
                                     + ReplyWire.encode(replyTo: replyOriginalHash, quote: "hi"))
     #expect(try await receiveAndFetch(malformed, me: me).isEmpty)
 }
+
+// MARK: - Transfer-aware delivery (ReTiCA): rejected and cancelled messages
+
+/// A message the recipient refused, or the user cancelled, will never go out: it must leave
+/// "sending" for "failed" and record when, exactly like `deliveryFailed`.
+@MainActor @Test func tadCompatDeliveryRejectedMarksFailedAndRecordsFailedAt() async {
+    let db = try! AppDatabase.makeInMemory()
+    let h = String(repeating: "61", count: 16)
+    try! await seed(db, [msg(1, peerA, "x", 1000, status: MessageStatus.sending, hash: h)])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryRejected(messageHash: hashData(h))))))
+    await store.skipReceivedActions(strict: false)
+    let row = await rowsByHashAndDirection(db)["\(h)/out"]
+    #expect(row?.status == MessageStatus.failed)
+    #expect(row?.failedAt == infoT0)
+}
+
+@MainActor @Test func tadCompatDeliveryCancelledMarksFailedAndRecordsFailedAt() async {
+    let db = try! AppDatabase.makeInMemory()
+    let h = String(repeating: "62", count: 16)
+    try! await seed(db, [msg(1, peerA, "x", 1000, status: MessageStatus.sending, hash: h)])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryCancelled(messageHash: hashData(h))))))
+    await store.skipReceivedActions(strict: false)
+    let row = await rowsByHashAndDirection(db)["\(h)/out"]
+    #expect(row?.status == MessageStatus.failed)
+    #expect(row?.failedAt == infoT0)
+}
+
+/// Dispatches `deliveryRejected` (on an already-delivered message) and `deliveryCancelled` (on a
+/// message that shares its hash with an incoming row) back to back, and pins that the second
+/// dispatch still lands: the outgoing "sending" row flips to "failed". The delivered-row and
+/// incoming-row guards are NOT re-asserted here — they are the same guarded update `deliveryFailed`
+/// already exercises (see the hash-collision tests above, e.g. around line 855), and rejected/
+/// cancelled share that exact code path, so a mutation that only removes one of the two new case
+/// patterns never touches those checks; they passed unchanged under the Step 6 mutation batch and
+/// were dropped per Ruling P9 rather than kept as untested weight.
+@MainActor @Test func tadCompatRejectedThenCancelledBothReachTheFailureMarkingCode() async {
+    let db = try! AppDatabase.makeInMemory()
+    let delivered = String(repeating: "63", count: 16)
+    let shared = String(repeating: "64", count: 16)
+    try! await seed(db, [
+        msg(1, peerA, "done", 1000, status: MessageStatus.delivered, hash: delivered),
+        msg(2, peerA, "out", 1000, outgoing: true, status: MessageStatus.sending, hash: shared),
+        msg(3, peerA, "in", 1000, outgoing: false, status: MessageStatus.received, hash: shared),
+    ])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryRejected(messageHash: hashData(delivered))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryCancelled(messageHash: hashData(shared))))))
+    await store.skipReceivedActions(strict: false)
+    let rows = await rowsByHashAndDirection(db)
+    #expect(rows["\(shared)/out"]?.status == MessageStatus.failed)
+}
