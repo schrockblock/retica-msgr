@@ -38,3 +38,22 @@ transfer-aware delivery work, `2026-09-27-transfer-aware-delivery-design.md` §6
   get no receipt, so they resend and end in a false `deliveryFailed`. (Pre-existing.)
 - **Relay proof routing.** A ReTiCA node in relay mode doesn't route proofs for third parties (no
   reverse table). (Reference gap-analysis §1.6, relay half.)
+
+## Left from the transfer-aware delivery work (2026-09-28)
+
+See ReTiCA spec `docs/superpowers/specs/2026-09-27-transfer-aware-delivery-design.md` and the
+final-review notes in its SDD ledger. Each is reference parity or pre-existing behaviour that the
+files/images feature may want to revisit:
+
+- **A receiver-side timeout counts as a rejection.** Both ReTiCA's and reference's receiver send
+  RESOURCE_RCL when their part retries are exhausted, so the sender gets `deliveryRejected` and never
+  retries. Over flaky BLE/LoRa a user sending an image would expect a retry. Options: an app-level
+  "retry" on rejected rows, or ReTiCA distinguishing a timeout RCL from a policy reject (not on the
+  wire today).
+- **Attempts burn while a link re-establishes slowly.** After a non-rejected transfer failure each
+  10 s `retryDue` that finds no active link consumes an attempt, so a slow re-establish can exhaust
+  the copy without a second transfer. Pre-existing `retryDue` semantics (reference counts attempts
+  the same way).
+- **Sending the same hash twice re-arms and re-sends it.** `arm` resets a copy in flight to
+  attempt 1 and a second transfer of the same bytes starts behind the first; its progress can arrive
+  after `deliveryConfirmed`. Only reachable by the app sending one `LXMessage` twice — don't.
