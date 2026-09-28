@@ -57,3 +57,6 @@ files/images feature may want to revisit:
 - **Sending the same hash twice re-arms and re-sends it.** `arm` resets a copy in flight to
   attempt 1 and a second transfer of the same bytes starts behind the first; its progress can arrive
   after `deliveryConfirmed`. Only reachable by the app sending one `LXMessage` twice — don't.
+  Likewise a hash that already succeeded on one copy and was then cancelled must not be re-sent:
+  the cancel is silent, the copy's last progress value stays as a monotonic floor, and the re-send
+  gets no terminal because the router still remembers the success. Build a new message instead.
