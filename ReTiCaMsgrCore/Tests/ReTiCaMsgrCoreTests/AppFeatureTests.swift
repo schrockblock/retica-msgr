@@ -2791,8 +2791,8 @@ private let replyOriginalHash = Data((0..<32).map { UInt8(($0 * 37 + 11) & 0xFF)
 
 // MARK: - Transfer-aware delivery (ReTiCA): rejected and cancelled messages
 
-/// A message the recipient refused, or the user cancelled, will never go out: it must leave
-/// "sending" for "failed" and record when, exactly like `deliveryFailed`.
+/// A message the recipient refused will never go out: it must leave "sending" for "failed" and
+/// record when, exactly like `deliveryFailed`. (A cancelled one leaves it for "cancelled" — next.)
 @MainActor @Test func tadCompatDeliveryRejectedMarksFailedAndRecordsFailedAt() async {
     let db = try! AppDatabase.makeInMemory()
     let h = String(repeating: "61", count: 16)
@@ -2805,7 +2805,9 @@ private let replyOriginalHash = Data((0..<32).map { UInt8(($0 * 37 + 11) & 0xFF)
     #expect(row?.failedAt == infoT0)
 }
 
-@MainActor @Test func tadCompatDeliveryCancelledMarksFailedAndRecordsFailedAt() async {
+/// A message the user cancelled will never go out either: it must leave "sending" for its own
+/// "cancelled" status and still record `failedAt`, like `deliveryFailed`.
+@MainActor @Test func tadCompatDeliveryCancelledMarksCancelledAndRecordsFailedAt() async {
     let db = try! AppDatabase.makeInMemory()
     let h = String(repeating: "62", count: 16)
     try! await seed(db, [msg(1, peerA, "x", 1000, status: MessageStatus.sending, hash: h)])
@@ -2813,13 +2815,13 @@ private let replyOriginalHash = Data((0..<32).map { UInt8(($0 * 37 + 11) & 0xFF)
     await sendAndSettle(store, .node(.client(.delegate(.deliveryCancelled(messageHash: hashData(h))))))
     await store.skipReceivedActions(strict: false)
     let row = await rowsByHashAndDirection(db)["\(h)/out"]
-    #expect(row?.status == MessageStatus.failed)
+    #expect(row?.status == MessageStatus.cancelled)
     #expect(row?.failedAt == infoT0)
 }
 
 /// Dispatches `deliveryRejected` (on an already-delivered message) and `deliveryCancelled` (on a
 /// message that shares its hash with an incoming row) back to back, and pins that the second
-/// dispatch still lands: the outgoing "sending" row flips to "failed". The delivered-row and
+/// dispatch still lands: the outgoing "sending" row flips to "cancelled". The delivered-row and
 /// incoming-row guards are NOT re-asserted here — they are the same guarded update `deliveryFailed`
 /// already exercises (see the hash-collision tests above, e.g. around line 855), and rejected/
 /// cancelled share that exact code path, so a mutation that only removes one of the two new case
@@ -2839,7 +2841,7 @@ private let replyOriginalHash = Data((0..<32).map { UInt8(($0 * 37 + 11) & 0xFF)
     await sendAndSettle(store, .node(.client(.delegate(.deliveryCancelled(messageHash: hashData(shared))))))
     await store.skipReceivedActions(strict: false)
     let rows = await rowsByHashAndDirection(db)
-    #expect(rows["\(shared)/out"]?.status == MessageStatus.failed)
+    #expect(rows["\(shared)/out"]?.status == MessageStatus.cancelled)
 }
 
 // MARK: - Attachments: receiving (spec 2026-09-28 §4)
@@ -3268,4 +3270,184 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
     await leaving.send(.closeConversation)
     #expect(leaving.state.pendingAttachment == nil)
     #expect(leaving.state.attachmentError == nil)
+}
+
+// MARK: - Attachments: transfer state (spec 2026-09-28 §3–§4)
+
+private let linkL = Data(repeating: 0x4C, count: 16)
+private let linkM = Data(repeating: 0x4D, count: 16)
+
+private func progress(_ hex: String, _ fraction: Double) -> AppFeature.Action {
+    .node(.client(.delegate(.deliveryProgress(messageHash: hashData(hex), fraction: fraction))))
+}
+
+private func inbound(_ link: Data, _ fraction: Double, source: Data? = nil) -> AppFeature.Action {
+    .node(.client(.delegate(.inboundTransferProgress(sourceHash: source, linkID: link, fraction: fraction))))
+}
+
+/// Review Focus 5: never backwards, and every terminal outcome clears the bar — including the two
+/// new ones. `propagationAccepted` is not terminal for the delivery copy and leaves it alone.
+@MainActor @Test func attachTransferProgressIsMonotonicAndClearedByEveryTerminal() async {
+    let db = try! AppDatabase.makeInMemory()
+    let h = (1...5).map { String(repeating: "7\($0)", count: 16) }
+    try! await seed(db, h.enumerated().map { i, hash in msg(i + 1, peerA, "m", 1000, status: MessageStatus.sending, hash: hash) })
+    let store = makeStore(db, identity: Identity())
+    await store.send(progress(h[0], 0.05))
+    await store.send(progress(h[0], 0.5))
+    await store.send(progress(h[0], 0.3))    // late/lower: ignored
+    #expect(store.state.outgoingProgress[h[0]] == 0.5)
+    await store.send(progress(h[0], 1.7))    // clamped
+    #expect(store.state.outgoingProgress[h[0]] == 1.0)
+    for hash in h.dropFirst() { await store.send(progress(hash, 0.4)) }
+    #expect(store.state.outgoingProgress.count == 5)
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(h[0]))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(h[1]))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryRejected(messageHash: hashData(h[2]))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryCancelled(messageHash: hashData(h[3]))))))
+    await sendAndSettle(store, .node(.client(.delegate(.propagationAccepted(messageHash: hashData(h[4]))))))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.outgoingProgress == [h[4]: 0.4])
+}
+
+@MainActor @Test func attachTransferCancelledStatusReasonAndGuards() async {
+    let db = try! AppDatabase.makeInMemory()
+    let sending = String(repeating: "81", count: 16)
+    let delivered = String(repeating: "82", count: 16)
+    let shared = String(repeating: "83", count: 16)
+    try! await seed(db, [
+        msg(1, peerA, "s", 1000, status: MessageStatus.sending, hash: sending),
+        msg(2, peerA, "d", 1000, status: MessageStatus.delivered, hash: delivered),
+        msg(3, peerA, "out", 1000, outgoing: true, status: MessageStatus.sending, hash: shared),
+        msg(4, peerA, "in", 1000, outgoing: false, status: MessageStatus.received, hash: shared),
+    ])
+    let store = makeStore(db, identity: Identity())
+    for hash in [sending, delivered, shared] {
+        await sendAndSettle(store, .node(.client(.delegate(.deliveryCancelled(messageHash: hashData(hash))))))
+    }
+    await store.skipReceivedActions(strict: false)
+    let rows = await rowsByHashAndDirection(db)
+    #expect(rows["\(sending)/out"]?.status == MessageStatus.cancelled)
+    #expect(rows["\(sending)/out"]?.failureReason == FailureReason.cancelled)
+    #expect(rows["\(sending)/out"]?.failedAt == infoT0)
+    #expect(rows["\(delivered)/out"]?.status == MessageStatus.delivered)     // never downgraded
+    #expect(rows["\(delivered)/out"]?.failureReason == nil)
+    #expect(rows["\(shared)/out"]?.status == MessageStatus.cancelled)
+    #expect(rows["\(shared)/in"]?.status == MessageStatus.received)          // incoming untouched
+    #expect(rows["\(shared)/in"]?.failureReason == nil)
+}
+
+@MainActor @Test func attachTransferRejectedAndFailedReasons() async {
+    let db = try! AppDatabase.makeInMemory()
+    let rejected = String(repeating: "84", count: 16)
+    let failed = String(repeating: "85", count: 16)
+    try! await seed(db, [
+        msg(1, peerA, "r", 1000, status: MessageStatus.sending, hash: rejected),
+        msg(2, peerA, "f", 1000, status: MessageStatus.sending, hash: failed),
+    ])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryRejected(messageHash: hashData(rejected))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(failed))))))
+    await store.skipReceivedActions(strict: false)
+    let rows = await rowsByHashAndDirection(db)
+    #expect(rows["\(rejected)/out"]?.status == MessageStatus.failed)
+    #expect(rows["\(rejected)/out"]?.failureReason == FailureReason.rejected)
+    #expect(rows["\(failed)/out"]?.status == MessageStatus.failed)
+    #expect(rows["\(failed)/out"]?.failureReason == nil)
+}
+
+@MainActor @Test func attachTransferPropagationRefusedRecordsTheReason() async {
+    let db = try! AppDatabase.makeInMemory()
+    let h = String(repeating: "86", count: 16)
+    try! await seed(db, [
+        msg(1, peerA, "big", 1000, status: MessageStatus.sending, hash: h),
+        msg(2, peerA, "in", 1000, outgoing: false, status: MessageStatus.received, hash: h),
+    ])
+    let store = makeStore(db, identity: Identity()) { s in s.openPeerHex = peerA }
+    await sendAndSettle(store, .node(.client(.delegate(.propagationRefused(messageHash: hashData(h), reason: .tooLargeForNode)))))
+    await store.skipReceivedActions(strict: false)
+    let rows = await rowsByHashAndDirection(db)
+    #expect(rows["\(h)/out"]?.propagationRefused == PropagationRefusal.tooLargeForNode)
+    #expect(rows["\(h)/out"]?.status == MessageStatus.sending)   // the direct copy is still going
+    #expect(rows["\(h)/in"]?.propagationRefused == nil)
+    // The open thread reloaded so the Info sheet sees it.
+    #expect(store.state.threadMessages.first { $0.isOutgoing }?.propagationRefused == PropagationRefusal.tooLargeForNode)
+}
+
+@MainActor @Test func attachTransferCancelSendsCancelOutbound() async {
+    let h = String(repeating: "87", count: 16)
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.threadMessages = [msg(1, peerA, "big", 1000, status: MessageStatus.sending, hash: h)]
+    }
+    await store.send(.cancelSendTapped(uuid(1)))
+    await store.receive(.node(.client(.cancelOutbound(messageHash: hashData(h)))))
+}
+
+/// Review Focus 6: only an outgoing message still sending, with a hash, can be cancelled.
+@MainActor @Test func attachTransferCancelIsIgnoredUnlessSending() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.threadMessages = [
+            msg(1, peerA, "done", 1000, status: MessageStatus.delivered, hash: String(repeating: "88", count: 16)),
+            msg(2, peerA, "theirs", 1000, outgoing: false, status: MessageStatus.received, hash: String(repeating: "89", count: 16)),
+            msg(3, peerA, "legacy", 1000, status: MessageStatus.sending, hash: ""),
+            msg(4, peerA, "failed", 1000, status: MessageStatus.failed, hash: String(repeating: "8a", count: 16)),
+        ]
+    }
+    store.exhaustivity = .on
+    for id in [1, 2, 3, 4, 99] {
+        await store.send(.cancelSendTapped(uuid(id)))
+    }
+    await store.send(.replyCancelled)   // probe: nothing was sent to the node
+    store.exhaustivity = .off
+}
+
+@MainActor @Test func attachTransferInboundEntryTracksLinksAndAttribution() async {
+    let peerHash = hashData(peerA)
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in s.openPeerHex = peerA }
+    await store.send(inbound(linkL, 0.3))
+    #expect(store.state.inboundTransfers[linkL] == AppFeature.InboundTransfer(sourceHash: nil, fraction: 0.3, updatedAt: infoT0))
+    await store.send(inbound(linkL, 0.7))
+    #expect(store.state.inboundTransfers[linkL]?.fraction == 0.7)
+    await store.send(inbound(linkM, 0.1, source: peerHash))
+    await store.send(inbound(Data(repeating: 0x4E, count: 16), 0.2, source: hashData(peerB)))
+    // The open thread shows the unattributed one and the one attributed to its peer, not peerB's.
+    #expect(store.state.inboundTransfersForOpenThread.map(\.fraction).sorted() == [0.1, 0.7])
+    #expect(store.state.unattributedInboundTransfers.map(\.fraction) == [0.7])
+    // Done: the entry goes away.
+    await store.send(inbound(linkL, 1.0))
+    #expect(store.state.inboundTransfers[linkL] == nil)
+    #expect(store.state.inboundTransfers.count == 2)
+    // A closed link clears its entry too.
+    await store.send(.node(.client(.endpoint(.delegate(.linkClosed(linkID: linkM, reason: .timedOut))))))
+    #expect(store.state.inboundTransfers[linkM] == nil)
+    #expect(store.state.inboundTransfers.count == 1)
+}
+
+/// Review Focus 7: a transfer that stops reporting disappears after 60 s of silence; a report
+/// restarts the clock.
+@MainActor @Test func attachTransferInboundEntryExpiresAfterSilence() async {
+    let clock = TestClock()
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
+    await store.send(inbound(linkL, 0.3))
+    await clock.advance(by: .seconds(59))
+    await store.send(inbound(linkL, 0.4))          // restarts the 60 s
+    // Exhaustive window: 59 s after the restart (118 s after the first report) nothing may fire.
+    // A timer that was NOT restarted fires at 60 s from the first report, inside this window, and
+    // its `inboundTransferTimedOut` fails the probe. (Under `.off`, a bare `store.state` check here
+    // would assert nothing: state lags until a receive.)
+    store.exhaustivity = .on
+    await clock.advance(by: .seconds(59))
+    await store.send(.replyCancelled)              // probe
+    store.exhaustivity = .off
+    await clock.advance(by: .seconds(1))
+    await store.receive(.inboundTransferTimedOut(linkID: linkL))
+    #expect(store.state.inboundTransfers[linkL] == nil)
+    // Completion cancels the timer: nothing fires later.
+    await store.send(inbound(linkM, 0.5))
+    await store.send(inbound(linkM, 1.0))
+    store.exhaustivity = .on
+    await clock.advance(by: .seconds(120))
+    await store.send(.replyCancelled)   // probe
+    store.exhaustivity = .off
 }

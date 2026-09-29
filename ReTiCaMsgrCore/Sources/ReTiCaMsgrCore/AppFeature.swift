@@ -48,6 +48,24 @@ public struct AppFeature {
         }
     }
 
+    /// A Resource arriving on one link (spec 2026-09-28 §4). `sourceHash` is the peer when we
+    /// opened the link, nil when a peer linked to our own destination (the sender is unknown until
+    /// the message unpacks), so the UI shows an unattributed one everywhere.
+    public struct InboundTransfer: Equatable, Sendable {
+        public var sourceHash: Data?
+        public var fraction: Double
+        public var updatedAt: Date
+
+        public init(sourceHash: Data?, fraction: Double, updatedAt: Date) {
+            self.sourceHash = sourceHash
+            self.fraction = fraction
+            self.updatedAt = updatedAt
+        }
+    }
+
+    /// An inbound transfer that stops reporting for this long is dropped from the UI.
+    public static let inboundTransferTimeout: Duration = .seconds(60)
+
     @ObservableState
     public struct State: Equatable {
         public var node: LXMFServiceNode.State
@@ -75,6 +93,23 @@ public struct AppFeature {
         public var pendingAttachment: PendingAttachment? = nil
         public var attachmentPreparing = false
         public var attachmentError: String? = nil
+        /// Outgoing transfer progress by message hash hex, from `deliveryProgress`: monotonic, and
+        /// cleared by every terminal delivery outcome. Session-only.
+        public var outgoingProgress: [String: Double] = [:]
+        /// Inbound transfers by link ID, from `inboundTransferProgress`. Session-only.
+        public var inboundTransfers: [Data: InboundTransfer] = [:]
+
+        /// Transfers to show in the open thread: the unattributed ones, plus those attributed to
+        /// the open peer.
+        public var inboundTransfersForOpenThread: [InboundTransfer] {
+            let open = openPeerHex.flatMap { Data(hexString: $0) }
+            return inboundTransfers.values.filter { $0.sourceHash == nil || $0.sourceHash == open }
+        }
+
+        /// Transfers nobody can be named for, shown on the conversation list.
+        public var unattributedInboundTransfers: [InboundTransfer] {
+            inboundTransfers.values.filter { $0.sourceHash == nil }
+        }
         // Derived list of peers, reloaded after every write.
         public var conversations: [Conversation] = []
         // The peer whose thread is currently open (drives navigation), and its messages.
@@ -197,6 +232,10 @@ public struct AppFeature {
         case attachmentRemoved
         /// The Original toggle on a pending photo: re-encode from the picker's bytes.
         case attachmentOriginalToggled(Bool)
+        /// Long-press → Cancel Send on an outgoing message still sending.
+        case cancelSendTapped(Message.ID)
+        /// The 60 s silence timer for one inbound transfer fired. Internal.
+        case inboundTransferTimedOut(linkID: Data)
         /// The send could not write the attachment's bytes, so nothing was sent: show `storeFailed`
         /// in the attachment bar and give the caption back. Internal.
         case attachmentSendFailed(draft: String)
@@ -230,6 +269,8 @@ public struct AppFeature {
         case learnedDebounce
         /// The one in-flight preparation (photo encode) of a picked attachment.
         case attachmentPreparation
+        /// The silence timer of one inbound transfer, keyed by link ID.
+        case inboundTransfer(Data)
     }
 
     @Dependency(\.defaultDatabase) var database
@@ -513,14 +554,20 @@ public struct AppFeature {
                 return .none
 
             case let .node(.client(.endpoint(.delegate(.linkClosed(linkID, _))))):
-                // The link went away while a request was in flight. LinkSession's close path only
-                // CANCELS the pending request deadlines — it emits no requestFailed — so without
-                // this branch a closed link would leave the row stuck on "requesting" forever.
-                guard let hex = state.publicKeyRequestLinks[linkID],
-                      state.publicKeyRequests[hex] == .requesting else { return .none }
-                state.publicKeyRequestLinks[linkID] = nil
-                state.publicKeyRequests[hex] = .failed(reason: "link closed")
-                return .none
+                // An inbound transfer on this link is over, one way or the other.
+                var effects: [Effect<Action>] = []
+                if state.inboundTransfers.removeValue(forKey: linkID) != nil {
+                    effects.append(.cancel(id: CancelID.inboundTransfer(linkID)))
+                }
+                // The link went away while a public-key request was in flight. LinkSession's close
+                // path only CANCELS the pending request deadlines — it emits no requestFailed — so
+                // without this a closed link would leave the row stuck on "requesting" forever.
+                if let hex = state.publicKeyRequestLinks[linkID],
+                   state.publicKeyRequests[hex] == .requesting {
+                    state.publicKeyRequestLinks[linkID] = nil
+                    state.publicKeyRequests[hex] = .failed(reason: "link closed")
+                }
+                return .merge(effects)
 
             case let .openConversation(peerHex):
                 state.openPeerHex = peerHex
@@ -936,45 +983,16 @@ public struct AppFeature {
                     }
                 }
 
-            // A rejection (the recipient refused the transfer) and a cancel (the user stopped the
-            // send) mean the message will not go out, same as a failure. The files feature will style
-            // them apart; until then they share the "failed" status and the failure milestone.
-            case let .node(.client(.delegate(.deliveryFailed(hash)))),
-                 let .node(.client(.delegate(.deliveryRejected(hash)))),
-                 let .node(.client(.delegate(.deliveryCancelled(hash)))):
-                let hex = hash.hexString
-                let openPeer = state.openPeerHex
-                let milestoneAt: Date? = date.now
-                return .run { [database] send in
-                    try await database.write { db in
-                        // With a PN configured, one message.hash gets two copies: the propagated
-                        // copy (`propagationAccepted` → "stored") and the delivery copy
-                        // (`deliveryConfirmed` → "delivered"). ReTiCA now proves opportunistic
-                        // sends and never reports `deliveryFailed` after either copy succeeded, so
-                        // a failure should not reach a stored or delivered row. The status guards
-                        // below remain as a defensive check so a success is never clobbered (F5.5).
-                        // `messageHash` alone is not unique: an incoming row and an outgoing row can
-                        // share a hash (a conversation with your own address), so scope to outgoing
-                        // rows only or this would also rewrite the incoming row's status.
-                        try Message.where {
-                            $0.messageHash.eq(hex)
-                                && $0.status.neq(MessageStatus.propagated)
-                                && $0.status.neq(MessageStatus.delivered)
-                                && $0.isOutgoing
-                        }
-                            .update { $0.status = MessageStatus.failed }
-                            .execute(db)
-                        // Info milestone: the FIRST failure time. Recorded even when the guard above
-                        // kept the status, and never overwritten by a repeat.
-                        try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing && $0.failedAt.is(nil) }
-                            .update { $0.failedAt = milestoneAt }
-                            .execute(db)
-                    }
-                    try await reloadConversations(database, send)
-                    if let openPeer {
-                        try await reloadThread(database, openPeer, send)
-                    }
-                }
+            case let .node(.client(.delegate(.deliveryFailed(hash)))):
+                return markUndeliverable(&state, hash, status: MessageStatus.failed, reason: nil)
+
+            case let .node(.client(.delegate(.deliveryRejected(hash)))):
+                // The recipient refused the transfer: terminal, styled as failed with a reason.
+                return markUndeliverable(&state, hash, status: MessageStatus.failed, reason: FailureReason.rejected)
+
+            case let .node(.client(.delegate(.deliveryCancelled(hash)))):
+                // The user stopped the send: its own status, same guards and milestone as failed.
+                return markUndeliverable(&state, hash, status: MessageStatus.cancelled, reason: FailureReason.cancelled)
 
             case let .conversationsLoaded(rows):
                 state.conversations = rows
@@ -1094,6 +1112,7 @@ public struct AppFeature {
                 // ReTiCA single-packet proofs). Without this a delivered message would read "sending"
                 // forever, because a proving peer never yields a later `deliveryFailed`.
                 let hex = hash.hexString
+                state.outgoingProgress[hex] = nil
                 let openPeer = state.openPeerHex
                 let milestoneAt: Date? = date.now
                 return .run { [database] send in
@@ -1197,8 +1216,95 @@ public struct AppFeature {
                     }
                 }
 
+            case let .node(.client(.delegate(.deliveryProgress(hash, fraction)))):
+                // Monotonic per message: a retry restarts the wire transfer, the bar does not.
+                let hex = hash.hexString
+                let clamped = min(max(fraction, 0), 1)
+                state.outgoingProgress[hex] = max(state.outgoingProgress[hex] ?? 0, clamped)
+                return .none
+
+            case let .node(.client(.delegate(.propagationRefused(hash, reason)))):
+                // The propagated copy was never sent; the direct copy decides the message. Recorded
+                // for the Info sheet so "stored" never arriving has an explanation.
+                let hex = hash.hexString
+                // Optional on purpose: the column is `String?`, and structured-queries' update
+                // subscript takes an optional expression (the `milestoneAt: Date?` pattern).
+                let text: String?
+                switch reason {
+                case .tooLargeForNode: text = PropagationRefusal.tooLargeForNode
+                }
+                let openPeer = state.openPeerHex
+                return .run { [database] send in
+                    try await database.write { db in
+                        try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing }
+                            .update { $0.propagationRefused = text }
+                            .execute(db)
+                    }
+                    if let openPeer {
+                        try await reloadThread(database, openPeer, send)
+                    }
+                }
+
+            case let .cancelSendTapped(id):
+                // Only our own message, still sending, with a hash the node can act on.
+                guard let message = state.threadMessages.first(where: { $0.id == id }),
+                      message.isOutgoing, message.status == MessageStatus.sending,
+                      let hash = Data(hexString: message.messageHash), !hash.isEmpty
+                else { return .none }
+                return .send(.node(.client(.cancelOutbound(messageHash: hash))))
+
+            case let .node(.client(.delegate(.inboundTransferProgress(sourceHash, linkID, fraction)))):
+                if fraction >= 1 {
+                    state.inboundTransfers[linkID] = nil
+                    return .cancel(id: CancelID.inboundTransfer(linkID))
+                }
+                state.inboundTransfers[linkID] = InboundTransfer(sourceHash: sourceHash, fraction: fraction, updatedAt: date.now)
+                // Review Focus 7: every report restarts the silence timer.
+                return .run { [clock] send in
+                    try await clock.sleep(for: AppFeature.inboundTransferTimeout)
+                    await send(.inboundTransferTimedOut(linkID: linkID))
+                }
+                .cancellable(id: CancelID.inboundTransfer(linkID), cancelInFlight: true)
+
+            case let .inboundTransferTimedOut(linkID):
+                state.inboundTransfers[linkID] = nil
+                return .none
+
             case .node, .binding:
                 return .none
+            }
+        }
+    }
+
+    /// A message that will not go out: `failed` or `cancelled`, with the reason the Info sheet
+    /// shows. The status guards keep a stored or delivered row as it is (a success is never
+    /// clobbered), `messageHash` alone is not unique (an incoming row can share it) so only
+    /// outgoing rows are touched, and `failedAt` records the FIRST failure time only.
+    private func markUndeliverable(_ state: inout State, _ hash: Data, status: String, reason: String?) -> Effect<Action> {
+        let hex = hash.hexString
+        state.outgoingProgress[hex] = nil
+        let openPeer = state.openPeerHex
+        let milestoneAt: Date? = date.now
+        return .run { [database] send in
+            try await database.write { db in
+                try Message.where {
+                    $0.messageHash.eq(hex)
+                        && $0.status.neq(MessageStatus.propagated)
+                        && $0.status.neq(MessageStatus.delivered)
+                        && $0.isOutgoing
+                }
+                    .update {
+                        $0.status = status
+                        $0.failureReason = reason
+                    }
+                    .execute(db)
+                try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing && $0.failedAt.is(nil) }
+                    .update { $0.failedAt = milestoneAt }
+                    .execute(db)
+            }
+            try await reloadConversations(database, send)
+            if let openPeer {
+                try await reloadThread(database, openPeer, send)
             }
         }
     }
