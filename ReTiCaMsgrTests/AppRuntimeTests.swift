@@ -67,6 +67,17 @@ private func makeSeed() -> (Identity, Data) {
     #expect(IdentityAnchor(defaults: f.defaults).expected() == hash)
 }
 
+/// I1 / FIX-1: an anchor is itself local state, so zero message rows does not mean fresh install.
+@MainActor
+@Test func appRuntimeAnchorWithoutMessagesNeverMints() throws {
+    let expected = Data(repeating: 0x88, count: 16)
+    let f = try Fixture(messages: 0, anchor: expected)
+    f.runtime.build()
+    #expect(f.runtime.state == .missing(expected: expected))
+    #expect(f.runtime.store == nil)
+    #expect(f.keychain.addCount == 0)
+}
+
 @MainActor
 @Test func appRuntimeMessagesPresentAndKeychainEmptyIsMissingAndMintsNothing() throws {
     let expected = Data(repeating: 0x55, count: 16)
@@ -154,6 +165,36 @@ private func makeSeed() -> (Identity, Data) {
     #expect(f.runtime.state == .ready(identity.hash))
     #expect(f.runtime.store != nil)
     #expect(IdentityAnchor(defaults: f.defaults).expected() == identity.hash)
+}
+
+/// FIX-0 / spec amendment 1 to §5.5: the only explicit way out of a no-anchor `.missing` state.
+@MainActor
+@Test func appRuntimeCreateNewIdentityOnlyFromTheNoAnchorMissingState() throws {
+    let f = try Fixture(messages: 1)
+    f.runtime.build()
+    #expect(f.runtime.state == .missing(expected: nil))
+    f.runtime.createNewIdentity()
+    guard case let .ready(hash) = f.runtime.state else {
+        Issue.record("expected ready: \(f.runtime.state)")
+        return
+    }
+    #expect(f.runtime.store != nil)
+    #expect(f.keychain.addCount == 1)
+    #expect(IdentityAnchor(defaults: f.defaults).expected() == hash)
+    // A second call is a no-op: state is already `.ready`, not the no-anchor `.missing` state.
+    f.runtime.createNewIdentity()
+    #expect(f.keychain.addCount == 1)
+}
+
+@MainActor
+@Test func appRuntimeCreateNewIdentityIsRefusedWithAnAnchor() throws {
+    let (identity, _) = makeSeed()
+    let f = try Fixture(messages: 1, anchor: identity.hash)
+    f.runtime.build()
+    #expect(f.runtime.state == .missing(expected: identity.hash))
+    f.runtime.createNewIdentity()
+    #expect(f.runtime.state == .missing(expected: identity.hash))
+    #expect(f.keychain.addCount == 0)
 }
 
 @MainActor

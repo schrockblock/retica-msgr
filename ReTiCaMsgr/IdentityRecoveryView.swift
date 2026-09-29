@@ -5,6 +5,7 @@ struct IdentityRecoveryView: View {
     let runtime: AppRuntime
     @State private var showRestore = false
     @State private var confirmAccept = false
+    @State private var confirmCreate = false
 
     var body: some View {
         let screen = IdentityRecoveryText.screen(for: runtime.state)
@@ -31,6 +32,11 @@ struct IdentityRecoveryView: View {
                             .buttonStyle(.borderedProminent)
                             .disabled(runtime.isBuilding)
                     }
+                    if screen.showsCreate {
+                        Button("Create a new identity") { confirmCreate = true }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(runtime.isBuilding)
+                    }
                     Button("Retry") { runtime.retry() }
                         .buttonStyle(.bordered)
                         .disabled(runtime.isBuilding)
@@ -48,6 +54,12 @@ struct IdentityRecoveryView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text(IdentityRecoveryText.acceptConfirmation)
+            }
+            .confirmationDialog("Create a new identity?", isPresented: $confirmCreate, titleVisibility: .visible) {
+                Button("Create a new identity", role: .destructive) { runtime.createNewIdentity() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(IdentityRecoveryText.createConfirmation)
             }
         }
     }

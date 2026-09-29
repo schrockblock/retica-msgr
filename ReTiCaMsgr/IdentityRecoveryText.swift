@@ -9,6 +9,7 @@ enum IdentityRecoveryText {
         var detail: String?          // behind the "Details" disclosure
         var showsRestore: Bool
         var showsAccept: Bool
+        var showsCreate: Bool = false
     }
 
     static func screen(for state: IdentityState) -> Screen {
@@ -21,19 +22,19 @@ enum IdentityRecoveryText {
             if let expected {
                 return Screen(
                     title: "Identity key missing",
-                    message: "Your conversations are here, but your identity key isn't. This happens after restoring from an unencrypted backup. Restore it from an identity backup.",
-                    detail: "Expected ID: \(shortID(expected))",
+                    message: "Your conversations are here, but your identity key isn't. This happens after restoring from an unencrypted backup. Restore it from an identity backup.\n\nExpected ID: \(shortID(expected))",
+                    detail: nil,
                     showsRestore: true, showsAccept: false)
             }
             return Screen(
                 title: "Identity key missing",
                 message: "Your conversations are here, but your identity key isn't. Restore isn't possible: this device has no record of which identity your conversations used.",
-                detail: nil, showsRestore: false, showsAccept: false)
+                detail: nil, showsRestore: false, showsAccept: false, showsCreate: true)
         case let .identityChanged(expected, got):
             return Screen(
                 title: "Identity changed",
-                message: "The identity on this device is different from the one your conversations used.",
-                detail: "Expected \(shortID(expected)), found \(shortID(got)).",
+                message: "The identity on this device is different from the one your conversations used.\n\nExpected \(shortID(expected)), found \(shortID(got)).",
+                detail: nil,
                 showsRestore: false, showsAccept: true)
         }
     }
@@ -55,6 +56,8 @@ enum IdentityRecoveryText {
 
     static let acceptConfirmation = "Your existing conversations were sent from the old identity. Peers will see you as a new address."
 
+    static let createConfirmation = "Your existing conversations were sent from a different identity. Peers will see you as a new address, and other Reticulum apps on this device (such as Nbhd) will use the new identity too."
+
     static func restore(_ result: RestoreResult) -> String? {
         switch result {
         case .restored:
@@ -62,7 +65,7 @@ enum IdentityRecoveryText {
         case let .rejected(rejection):
             switch rejection {
             case .badEncoding: return "That isn't an identity backup. Paste the text form or choose the identity file."
-            case let .wrongLength(n): return "That file is \(n) bytes; an identity is 64."
+            case let .wrongLength(n): return "That backup is \(n) bytes; an identity is 64."
             case .invalidKey: return "That key can't form an identity."
             case let .mismatch(got, expected): return "That backup is identity \(shortID(got)), but your conversations belong to \(shortID(expected))."
             case .noExpectedIdentity: return "Restore isn't possible: this device has no record of which identity your conversations used."

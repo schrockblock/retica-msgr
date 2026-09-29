@@ -69,7 +69,7 @@ final class AppRuntime {
         guard store == nil else { return }
         isBuilding = true
         defer { isBuilding = false }
-        let policy = LoadPolicy.forLaunch(database: environment.database)
+        let policy = LoadPolicy.forLaunch(database: environment.database, anchor: environment.anchor)
         let resolved = LaunchIdentity.resolve(policy: policy, anchor: environment.anchor, store: environment.identityStore)
         state = resolved.state
         guard let identity = resolved.identity else { return }
@@ -123,6 +123,19 @@ final class AppRuntime {
         case let .failed(reason):
             return .failed(reason)
         }
+    }
+
+    /// Only from the no-anchor `.missing` state (spec amendment 1 to §5.5): this device has never
+    /// used an identity, so minting is safe. Mints via `loadOrCreate`, then re-resolves through
+    /// `build()` so the normal path (messages exist → `.loadOnly` → the just-minted item loads →
+    /// anchor nil → recorded) is what actually produces `.ready`.
+    func createNewIdentity() {
+        guard case .missing(expected: nil) = state else { return }
+        if case let .failed(reason) = environment.identityStore.load(.loadOrCreate) {
+            state = .unavailable(reason)
+            return
+        }
+        build()
     }
 
     /// The explicit "Use the new identity": rewrites the anchor and builds.

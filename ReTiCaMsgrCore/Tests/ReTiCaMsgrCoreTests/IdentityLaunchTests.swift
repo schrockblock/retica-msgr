@@ -26,19 +26,36 @@ private func makeSeed() -> (Identity, Data) {
 
 @Test func identityLaunchPolicyIsLoadOrCreateOnlyWithoutMessages() throws {
     let db = try AppDatabase.makeInMemory()
+    let anchor = IdentityAnchor(defaults: freshDefaults())
     #expect(try AppDatabase.hasMessages(db) == false)
-    #expect(LoadPolicy.forLaunch(database: db) == .loadOrCreate)
+    #expect(LoadPolicy.forLaunch(database: db, anchor: anchor) == .loadOrCreate)
     try insertOneMessage(db)
     #expect(try AppDatabase.hasMessages(db) == true)
-    #expect(LoadPolicy.forLaunch(database: db) == .loadOnly)
+    #expect(LoadPolicy.forLaunch(database: db, anchor: anchor) == .loadOnly)
 }
 
 /// A failed count is "unknown", never "fresh install".
 @Test func identityLaunchPolicyIsLoadOnlyWhenTheCountThrows() throws {
     let queue = try DatabaseQueue()
+    let anchor = IdentityAnchor(defaults: freshDefaults())
     // No migration ran: the messages table does not exist, so the count throws.
     #expect(throws: (any Error).self) { try AppDatabase.hasMessages(queue) }
-    #expect(LoadPolicy.forLaunch(database: queue) == .loadOnly)
+    #expect(LoadPolicy.forLaunch(database: queue, anchor: anchor) == .loadOnly)
+}
+
+/// An anchor is itself local state: it forces `.loadOnly` even with zero message rows.
+@Test func identityLaunchPolicyIsLoadOnlyWhenAnAnchorExists() throws {
+    let db = try AppDatabase.makeInMemory()
+    #expect(try AppDatabase.hasMessages(db) == false)
+    let anchor = IdentityAnchor(defaults: freshDefaults())
+    let expected = Data(repeating: 0x77, count: 16)
+    anchor.recordReady(expected)
+    let policy = LoadPolicy.forLaunch(database: db, anchor: anchor)
+    #expect(policy == .loadOnly)
+    let keychain = InMemoryKeychain()
+    let result = LaunchIdentity.resolve(policy: policy, anchor: anchor, store: .live(ops: keychain.ops))
+    #expect(result.state == .missing(expected: expected))
+    #expect(keychain.addCount == 0)
 }
 
 @Test func identityLaunchAnchorIsWriteOnceUntilReplaced() {

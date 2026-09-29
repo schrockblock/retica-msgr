@@ -3,8 +3,11 @@ import GRDB
 import ReTiCA
 
 public extension LoadPolicy {
-    /// Messages exist → never mint. A failed count is "unknown", which is never a fresh install.
-    static func forLaunch(database: any DatabaseWriter) -> LoadPolicy {
+    /// An anchor is itself local state (spec §5.3 amendment 2): never mint once one exists.
+    /// No anchor is the only way to mint. Otherwise messages exist → never mint. A failed count
+    /// is "unknown", which is never a fresh install.
+    static func forLaunch(database: any DatabaseWriter, anchor: IdentityAnchor) -> LoadPolicy {
+        if anchor.expected() != nil { return .loadOnly }
         let hasMessages = (try? AppDatabase.hasMessages(database)) ?? true
         return hasMessages ? .loadOnly : .loadOrCreate
     }
