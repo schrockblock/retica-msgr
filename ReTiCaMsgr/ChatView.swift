@@ -28,10 +28,8 @@ struct ChatView: View {
     @State private var highlightGeneration = 0
     @FocusState private var draftFocused: Bool
 
-    private var peerReachable: Bool {
-        guard let peer = store.openPeerHex else { return false }
-        return store.reachablePeers.contains(peer)
-    }
+    /// A live path, or a peer that has messaged us (see `AppFeature.State.openPeerSendable`).
+    private var peerReachable: Bool { store.openPeerSendable }
 
     /// Text or an attachment, once the attachment is ready.
     private var canSend: Bool {

@@ -192,6 +192,21 @@ public struct AppFeature {
             _port = Shared(wrappedValue: port, .appStorage("port"))
         }
 
+        /// The Send gate for the open conversation. True when the peer has a live learned path
+        /// (`reachablePeers`) OR the open thread holds a message received from it. The second clause
+        /// is what lets a user reply to a sender whose `lxmf.delivery` announce this device never
+        /// heard (e.g. a NomadNet user whose message arrived via a propagation node): receiving gives
+        /// us no path to the sender, but ReTiCA does not need one up front — the router requests a
+        /// path and retries (LXMFRouter `retryDue`), and reports `deliveryFailed` if none comes.
+        /// Derived from the loaded thread, so it holds after a relaunch too.
+        public var openPeerSendable: Bool {
+            guard let hex = openPeerHex else { return false }
+            return reachablePeers.contains(hex)
+                // `peerHex` check: `threadMessages` still holds the previous thread until the new
+                // one loads, and its incoming messages must not unlock a different peer.
+                || threadMessages.contains { !$0.isOutgoing && $0.peerHex == hex }
+        }
+
         public mutating func setThreadReactionRows(_ rows: [Reaction]) {
             threadReactionRows = rows
             threadReactions = ReactionSummary.byMessage(rows, me: myAddressHex)
@@ -569,7 +584,9 @@ public struct AppFeature {
                 guard let hex = state.publicKeyRequestLinks[linkID],
                       state.publicKeyRequests[hex] == .requesting else { return .none }
                 state.publicKeyRequestLinks[linkID] = nil
-                state.publicKeyRequests[hex] = .failed(reason: "no response")
+                // `/publicKey` is this app's own handler: a reference LXMF peer (NomadNet, Sideband)
+                // registers none, and RNS ignores a request for an unknown path, so it never answers.
+                state.publicKeyRequests[hex] = .failed(reason: "no response (peer does not answer key requests)")
                 return .none
 
             case let .node(.client(.endpoint(.delegate(.linkClosed(linkID, _))))):
@@ -1105,6 +1122,15 @@ public struct AppFeature {
                 // (received/failed) starts a fresh request — that is the retry path.
                 guard state.publicKeyRequests[hex] != .requesting else { return .none }
                 guard let hash = Data(hexString: hex), hash.count == 16 else { return .none }
+                // The key is already known when the peer's announce is in the learned table: the
+                // announce is signed by that key and the destination hash is derived from it, so it
+                // is as authenticated as a link handshake — and `openLink` below could not run
+                // without this very entry. Settle from it: the `/publicKey` request is this app's own
+                // handler, which a reference LXMF peer (NomadNet, Sideband) never answers.
+                if let known = state.node.client.endpoint.learned[hash]?.identity {
+                    state.publicKeyRequests[hex] = .received(publicKeyHex: known.publicKey.hexString)
+                    return .none
+                }
                 state.publicKeyRequests[hex] = .requesting
                 // The link handshake itself authenticates the peer (the responder must sign with
                 // the destination identity's private key); the /publicKey request over that link
