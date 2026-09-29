@@ -22,7 +22,8 @@
 - **Tests:** `swift test --package-path CORE --filter <prefix>` (`--filter` is repeatable) runs one task's tests; the full core suite is `swift test --package-path CORE` (no `--no-parallel` needed here). Known flake: `deliveryFailedMarksFailedAndReloads` can fail when run ALONE via `--filter`; it passes in a full run. Filtering still compiles every target, so the whole package must compile at the end of every task. Every new test name starts with its task's prefix — `attachTable` (T1), `attachStore` (T2), `attachWire` (T3), `imageEncoder` (T4), `attachInfo` (T5), `attachReceive` (T6), `attachSend` (T7), `attachTransfer` (T8) — so `--filter <prefix>` selects exactly that task's tests. None of these prefixes matches an existing test name (checked: no test contains "attach" or "imageEncoder" today).
 - **Mutation verification is mandatory** for every task with tests: (a) run the task's filter, all GREEN; (b) apply the task's listed mutation batch to production code, run the filter once, confirm EVERY listed test is RED — where the batch says "sub-batch", run the sub-batches separately so no mutation masks another; (c) revert every mutation BY HAND with the Edit tool (never `git checkout -- <file>`), confirm `git -C APP diff` shows only the task's intended changes, run again, all GREEN. If a test survives its mutation, fix the test and restart at (a). Tests edited only mechanically to compile against a new shape are exempt.
 - **TCA TestStore facts these tests rely on** (learned in the transfer-aware delivery run): under `exhaustivity = .off`, `store.state` reflects effect-delivered actions only after `receive` or `await store.skipReceivedActions(strict: false)`; every `send` clears not-yet-received actions, so a `receive` for something an earlier `send` produced must come before the next `send`; absence claims go `.on` + an exhaustive no-op probe send (never `skipInFlightEffects` while `.on`); a state closure on a pure `RingSet` insert asserts nothing; file-scope `let` constants of TCA `Action` types need `@MainActor`. The full suite must end with no new "Skipped assertions" or other known issues (today: none in this package).
-- **Test style** (match `AppFeatureTests.swift`): free `@MainActor @Test func` functions, `makeStore(db, identity:)` with `exhaustivity = .off`, `sendAndSettle` + `skipReceivedActions(strict: false)` before reading rows, `rowsByHashAndDirection(db)` for outgoing/incoming disambiguation, `#expect` with literals.
+- **Test style** (match `AppFeatureTests.swift`): free `@MainActor @Test func` functions, `makeStore(db, identity:)` with `exhaustivity = .off`, `sendAndSettle` + `skipReceivedActions(strict: false)` before reading rows, `rowsByHashAndDirection(db)` for outgoing/incoming disambiguation, `#expect` with literals. No tuple comparisons inside `#expect` (compare `.width` and `.height`, or bind to locals).
+- **`Attachment` vs `Testing.Attachment`:** Swift Testing exports `public struct Attachment<AttachableValue>`, so a bare `Attachment` in a test file that imports `Testing` is ambiguous. The model keeps its name; every TEST file that names the type adds `private typealias Attachment = ReTiCaMsgrCore.Attachment` right after its imports — `DatabaseTests.swift` (Task 1), `AttachmentStoreTests.swift` (Task 2), `AttachmentInfoTests.swift` (Task 5), `AppFeatureTests.swift` (Task 6, once, at the top). Production code is unaffected (it does not import `Testing`).
 - **Dependencies:** the attachment store is a TCA dependency `\.attachmentStore` (live: Application Support; test: a fresh temp directory per `AttachmentStore.testValue` access — tests that need to read files back must build ONE store, inject it, and keep it). `\.date` is frozen at 1700000000 in `makeStore` (2023-11-14 22:13:20 UTC), which fixes generated image names to `IMG_20231114_221320.jpg`.
 - **Image bytes in tests** come from `TestImages` (Task 4 creates it in the test target): CoreGraphics-drawn PNG/JPEG data with known pixel sizes, EXIF orientation and a GPS tag. No fixture files.
 - **Constants (from the spec):** `ImageEncoder.standardMaxPixels = 1280`, `standardQuality = 0.75`, `originalQuality = 0.92`; `AttachmentSizeNote.propagationLimitBytes = 256_000`, `deliveryLimitBytes = 1_000_000`; `AttachmentWire.sentImageFormat = "jpeg"`; `MessageStatus.cancelled = "cancelled"`; `FailureReason.rejected = "rejected"`, `.cancelled = "cancelled"`; `PropagationRefusal.tooLargeForNode = "too large for node"`; inbound-transfer silence timeout 60 s.
@@ -78,11 +79,19 @@ Expected: empty. If `xcschememanagement.plist` files show as modified, restore t
 - Modify: `CORE/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift` (append)
 
 **Interfaces:**
-- Produces: `Attachment` (`@Table`, `Identifiable`): `id: UUID`, `messageId: UUID`, `kind: String`, `name: String`, `format: String`, `size: Int`, `width: Int?`, `height: Int?`, `path: String` (relative; `""` = bytes unavailable). `AttachmentKind.image = "image"`, `.file = "file"`. `Message.failureReason: String?`, `Message.propagationRefused: String?` (init parameters with `nil` defaults, after `replyQuote`). `MessageStatus.cancelled = "cancelled"`. `FailureReason.rejected = "rejected"`, `.cancelled = "cancelled"`. `PropagationRefusal.tooLargeForNode = "too large for node"`. Migration name `createAttachments` (table + index + the two `messages` columns).
+- Produces: `Attachment` (`@Table`, `Identifiable`): `id: UUID`, `messageId: UUID`, `kind: String`, `name: String`, `format: String`, `size: Int`, `width: Int?`, `height: Int?`, `path: String` (relative; `""` = bytes unavailable); `static func byMessageId(_ rows: [Attachment]) -> [UUID: Attachment]` (first row per message wins; used by Task 6's thread and conversation loads). `AttachmentKind.image = "image"`, `.file = "file"`. `Message.failureReason: String?`, `Message.propagationRefused: String?` (init parameters with `nil` defaults, after `replyQuote`). `MessageStatus.cancelled = "cancelled"`. `FailureReason.rejected = "rejected"`, `.cancelled = "cancelled"`. `PropagationRefusal.tooLargeForNode = "too large for node"`. Migration name `createAttachments` (table + index + the two `messages` columns).
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift`:
+In `CORE/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift`, add right after the imports (after `@testable import ReTiCaMsgrCore`):
+
+```swift
+
+/// `Testing` exports its own `Attachment`; this file means the model.
+private typealias Attachment = ReTiCaMsgrCore.Attachment
+```
+
+Then append to the end of the file:
 
 ```swift
 
@@ -279,6 +288,12 @@ public struct Attachment: Identifiable, Equatable, Sendable {
     public var isImage: Bool { kind == AttachmentKind.image }
     /// The bytes are on disk (an empty path means the write failed or the file is gone).
     public var hasBytes: Bool { !path.isEmpty }
+
+    /// Rows keyed by their message. The app keeps one attachment per message today; should a
+    /// message ever carry more, the first row wins.
+    public static func byMessageId(_ rows: [Attachment]) -> [UUID: Attachment] {
+        Dictionary(rows.map { ($0.messageId, $0) }, uniquingKeysWith: { first, _ in first })
+    }
 }
 
 public enum AttachmentKind {
@@ -377,12 +392,16 @@ In `CORE/Sources/ReTiCaMsgrCore/Database.swift`, after the `addReplies` migratio
 Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachTable`
 Expected: 6 tests PASS. If `attachTableRejectsAnOrphanRow` fails because foreign keys are off, GRDB's default `Configuration` enables them — check `AppDatabase.makeInMemory` uses a plain `DatabaseQueue()` (it does) and that the `references` call is present.
 
-- [ ] **Step 7: Mutation batch (apply all at once)**
+- [ ] **Step 7: Mutation batch (two sub-batches)**
 
+Sub-batch A (apply together):
 1. `Database.swift`: remove `.references("messages", onDelete: .cascade)` → RED `attachTableRowIsDeletedWithItsMessage` (the row survives), `attachTableRejectsAnOrphanRow` (the insert succeeds).
 2. `Attachment.swift`: in `init`, `self.height = height` → `self.height = width` → RED `attachTableRoundTripsEveryColumn` (853 ≠ 1280).
 3. `Message.swift`: `public static let cancelled = "cancelled"` → `"canceled"` → RED `attachTableMessageColumnsRoundTripAndConstantsMatchSpec`.
-4. `Database.swift`: delete the `t.add(column: "propagationRefused", .text)` line → RED `attachTableMessageColumnsRoundTripAndConstantsMatchSpec` (insert fails: no such column), `attachTableLegacyMessageReadsBackWithNilNewColumns` (decode fails). Mutation 3 also reddens the constants test; run 4 as its own sub-batch so its red is seen on its own.
+5. `Attachment.swift`: in `init`, `self.path = path` → `self.path = path.isEmpty ? "x" : path` → RED `attachTableFileRowHasNilDimensions` (`back.path == "x"`). No other test in A reads an empty path.
+
+Sub-batch B (alone, after A is reverted and green):
+4. `Database.swift`: delete the `t.add(column: "propagationRefused", .text)` line → RED `attachTableMessageColumnsRoundTripAndConstantsMatchSpec` (insert fails: no such column), `attachTableLegacyMessageReadsBackWithNilNewColumns` (decode fails). Alone because mutation 3 also reddens the constants test.
 
 Every mutation names its test. Run the Step 6 command per sub-batch: listed tests FAIL. Revert by hand, `git -C APP diff` shows only this task's changes, run again: all PASS.
 
@@ -420,7 +439,7 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 - Create: `CORE/Tests/ReTiCaMsgrCoreTests/AttachmentStoreTests.swift`
 
 **Interfaces:**
-- Produces: `public struct AttachmentStore: Sendable { public var baseDirectory: URL; public init(baseDirectory: URL) }`; `static func fileName(messageHash: String, outgoing: Bool, ext: String) -> String` (`<hash>-<in|out>[.<ext>]`); `static func sanitizedExtension(_ ext: String) -> String` (lowercase, dot stripped, `[a-z0-9]{1,8}` else `""`); `func store(_ bytes: Data, messageHash: String, outgoing: Bool, ext: String) throws -> String` (creates the directory, marks it excluded from backup, writes atomically with complete file protection on iOS, returns the RELATIVE path = file name); `func url(forRelativePath:) -> URL`; `func url(for: Attachment) -> URL?` (nil when `path` is empty); `func exists(_ relativePath: String) -> Bool`; `func delete(_ relativePath: String) throws`. TCA dependency `\.attachmentStore` (`DependencyKey` live = `<Application Support>/Attachments`, test = a unique temp directory).
+- Produces: `public struct AttachmentStore: Sendable { public var baseDirectory: URL; public init(baseDirectory: URL) }`; `static func fileName(messageHash: String, outgoing: Bool, ext: String) -> String` (`<hash>-<in|out>[.<ext>]`); `static func sanitizedExtension(_ ext: String) -> String` (lowercase, dot stripped, `[a-z0-9]{1,8}` else `""`); `func store(_ bytes: Data, messageHash: String, outgoing: Bool, ext: String) throws -> String` (creates the directory, marks it excluded from backup, writes atomically with `.completeFileProtectionUntilFirstUserAuthentication` on iOS — the same class as the SQLite file, so an attachment received over BLE while the phone is locked can still be written — returns the RELATIVE path = file name); `func url(forRelativePath:) -> URL`; `func url(for: Attachment) -> URL?` (nil when `path` is empty); `func exists(_ relativePath: String) -> Bool`; `func delete(_ relativePath: String) throws`; `enum ExportError: Error, Equatable { case noBytes }`; `var exportDirectory: URL` (`<temporaryDirectory>/AttachmentExports`); `func exportURL(for attachment: Attachment) throws -> URL` (copies the bytes to `<exportDirectory>/<attachment.id>/<attachment.name>`, creating the directory and replacing an earlier copy, and returns that URL; throws `ExportError.noBytes` when `path` is empty — Task 9's share sheet and QuickLook use it so the recipient sees the real file name, not `<hash>-in.pdf`). The spec's `url(for:) -> URL` / `delete(_ attachment:)` become `url(for:) -> URL?` / `delete(_ relativePath:)` (see Self-review departures). TCA dependency `\.attachmentStore` (`DependencyKey` live = `<Application Support>/Attachments`, test = a unique temp directory).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -430,6 +449,9 @@ Create `CORE/Tests/ReTiCaMsgrCoreTests/AttachmentStoreTests.swift`:
 import Testing
 import Foundation
 @testable import ReTiCaMsgrCore
+
+/// `Testing` exports its own `Attachment`; this file means the model.
+private typealias Attachment = ReTiCaMsgrCore.Attachment
 
 private func tempStore() -> AttachmentStore {
     AttachmentStore(baseDirectory: FileManager.default.temporaryDirectory
@@ -520,6 +542,35 @@ private let hash64 = String(repeating: "ab", count: 32)
     #expect(a.baseDirectory != b.baseDirectory)
     #expect(a.baseDirectory.path().contains("ReTiCaMsgrTests-Attachments"))
 }
+
+/// The share sheet and QuickLook get the attachment's real name, not the hash-named stored file,
+/// and a second export replaces the first copy instead of failing.
+@Test func attachStoreExportURLUsesTheRealName() throws {
+    let store = tempStore()
+    let path = try store.store(Data([5, 6]), messageHash: hash64, outgoing: false, ext: "pdf")
+    let a = Attachment(id: UUID(), messageId: UUID(), kind: AttachmentKind.file, name: "Trail map.pdf",
+                       format: "pdf", size: 2, width: nil, height: nil, path: path)
+    let url = try store.exportURL(for: a)
+    #expect(url.lastPathComponent == "Trail map.pdf")
+    #expect(url.deletingLastPathComponent().lastPathComponent == a.id.uuidString)
+    #expect(url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "AttachmentExports")
+    #expect(try Data(contentsOf: url) == Data([5, 6]))
+    // The stored file stays where it was.
+    #expect(store.exists(path))
+    let again = try store.exportURL(for: a)
+    #expect(again == url)
+    #expect(try Data(contentsOf: again) == Data([5, 6]))
+}
+
+/// A row with no bytes has nothing to export.
+@Test func attachStoreExportURLThrowsWithoutBytes() {
+    let store = tempStore()
+    let without = Attachment(id: UUID(), messageId: UUID(), kind: AttachmentKind.file, name: "a.pdf", format: "pdf",
+                             size: 1, width: nil, height: nil, path: "")
+    #expect(throws: AttachmentStore.ExportError.noBytes) {
+        try store.exportURL(for: without)
+    }
+}
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -566,13 +617,15 @@ public struct AttachmentStore: Sendable {
 
     /// Writes the bytes and returns the RELATIVE path (the file name) to store in the row.
     /// Creates the directory on first use, marks it excluded from backup, writes atomically, and
-    /// on iOS with complete file protection like the rest of the app's data.
+    /// on iOS with the same file protection class as the SQLite file
+    /// (`completeUntilFirstUserAuthentication`): BLE runs in the background, and an attachment
+    /// received while the phone is locked must still be writable.
     public func store(_ bytes: Data, messageHash: String, outgoing: Bool, ext: String) throws -> String {
         try ensureDirectory()
         let name = Self.fileName(messageHash: messageHash, outgoing: outgoing, ext: ext)
         var options: Data.WritingOptions = [.atomic]
         #if os(iOS)
-        options.insert(.completeFileProtection)
+        options.insert(.completeFileProtectionUntilFirstUserAuthentication)
         #endif
         try bytes.write(to: baseDirectory.appending(path: name), options: options)
         return name
@@ -596,6 +649,33 @@ public struct AttachmentStore: Sendable {
         let url = url(forRelativePath: relativePath)
         guard FileManager.default.fileExists(atPath: url.path()) else { return }
         try FileManager.default.removeItem(at: url)
+    }
+
+    public enum ExportError: Error, Equatable {
+        /// The row has no bytes (`path == ""`).
+        case noBytes
+    }
+
+    /// Where shareable copies go. The system purges the temporary directory on its own.
+    public var exportDirectory: URL {
+        FileManager.default.temporaryDirectory.appending(path: "AttachmentExports")
+    }
+
+    /// A copy of the bytes under the attachment's own name, for the share sheet and QuickLook:
+    /// the stored file is named by hash, so sharing it directly would hand the recipient
+    /// `<hash>-in.pdf` (and a file with no extension would preview as unknown). The name is safe
+    /// to use as a path component: `AttachmentWire` and `AttachmentPreparation` sanitise every
+    /// name before a row exists. An earlier copy is replaced.
+    public func exportURL(for attachment: Attachment) throws -> URL {
+        guard let source = url(for: attachment) else { throw ExportError.noBytes }
+        let directory = exportDirectory.appending(path: attachment.id.uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appending(path: attachment.name)
+        if FileManager.default.fileExists(atPath: destination.path()) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.copyItem(at: source, to: destination)
+        return destination
     }
 
     private func ensureDirectory() throws {
@@ -637,23 +717,33 @@ extension DependencyValues {
 - [ ] **Step 4: Run the new tests**
 
 Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachStore`
-Expected: 8 tests PASS. If `attachStoreCreatesTheDirectoryAndExcludesItFromBackup` fails on `isExcludedFromBackup` (macOS temp dirs can report nil), read the value with `try store.baseDirectory.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup` right after creation in the test and report; do not weaken the production code.
+Expected: 10 tests PASS. If `attachStoreCreatesTheDirectoryAndExcludesItFromBackup` fails on `isExcludedFromBackup` (macOS temp dirs can report nil), read the value with `try store.baseDirectory.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup` right after creation in the test and report; do not weaken the production code.
 
-- [ ] **Step 5: Mutation batch (apply all at once)**
+- [ ] **Step 5: Mutation batch (three sub-batches)**
 
-1. `fileName`: `outgoing ? "out" : "in"` → `outgoing ? "in" : "out"` → RED `attachStoreNamesFilesByHashAndDirection`, `attachStoreWritesReadsAndDeletes` (path mismatch).
+Sub-batch A (apply together):
+1. `fileName`: `outgoing ? "out" : "in"` → `outgoing ? "in" : "out"` → RED `attachStoreNamesFilesByHashAndDirection`, `attachStoreWritesReadsAndDeletes` (path mismatch), `attachStoreOverwritesTheSameNameAtomically` (the listing is `-in.jpeg`).
 2. `sanitizedExtension`: `(1...8)` → `(1...10)` → RED `attachStoreSanitisesExtensions` (`toolongext` accepted).
 3. `ensureDirectory`: delete the three `isExcludedFromBackup` lines → RED `attachStoreCreatesTheDirectoryAndExcludesItFromBackup`.
-4. `delete`: remove the `guard ... else { return }` → RED `attachStoreWritesReadsAndDeletes` (second delete throws).
 5. `url(for:)`: `attachment.hasBytes ? ... : nil` → always the URL → RED `attachStoreURLForAttachmentIsNilWhenPathIsEmpty`.
 6. `testValue`: replace the UUID suffix with a constant → RED `attachStoreTestValueIsIsolated`.
+9. `exportURL`: `directory.appending(path: attachment.name)` → `directory.appending(path: attachment.path)` → RED `attachStoreExportURLUsesTheRealName` (the copy is hash-named).
 
-Mutation 1 also reddens the write test that 4 targets; run 4 as its own sub-batch. Revert by hand, check the diff, run again: all PASS.
+Sub-batch B (apply together, after A is reverted and green):
+4. `delete`: remove the `guard ... else { return }` → RED `attachStoreWritesReadsAndDeletes` (second delete throws). Not in A: mutation 1 reddens the same test.
+11. `exportURL`: `guard let source = url(for: attachment) else { throw ExportError.noBytes }` → `let source = url(forRelativePath: attachment.path)` → RED `attachStoreExportURLThrowsWithoutBytes` (the copy fails with a Cocoa error, not `.noBytes`). Not in A: mutation 5 reddens the same test.
+
+Sub-batch C (apply together, after B is reverted and green):
+7. `store`: `let name = Self.fileName(...)` → `let name = Self.fileName(...) + "-\(UUID().uuidString)"` → RED `attachStoreOverwritesTheSameNameAtomically` (two files in the listing), `attachStoreWritesReadsAndDeletes` (path mismatch). Not in A: mutation 1 reddens the overwrite test.
+8. `store`: `try ensureDirectory()` → `try? ensureDirectory()` AND `try bytes.write(...)` → `try? bytes.write(...)` → RED `attachStoreWriteFailureThrows` (nothing throws). Both lines: with only `ensureDirectory` swallowed, the write into the missing directory still throws and the test stays green.
+10. `exportURL`: delete the `if FileManager.default.fileExists(atPath: destination.path()) { ... }` block → RED `attachStoreExportURLUsesTheRealName` (the second export's copy fails on the existing file). Not in A: mutation 9 reddens the same test.
+
+Revert by hand, check the diff, run again: all PASS.
 
 - [ ] **Step 6: Full suite, commit**
 
 Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t2-full.log 2>&1`
-Expected: all pass; count = Task 1 count + 8.
+Expected: all pass; count = Task 1 count + 10.
 
 Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AttachmentStore.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AttachmentStoreTests.swift`
 
@@ -664,8 +754,10 @@ feat: attachment bytes live on disk behind AttachmentStore
 
 One directory under Application Support, excluded from backup, one
 file per attachment named by message hash and direction, written
-atomically with complete file protection. A TCA dependency with an
-isolated test value.
+atomically with the same file protection class as the database so a
+locked phone can still receive. exportURL copies the bytes under the
+real file name for sharing. A TCA dependency with an isolated test
+value.
 
 Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
@@ -682,8 +774,8 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 
 **Interfaces:**
 - Consumes (Task 1–2): `AttachmentKind`, `AttachmentStore.sanitizedExtension`.
-- Produces: `public enum AttachmentWire` with `fieldFileAttachments = 0x05`, `fieldImage = 0x06`, `sentImageFormat = "jpeg"`, `imageFormats: Set<String> = ["jpeg", "png", "webp", "heic"]`, `maxNameBytes = 255`, `fallbackFileName = "file"`; `struct Decoded: Equatable, Sendable { kind: String, name: String, format: String, data: Data }`; `encodeImage(_ data: Data) -> [MsgPackValue.IntPair]`; `encodeFile(name: String, data: Data) -> [MsgPackValue.IntPair]`; `decode(_ fields:) -> Decoded?`; helpers `normalizedImageFormat(_:)`, `sanitizedFileName(_:)`, `fileExtension(_:)`.
-- Semantics (spec §2): image wins over files; the first file entry wins; a format not in `imageFormats` becomes a FILE named `image.<ext>`; malformed shapes → nil; an image with empty bytes → nil; names are sanitised (separators and NUL → `_`, leading dots stripped, at most 255 UTF-8 bytes, `"file"` when empty).
+- Produces: `public enum AttachmentWire` with `fieldFileAttachments = 0x05`, `fieldImage = 0x06`, `sentImageFormat = "jpeg"`, `imageFormats: Set<String> = ["jpeg", "png", "webp", "heic"]`, `maxNameBytes = 255`, `fallbackFileName = "file"`; `struct Decoded: Equatable, Sendable { kind: String, name: String, format: String, data: Data, droppedFileCount: Int }` (`init(kind:name:format:data:droppedFileCount: = 0)`; `droppedFileCount` = the 0x05 entries left out: those beyond the first, or all of them when an image wins — Task 6 logs it); `encodeImage(_ data: Data) -> [MsgPackValue.IntPair]`; `encodeFile(name: String, data: Data) -> [MsgPackValue.IntPair]`; `decode(_ fields:) -> Decoded?`; helpers `normalizedImageFormat(_:)`, `sanitizedFileName(_:)`, `fileExtension(_:)`.
+- Semantics (spec §2): image wins over files; the first file entry wins (both count what they drop); a format not in `imageFormats` becomes a FILE named `image.<ext>`; malformed shapes → nil; an image with empty bytes → nil; names are sanitised (separators and NUL → `_`, leading dots stripped, at most 255 UTF-8 bytes, `"file"` when empty).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -787,6 +879,9 @@ private func fileField(_ entries: [MsgPackValue]) -> [MsgPackValue.IntPair] {
     let fields = fileField([.array([.string("a.txt"), .bin(fileBytes)])]) + imageField(.string("png"))
     #expect(AttachmentWire.decode(fields)?.kind == "image")
     #expect(AttachmentWire.decode(fields)?.format == "png")
+    // The file beside it is dropped, and counted so the receiver can log it.
+    #expect(AttachmentWire.decode(fields)?.droppedFileCount == 1)
+    #expect(AttachmentWire.decode(imageField(.string("png")))?.droppedFileCount == 0)
 }
 
 @Test func attachWireFirstFileEntryWins() {
@@ -796,6 +891,7 @@ private func fileField(_ entries: [MsgPackValue]) -> [MsgPackValue.IntPair] {
     ])
     #expect(AttachmentWire.decode(fields)?.name == "first.txt")
     #expect(AttachmentWire.decode(fields)?.data == Data("1".utf8))
+    #expect(AttachmentWire.decode(fields)?.droppedFileCount == 1)
 }
 
 /// Review Focus 2: a peer's file name never becomes a path and never breaks the row.
@@ -893,12 +989,16 @@ public enum AttachmentWire {
         public var name: String
         public var format: String
         public var data: Data
+        /// 0x05 entries left out: those after the first, or all of them when an image won.
+        /// `AppFeature` logs it (spec §2: one attachment per message is kept, the rest noted).
+        public var droppedFileCount: Int
 
-        public init(kind: String, name: String, format: String, data: Data) {
+        public init(kind: String, name: String, format: String, data: Data, droppedFileCount: Int = 0) {
             self.kind = kind
             self.name = name
             self.format = format
             self.data = data
+            self.droppedFileCount = droppedFileCount
         }
     }
 
@@ -911,15 +1011,23 @@ public enum AttachmentWire {
     }
 
     public static func decode(_ fields: [MsgPackValue.IntPair]) -> Decoded? {
+        let fileValue = fields.first(where: { $0.key == fieldFileAttachments })?.value
         if let value = fields.first(where: { $0.key == fieldImage })?.value,
-           let image = decodeImage(value) {
+           var image = decodeImage(value) {
+            // The image wins: every file entry beside it is dropped.
+            image.droppedFileCount = fileEntryCount(fileValue)
             return image
         }
-        if let value = fields.first(where: { $0.key == fieldFileAttachments })?.value,
-           let file = decodeFile(value) {
+        if let fileValue, let file = decodeFile(fileValue) {
             return file
         }
         return nil
+    }
+
+    /// How many entries a 0x05 value lists (0 when absent or not a list).
+    static func fileEntryCount(_ value: MsgPackValue?) -> Int {
+        guard case let .array(entries)? = value else { return 0 }
+        return entries.count
     }
 
     /// `[format, bin]`. An unknown format is a file named `image.<ext>` (ext sanitised).
@@ -944,7 +1052,8 @@ public enum AttachmentWire {
               case let .bin(data) = pair[1]
         else { return nil }
         let name = sanitizedFileName(rawName)
-        return Decoded(kind: AttachmentKind.file, name: name, format: fileExtension(name), data: data)
+        return Decoded(kind: AttachmentKind.file, name: name, format: fileExtension(name), data: data,
+                       droppedFileCount: entries.count - 1)
     }
 
     /// A `str`, or a `bin` that is strictly valid UTF-8 (`String(decoding:)` repairs invalid bytes,
@@ -1004,15 +1113,25 @@ Expected: 11 tests PASS. If `attachWireEncodeFileMatchesReferenceUmsgpackBytes` 
 - [ ] **Step 5: Mutation batch**
 
 Sub-batch A (apply together):
-1. `decode`: try `fieldFileAttachments` before `fieldImage` → RED `attachWireImageWinsOverFiles`.
+1. `decode`: move the `if let fileValue, let file = decodeFile(fileValue) { return file }` block above the image block → RED `attachWireImageWinsOverFiles`.
 2. `normalizedImageFormat`: delete the `case "jpg", "jpeg": return "jpeg"` line → RED `attachWireDecodesSidebandFormatVariants` (`jpg` becomes a file).
 3. `decodeImage`: drop `!data.isEmpty` → RED `attachWireMalformedShapesAreNil`.
 4. `sanitizedFileName`: delete the `while name.hasPrefix(".")` loop → RED `attachWireSanitisesFileNames`.
 5. `encodeImage`: `.string(sentImageFormat)` → `.bin(Data(sentImageFormat.utf8))` → RED `attachWireEncodeImageMatchesReferenceUmsgpackBytes`.
 6. `decodeFile`: `entries.first` → `entries.last` → RED `attachWireFirstFileEntryWins`.
+9. `encodeFile`: wrap the pair in one more array — `.array([.array([.array([.string(name), .bin(data)])])])` → RED `attachWireEncodeFileMatchesReferenceUmsgpackBytes` (bytes differ), `attachWireRoundTripsThroughRealLXMessage` (the file half decodes to nil: its first entry is a one-element list).
+11. `decodeImage`: the unknown-format branch `return Decoded(kind: AttachmentKind.file, ...)` → `return nil` → RED `attachWireUnknownImageFormatBecomesAFile` (Review Focus 1).
 
-Sub-batch B (alone, after A is reverted and green):
+Sub-batch B (apply together, after A is reverted and green):
 7. `text`: make the `.bin` branch `return nil` → RED `attachWireAcceptsBinNamesAndRejectsInvalidUTF8` (the bin name is rejected) and `attachWireDecodesSidebandFormatVariants` (the bin format).
+13. `decode`: delete `image.droppedFileCount = fileEntryCount(fileValue)` → RED `attachWireImageWinsOverFiles` (count 0). Not in A: mutation 1 reddens the same test.
+
+Sub-batch C (alone, after B is reverted and green):
+8. `fieldImage = 0x06` → `0x07` → RED `attachWireConstantsMatchReferenceLXMF` (and, as a side effect, most image tests — which is why it runs alone).
+
+Sub-batch D (apply together, after C is reverted and green):
+10. `decodeFile`: `format: fileExtension(name)` → `format: ""` → RED `attachWireRoundTripsThroughRealLXMessage` (file format "pdf"), `attachWireAcceptsBinNamesAndRejectsInvalidUTF8` ("txt"), `attachWireSanitisesFileNames` ("sh"). Not in A or B: 9, 4 and 7 redden those tests.
+12. `decodeFile`: `droppedFileCount: entries.count - 1` → `droppedFileCount: 0` → RED `attachWireFirstFileEntryWins`. Not in A: mutation 6 reddens the same test.
 
 Revert by hand, check the diff, run again: all PASS.
 
@@ -1051,7 +1170,7 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 
 **Interfaces:**
 - Produces: `public enum ImageEncoder` with `Preset { standard, original }`, `standardMaxPixels = 1280`, `standardQuality = 0.75`, `originalQuality = 0.92`, `struct Encoded { data, width, height }`, `enum Failure: Error { undecodable, encodingFailed }`, `encodeJPEG(_ source: Data, preset:) throws -> Encoded`, `dimensions(of: Data) -> (width: Int, height: Int)?` (oriented, no pixel decode), `isDecodable(_:)`, `containerType(of:) -> String?` (UTType identifier), `hasLocationOrOrientationMetadata(_:) -> Bool`.
-- Test helper `TestImages` (test target): `png(width:height:) -> Data` (left half red, right half blue), `jpeg(width:height:orientation:withGPS:) -> Data`, `pixel(in data: Data, x: Int, y: Int) -> (r: UInt8, g: UInt8, b: UInt8)?`.
+- Test helper `TestImages` (test target): `png(width:height:) -> Data` (left half red, right half blue, each a vertical gradient from bright at the top to half brightness at the bottom, so JPEG size depends on quality), `jpeg(width:height:orientation:withGPS:) -> Data`, `pixel(in data: Data, x: Int, y: Int) -> (r: UInt8, g: UInt8, b: UInt8)?`.
 - Runs on macOS under `swift test` (ImageIO/CoreGraphics are available; no UIKit).
 
 - [ ] **Step 1: Test helper**
@@ -1065,16 +1184,30 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Images drawn in-test, so no fixture files: the left half is red, the right half blue, which
-/// makes an orientation change visible in the pixels.
+/// makes an orientation change visible in the pixels. Each half is a vertical gradient (bright at
+/// the top, half brightness at the bottom), so a JPEG's size depends on its quality — a flat image
+/// is almost all DC and encodes to nearly the same size at 0.75 and 0.92. Pixel checks read the
+/// bright top rows of the SOURCE image.
 enum TestImages {
     static func cgImage(width: Int, height: Int) -> CGImage {
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
         let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                             space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        ctx.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
-        ctx.fill(CGRect(x: 0, y: 0, width: width / 2, height: height))
-        ctx.setFillColor(red: 0, green: 0, blue: 1, alpha: 1)
-        ctx.fill(CGRect(x: width / 2, y: 0, width: width - width / 2, height: height))
+        // CG's origin is the bottom-left, so y = height is the TOP of the image.
+        let top = CGPoint(x: 0, y: CGFloat(height))
+        let bottom = CGPoint(x: 0, y: 0)
+        let halves: [(CGRect, [CGFloat])] = [
+            // RGBA bright, then RGBA half brightness.
+            (CGRect(x: 0, y: 0, width: width / 2, height: height), [1, 0, 0, 1, 0.5, 0, 0, 1]),
+            (CGRect(x: width / 2, y: 0, width: width - width / 2, height: height), [0, 0, 1, 1, 0, 0, 0.5, 1]),
+        ]
+        for (rect, components) in halves {
+            let gradient = CGGradient(colorSpace: space, colorComponents: components, locations: [0, 1], count: 2)!
+            ctx.saveGState()
+            ctx.clip(to: rect)
+            ctx.drawLinearGradient(gradient, start: top, end: bottom, options: [])
+            ctx.restoreGState()
+        }
         return ctx.makeImage()!
     }
 
@@ -1119,9 +1252,9 @@ enum TestImages {
         let ctx = CGContext(data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
                             space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        // CGContext rows are bottom-up: row 0 of the buffer is the bottom of the image.
-        let row = h - 1 - y
-        let i = (row * w + x) * 4
+        // A bitmap context's MEMORY row 0 is the TOP of the drawn image (CG's y axis points up,
+        // but the backing buffer is stored top row first), so y indexes the buffer directly.
+        let i = (y * w + x) * 4
         return (bytes[i], bytes[i + 1], bytes[i + 2])
     }
 }
@@ -1150,7 +1283,9 @@ private func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.b ?? 0) 
     #expect(out.width == 1280)
     #expect(out.height == 853)
     #expect(ImageEncoder.containerType(of: out.data) == "public.jpeg")
-    #expect(ImageEncoder.dimensions(of: out.data)! == (1280, 853))
+    let d = try #require(ImageEncoder.dimensions(of: out.data))
+    #expect(d.width == 1280)
+    #expect(d.height == 853)
     // Portrait sources scale on the long edge too.
     let tall = try ImageEncoder.encodeJPEG(TestImages.png(width: 1000, height: 4000), preset: .standard)
     #expect(tall.width == 320)
@@ -1173,7 +1308,8 @@ private func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.b ?? 0) 
     #expect(ImageEncoder.containerType(of: out.data) == "public.jpeg")
     // Original is the higher quality: same image, more bytes than the standard preset at the
     // same size would give — compare against a standard encode forced to full size by a source
-    // that is already ≤ 1280 on its long edge.
+    // that is already ≤ 1280 on its long edge. The gradients in `TestImages` give the quantiser
+    // something to drop, so the two sizes differ by more than header noise.
     let source = TestImages.png(width: 1200, height: 800)
     let standard = try ImageEncoder.encodeJPEG(source, preset: .standard)
     let original = try ImageEncoder.encodeJPEG(source, preset: .original)
@@ -1184,21 +1320,26 @@ private func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.b ?? 0) 
 /// Review Focus 8: a phone photo stored landscape with orientation 6 displays as portrait. The
 /// sent JPEG must have those pixels rotated, because Sideband ignores orientation tags.
 @Test func imageEncoderBakesOrientationIntoPixels() throws {
-    // Stored 3000×2000, left half red. Orientation 6 = rotate 90° CW to display: 2000×3000
-    // with the RED half on TOP.
+    // Stored 3000×2000, left half red, bright at the stored top. Orientation 6 = rotate 90° CW to
+    // display: 2000×3000 with the RED half on TOP and the stored top rows (bright) on the RIGHT.
     let source = TestImages.jpeg(width: 3000, height: 2000, orientation: 6)
+    // Self-check of the helper, independent of the encoder: `pixel` applies the orientation, so
+    // the source itself reads red on top and blue below. If this fails, `TestImages.pixel`'s row
+    // arithmetic is wrong — not `ImageEncoder`.
+    #expect(isRed(TestImages.pixel(in: source, x: 1900, y: 300)))
+    #expect(isBlue(TestImages.pixel(in: source, x: 1900, y: 2700)))
     let out = try ImageEncoder.encodeJPEG(source, preset: .standard)
     #expect(out.width == 853)
     #expect(out.height == 1280)
-    // The output carries no orientation tag (or 1), and the raw pixels are already rotated:
-    // reading WITHOUT applying any transform must show red on top.
+    // The output carries no orientation tag (or 1), and the raw pixels are already rotated, so
+    // they read red on top with no transform to apply.
     #expect(!ImageEncoder.hasLocationOrOrientationMetadata(out.data))
-    #expect(isRed(TestImages.pixel(in: out.data, x: 426, y: 300)))
-    #expect(isBlue(TestImages.pixel(in: out.data, x: 426, y: 980)))
-    // Sanity: an untagged source keeps left = red.
+    #expect(isRed(TestImages.pixel(in: out.data, x: 800, y: 300)))
+    #expect(isBlue(TestImages.pixel(in: out.data, x: 800, y: 980)))
+    // Sanity: an untagged source keeps left = red (read in the bright top rows).
     let plain = try ImageEncoder.encodeJPEG(TestImages.png(width: 400, height: 200), preset: .standard)
-    #expect(isRed(TestImages.pixel(in: plain.data, x: 100, y: 100)))
-    #expect(isBlue(TestImages.pixel(in: plain.data, x: 300, y: 100)))
+    #expect(isRed(TestImages.pixel(in: plain.data, x: 100, y: 20)))
+    #expect(isBlue(TestImages.pixel(in: plain.data, x: 300, y: 20)))
 }
 
 /// Review Focus 8: GPS never leaves the phone, in either preset.
@@ -1233,11 +1374,19 @@ private func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.b ?? 0) 
 }
 
 /// `dimensions(of:)` reports the DISPLAYED size: orientation 5–8 swap width and height.
-@Test func imageEncoderDimensionsHonourOrientation() {
-    #expect(ImageEncoder.dimensions(of: TestImages.jpeg(width: 3000, height: 2000))! == (3000, 2000))
-    #expect(ImageEncoder.dimensions(of: TestImages.jpeg(width: 3000, height: 2000, orientation: 6))! == (2000, 3000))
-    #expect(ImageEncoder.dimensions(of: TestImages.jpeg(width: 3000, height: 2000, orientation: 3))! == (3000, 2000))
-    #expect(ImageEncoder.dimensions(of: TestImages.png(width: 10, height: 20))! == (10, 20))
+@Test func imageEncoderDimensionsHonourOrientation() throws {
+    let up = try #require(ImageEncoder.dimensions(of: TestImages.jpeg(width: 3000, height: 2000)))
+    #expect(up.width == 3000)
+    #expect(up.height == 2000)
+    let rotated = try #require(ImageEncoder.dimensions(of: TestImages.jpeg(width: 3000, height: 2000, orientation: 6)))
+    #expect(rotated.width == 2000)
+    #expect(rotated.height == 3000)
+    let upsideDown = try #require(ImageEncoder.dimensions(of: TestImages.jpeg(width: 3000, height: 2000, orientation: 3)))
+    #expect(upsideDown.width == 3000)
+    #expect(upsideDown.height == 2000)
+    let png = try #require(ImageEncoder.dimensions(of: TestImages.png(width: 10, height: 20)))
+    #expect(png.width == 10)
+    #expect(png.height == 20)
     #expect(ImageEncoder.isDecodable(TestImages.png(width: 10, height: 20)))
 }
 ```
@@ -1365,20 +1514,28 @@ public enum ImageEncoder {
 - [ ] **Step 5: Run the new tests**
 
 Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter imageEncoder`
-Expected: 9 tests PASS. If ImageIO rounds 2000/3000×1280 to 854 rather than 853 on this macOS, change the two `853` expectations to the observed value and note it in the report (the rounding is ImageIO's, not ours). If `imageEncoderBakesOrientationIntoPixels`'s pixel reads fail while the dimensions are right, check `TestImages.pixel`'s bottom-up row arithmetic before anything else.
+Expected: 9 tests PASS. If ImageIO rounds 2000/3000×1280 to 854 rather than 853 on this macOS, change the `853` expectations (downscale and orientation tests) to the observed value and note it in the report (the rounding is ImageIO's, not ours). If `imageEncoderBakesOrientationIntoPixels` fails on its first two expectations (the SOURCE self-check), the helper is wrong, not the encoder: `TestImages.pixel` indexes `(y * w + x) * 4` because a bitmap context's memory row 0 is the top of the image — check that first. If `imageEncoderOriginalKeepsDimensions`'s byte comparison fails, report the two sizes; do not weaken the check.
 
-- [ ] **Step 6: Mutation batch**
+- [ ] **Step 6: Mutation batch (six sub-batches — run each alone, revert and re-green between them)**
 
-Sub-batch A (apply together):
-1. `standardMaxPixels = 1280` → `640` → RED `imageEncoderConstantsMatchSpec`, `imageEncoderStandardDownscalesTo1280LongEdge`, `imageEncoderNeverUpscales` (1280 exact becomes 640).
-2. `kCGImageSourceCreateThumbnailWithTransform: true` → `false` → RED `imageEncoderBakesOrientationIntoPixels` (1280×853, red on the left).
-3. `.original: maxPixels = longEdge` → `= standardMaxPixels` → RED `imageEncoderOriginalKeepsDimensions`.
-4. `dimensions`: `orientation >= 5 ? (h, w) : (w, h)` → `(w, h)` → RED `imageEncoderDimensionsHonourOrientation`.
-5. `containerType`: `UTType.jpeg` → `UTType.png` in `encodeJPEG` → RED `imageEncoderPNGBecomesJPEG` (also reddens the container checks in the downscale and original tests).
-6. `encodeJPEG`: replace the first `guard ... else { throw Failure.undecodable }` with `guard let src = CGImageSourceCreateWithData(source as CFData, nil) else { return Encoded(data: source, width: 0, height: 0) }` and drop the `dims` requirement (use `(0, 0)` when nil) → RED `imageEncoderRejectsUndecodableData`.
+Sub-batch A (alone):
+1. `standardMaxPixels = 1280` → `640` → RED `imageEncoderConstantsMatchSpec`, `imageEncoderStandardDownscalesTo1280LongEdge`, `imageEncoderNeverUpscales` (1280 exact becomes 640), `imageEncoderBakesOrientationIntoPixels` (640 tall), `imageEncoderOriginalKeepsDimensions` (the standard encode of the 1200×800 source shrinks). Alone because it reddens the tests mutations 2 and 3 target.
 
 Sub-batch B (alone):
-7. `CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality, kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 1.0]] as CFDictionary)` → RED `imageEncoderStripsMetadata`.
+2. `kCGImageSourceCreateThumbnailWithTransform: true` → `false` in `encodeJPEG` → RED `imageEncoderBakesOrientationIntoPixels` (1280×853, red on the left). The test's source self-check stays green (the helper applies its own transform).
+
+Sub-batch C (alone):
+3. `.original: maxPixels = longEdge` → `= standardMaxPixels` → RED `imageEncoderOriginalKeepsDimensions` (3000 becomes 1280).
+
+Sub-batch D (apply together):
+4. `dimensions`: `orientation >= 5 ? (h, w) : (w, h)` → `(w, h)` → RED `imageEncoderDimensionsHonourOrientation`.
+6. `encodeJPEG`: change the FIRST `throw Failure.undecodable` (the guard on the source and its dimensions) to `throw Failure.encodingFailed` → RED `imageEncoderRejectsUndecodableData` (junk now throws `encodingFailed`). Neither mutation touches the other's test.
+
+Sub-batch E (alone):
+5. `UTType.jpeg` → `UTType.png` in `encodeJPEG`'s `CGImageDestinationCreateWithData` → RED `imageEncoderPNGBecomesJPEG`, `imageEncoderStandardDownscalesTo1280LongEdge`, `imageEncoderOriginalKeepsDimensions` (their container checks). Alone because it reddens the test mutation 3 targets.
+
+Sub-batch F (alone):
+7. `CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality, kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 1.0]] as CFDictionary)` → RED `imageEncoderStripsMetadata`, `imageEncoderBakesOrientationIntoPixels` (its no-metadata check).
 
 Revert by hand, check the diff, run again: all PASS.
 
@@ -1412,10 +1569,11 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 - Create: `CORE/Sources/ReTiCaMsgrCore/AttachmentPlaceholder.swift`
 - Modify: `CORE/Sources/ReTiCaMsgrCore/MessageInfo.swift` (`sections(for:attachment:timeZone:)`, timeline reason row, delivery refusal row, new `attachment` section, name helpers)
 - Modify: `CORE/Sources/ReTiCaMsgrCore/Conversation.swift` (`list(from:attachments:)`)
+- Modify: `CORE/Sources/ReTiCaMsgrCore/ReplyPreview.swift` (`resolve(for:in:peerName:attachments:)`)
 - Create: `CORE/Tests/ReTiCaMsgrCoreTests/AttachmentInfoTests.swift`
 
 **Interfaces:**
-- Produces: `public enum AttachmentPlaceholder { static let photo = "📷 Photo"; static func text(for: Attachment) -> String; static func preview(body: String, attachment: Attachment?) -> String }`. `MessageInfo.sections(for message: Message, attachment: Attachment? = nil, timeZone: TimeZone = .current)` — existing callers keep compiling. `Conversation.list(from messages: [Message], attachments: [UUID: Attachment] = [:])`.
+- Produces: `public enum AttachmentPlaceholder { static let photo = "📷 Photo"; static func text(for: Attachment) -> String; static func preview(body: String, attachment: Attachment?) -> String }`. `MessageInfo.sections(for message: Message, attachment: Attachment? = nil, timeZone: TimeZone = .current)` — existing callers keep compiling. `Conversation.list(from messages: [Message], attachments: [UUID: Attachment] = [:])`. `ReplyPreview.resolve(for message: Message, in thread: [Message], peerName: String?, attachments: [UUID: Attachment] = [:])` — a reply to a caption-less photo or file IN the thread quotes its placeholder instead of "Original message not available" (spec §4); existing callers keep compiling, Task 9's `ChatView` passes `store.attachmentsByMessageId`.
 - Semantics: an image's placeholder is `📷 Photo`, a file's is `📎 <name>`; `preview` returns the body when it has non-whitespace text, else the placeholder, else the body as is. Info: a "Reason" row after "Status" only when `failureReason` is set (`Rejected by recipient` / `Cancelled`); a "Propagation refusal" row in Delivery only when `propagationRefused` is set (`Refused: too large for node`); a fifth section "Attachment" only when an attachment is passed: Kind (`Image`/`File`), Name, Format (upper-cased, `—` when empty), Size (`<n> B`), Dimensions (`W × H`, `—` for files), Stored (`Yes`/`No` from `hasBytes`).
 
 - [ ] **Step 1: Write the failing tests**
@@ -1426,6 +1584,9 @@ Create `CORE/Tests/ReTiCaMsgrCoreTests/AttachmentInfoTests.swift`:
 import Testing
 import Foundation
 @testable import ReTiCaMsgrCore
+
+/// `Testing` exports its own `Attachment`; this file means the model.
+private typealias Attachment = ReTiCaMsgrCore.Attachment
 
 private let utc = TimeZone(identifier: "UTC")!
 private let t0 = Date(timeIntervalSince1970: 1700000000)
@@ -1528,6 +1689,26 @@ private func file(name: String = "notes.pdf", format: String = "pdf") -> Attachm
     let withFile = outgoing(body: "")
     #expect(Conversation.list(from: [withFile], attachments: [withFile.id: file(name: "map.gpx", format: "gpx")])
             .map(\.lastBody) == ["📎 map.gpx"])
+}
+
+/// Spec §4: a reply to a photo that is in the thread quotes `📷 Photo`, not "Original message not
+/// available" (the photo's body is empty). A file quotes its name. Without the map, as before.
+@Test func attachInfoReplyPreviewQuotesAPhotoInTheThread() {
+    let photoMessage = Message(id: messageID, peerHex: peer32, isOutgoing: false, body: "", timestamp: t0,
+                               status: MessageStatus.received, validated: true, messageHash: hash64)
+    // No carried quote, so the text can only come from the original in the thread.
+    let reply = Message(id: UUID(uuidString: "00000000-0000-0000-0000-000000000051")!, peerHex: peer32,
+                        isOutgoing: true, body: "nice", timestamp: t0.addingTimeInterval(5),
+                        status: MessageStatus.sending, validated: false, messageHash: "",
+                        replyToHash: hash64)
+    let thread = [photoMessage, reply]
+    let resolved = ReplyPreview.resolve(for: reply, in: thread, peerName: "Ann",
+                                        attachments: [photoMessage.id: image()])
+    #expect(resolved == ReplyPreview.Resolved(senderLabel: "Ann", text: "📷 Photo", originalID: photoMessage.id))
+    let asFile = ReplyPreview.resolve(for: reply, in: thread, peerName: "Ann",
+                                      attachments: [photoMessage.id: file()])
+    #expect(asFile?.text == "📎 notes.pdf")
+    #expect(ReplyPreview.resolve(for: reply, in: thread, peerName: "Ann")?.text == ReplyPreview.unavailable)
 }
 ```
 
@@ -1655,31 +1836,71 @@ In the Formatting section, after `stampName`, add:
     }
 ```
 
-- [ ] **Step 6: Run the new tests**
+- [ ] **Step 6: `ReplyPreview.swift`**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachInfo --filter infoSections --filter conversation`
-Expected: the 6 new tests PASS and every existing `infoSections*` / conversation test still passes (their expectations are untouched: no reason/refusal/attachment rows appear for messages without those fields).
+Replace `resolve(for:in:peerName:)` with:
 
-- [ ] **Step 7: Mutation batch**
+```swift
+    /// nil when `message` is not a reply. Otherwise the original from `thread` when present (its
+    /// body, trimmed like a quote — or, when the body is empty and the original carries a photo or
+    /// a file, its placeholder from `attachments`, keyed by message id), else the carried quote,
+    /// else "Original message not available".
+    ///
+    /// When the original IS found but its trimmed text is empty (a whitespace-only body with no
+    /// attachment), `text` still falls back to `unavailable` — but `originalID` stays set, so the
+    /// quote block still scrolls to that (blank) original.
+    public static func resolve(for message: Message, in thread: [Message], peerName: String?,
+                               attachments: [UUID: Attachment] = [:]) -> Resolved? {
+        guard let hash = message.replyToHash else { return nil }
+        if let original = thread.first(where: { $0.messageHash == hash }) {
+            // Spec 2026-09-28 §4: a caption-less photo or file quotes its placeholder.
+            let body = AttachmentPlaceholder.preview(body: original.body, attachment: attachments[original.id])
+            let trimmedBody = ReplyWire.trimQuote(body)
+            return Resolved(
+                senderLabel: senderLabel(originalIsOutgoing: original.isOutgoing, peerName: peerName),
+                text: trimmedBody.isEmpty ? unavailable : trimmedBody,
+                originalID: original.id
+            )
+        }
+        // Without the original, the reply's direction decides: a reply we received quotes one of
+        // ours, and a reply we sent quotes one of theirs.
+        let label = senderLabel(originalIsOutgoing: !message.isOutgoing, peerName: peerName)
+        // An empty quote (a blank original) says nothing, so it counts as no quote.
+        if let quote = message.replyQuote, !quote.isEmpty {
+            return Resolved(senderLabel: label, text: quote, originalID: nil)
+        }
+        return Resolved(senderLabel: label, text: unavailable, originalID: nil)
+    }
+```
+
+- [ ] **Step 7: Run the new tests**
+
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachInfo --filter infoSections --filter conversation --filter replyPreview`
+Expected: the 7 new tests PASS and every existing `infoSections*` / conversation / `replyPreview*` test still passes (their expectations are untouched: no reason/refusal/attachment rows appear for messages without those fields, and `resolve` without `attachments:` behaves as before).
+
+- [ ] **Step 8: Mutation batch (three sub-batches)**
 
 Sub-batch A (apply together):
-1. `AttachmentPlaceholder.text`: `attachment.isImage ? photo : ...` → always `photo` → RED `attachInfoPlaceholderTextAndPreview` (the file case).
+1. `AttachmentPlaceholder.text`: `attachment.isImage ? photo : ...` → always `photo` → RED `attachInfoPlaceholderTextAndPreview` (the file case), `attachInfoReplyPreviewQuotesAPhotoInTheThread` (the file quote), `attachInfoConversationPreviewUsesPlaceholder` (the `📎 map.gpx` case).
 2. `attachmentSection`: delete the `optionalRow("Dimensions", dimensions)` line → RED `attachInfoSectionAppearsForAnImage`, `attachInfoSectionForAFileHasNoDimensionsAndShowsUnavailableBytes`.
 3. `failureReasonName`: `case FailureReason.rejected: return "Rejected by recipient"` → `return "Cancelled"` → RED `attachInfoFailureReasonAndRefusalRows`.
 4. `sections`: `if let attachment` → always append `attachmentSection(attachment ?? Attachment(id: UUID(), messageId: message.id, kind: "file", name: "", format: "", size: 0, width: nil, height: nil, path: ""))` → RED `attachInfoNoAttachmentNoSectionAndNoReasonRows`.
-5. `Conversation.list`: `attachments[$0.id]` → `nil` → RED `attachInfoConversationPreviewUsesPlaceholder`.
 
-Sub-batch B (alone):
-6. `AttachmentPlaceholder.preview`: delete the `if !trimmed.isEmpty { return body }` line → RED `attachInfoPlaceholderTextAndPreview` (body no longer wins) and `attachInfoConversationPreviewUsesPlaceholder` is unaffected (its bodies are empty) — so 6 is observed on the placeholder test alone, which sub-batch A's mutation 1 also reddens; hence the separate sub-batch.
+Sub-batch B (apply together, after A is reverted and green):
+6. `AttachmentPlaceholder.preview`: delete the `if !trimmed.isEmpty { return body }` line → RED `attachInfoPlaceholderTextAndPreview` (body no longer wins). `attachInfoConversationPreviewUsesPlaceholder` and `attachInfoReplyPreviewQuotesAPhotoInTheThread` are unaffected (their bodies are empty). Not in A: mutation 1 reddens the same test.
+7. `ReplyPreview.resolve`: `attachment: attachments[original.id]` → `attachment: nil` → RED `attachInfoReplyPreviewQuotesAPhotoInTheThread` (the photo quotes "Original message not available"). Not in A: mutation 1 reddens the same test.
+
+Sub-batch C (alone, after B is reverted and green):
+5. `Conversation.list`: `attachments[$0.id]` → `nil` → RED `attachInfoConversationPreviewUsesPlaceholder`. Alone: mutation 1 reddens the same test through its `📎 map.gpx` case.
 
 Revert by hand, check the diff, run again: all PASS.
 
-- [ ] **Step 8: Full suite, commit**
+- [ ] **Step 9: Full suite, commit**
 
 Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t5-full.log 2>&1`
-Expected: all pass; count = Task 4 count + 6.
+Expected: all pass; count = Task 4 count + 7.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AttachmentPlaceholder.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageInfo.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AttachmentInfoTests.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AttachmentPlaceholder.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageInfo.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReplyPreview.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AttachmentInfoTests.swift`
 
 Write `/tmp/ReTiCaMsgr/msg-att-task-5.txt`:
 
@@ -1689,7 +1910,8 @@ feat: attachment section, failure reason and refusal in the Info sheet
 Adds the Attachment section (kind, name, format, size, dimensions,
 stored), a Reason row for rejected and cancelled messages, a
 propagation refusal row, and the photo/file placeholders the
-conversation list and reply quotes show for a message with no text.
+conversation list and reply quotes show for a message with no text,
+including the quote block of a reply to a photo in the thread.
 
 Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
@@ -1706,13 +1928,21 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 - Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (`makeStore` gains an `attachmentStore:` parameter; tests appended at the end)
 
 **Interfaces:**
-- Consumes: T2 `\.attachmentStore`, T3 `AttachmentWire.decode`, T4 `ImageEncoder.dimensions(of:)`/`isDecodable`, T5 `AttachmentPlaceholder`, `Conversation.list(from:attachments:)`.
+- Consumes: T1 `Attachment.byMessageId(_:)`, T2 `\.attachmentStore`, T3 `AttachmentWire.decode` (and `Decoded.droppedFileCount`, logged as `inbound.notice` when > 0), T4 `ImageEncoder.dimensions(of:)`/`isDecodable`, T5 `AttachmentPlaceholder`, `Conversation.list(from:attachments:)`.
 - Produces: `AppFeature.State.attachmentsByMessageId: [UUID: Attachment]` (the open thread's attachments), `Action.threadLoaded([Message], reactions: [Reaction] = [], attachments: [Attachment] = [])`; `@Dependency(\.attachmentStore) var attachmentStore` on the reducer. `reloadThread` fetches the thread's attachments; `reloadConversations` fetches attachments for empty-body messages so previews get placeholders.
 - Semantics (spec §4): after the reaction and reply decoders, `AttachmentWire.decode`; bytes → `attachmentStore.store(…, outgoing: false, ext: format)`; on a throw the row is still inserted with `path == ""` (bubble: "Attachment could not be saved"); an image ImageIO cannot decode is stored as a FILE; dimensions from `ImageEncoder.dimensions(of:)`; `Message` and `Attachment` rows in one write transaction; `body` is the caption. `replyTapped` uses `AttachmentPlaceholder.preview` for the target's body so a photo reply quotes `📷 Photo`.
 
-- [ ] **Step 1: `makeStore` accepts a store**
+- [ ] **Step 1: `makeStore` accepts a store; the `Attachment` alias**
 
-In `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`, change the `makeStore` signature and body:
+In `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`, add right after the imports (after `@testable import ReTiCaMsgrCore`), once for Tasks 6–8:
+
+```swift
+
+/// `Testing` exports its own `Attachment`; this file means the model.
+private typealias Attachment = ReTiCaMsgrCore.Attachment
+```
+
+Then change the `makeStore` signature and body:
 
 ```swift
 @MainActor
@@ -1914,8 +2144,7 @@ In `.threadLoaded`:
                 state.threadMessages = rows
                 let allowed: Set<String> = [state.myAddressHex, state.openPeerHex ?? ""]
                 state.setThreadReactionRows(reactions.filter { allowed.contains($0.reactorHex) })
-                state.attachmentsByMessageId = Dictionary(attachments.map { ($0.messageId, $0) },
-                                                          uniquingKeysWith: { first, _ in first })
+                state.attachmentsByMessageId = Attachment.byMessageId(attachments)
                 return .none
 ```
 
@@ -1938,6 +2167,10 @@ After `let reply = ReplyWire.decode(m.fields)` add:
                 // effect: the bytes go to disk first, then the message and attachment rows land in
                 // one transaction. A field that does not decode leaves an ordinary text message.
                 let decodedAttachment = AttachmentWire.decode(m.fields)
+                if let dropped = decodedAttachment?.droppedFileCount, dropped > 0 {
+                    // Spec §2: one attachment per message is kept; say what was left out.
+                    AppFeature.inbound.notice("attachment: kept one, dropped \(dropped, privacy: .public) other file entries from \(String(m.hash.hexString.prefix(8)), privacy: .public)")
+                }
                 let attachmentStore = self.attachmentStore
 ```
 
@@ -1998,7 +2231,7 @@ private func reloadConversations(_ database: any DatabaseWriter, _ send: Send<Ap
         let attachments = ids.isEmpty ? [] : try Attachment.where { $0.messageId.in(ids) }.fetchAll(db)
         return (all, attachments)
     }
-    let byMessage = Dictionary(attachments.map { ($0.messageId, $0) }, uniquingKeysWith: { first, _ in first })
+    let byMessage = Attachment.byMessageId(attachments)
     await send(.conversationsLoaded(Conversation.list(from: all, attachments: byMessage)))
 }
 
@@ -2025,15 +2258,18 @@ Expected: 7 tests PASS.
 Sub-batch A (apply together, `AppFeature.swift`):
 1. `messageReceived` effect: `path = try attachmentStore.store(...)` → `path = ""` (never store) → RED `attachReceiveStoresAnImageOnDiskAndInTheTable`, `attachReceiveStoresAFileWithAnEmptyCaption` (path mismatch, no file).
 2. `let kind = (... && dims == nil) ? AttachmentKind.file : decoded.kind` → `let kind = decoded.kind` → RED `attachReceiveUndecodableImageBecomesAFile`.
-3. `.threadLoaded`: `state.attachmentsByMessageId = Dictionary(...)` → `= [:]` → RED `attachReceiveThreadLoadExposesAttachmentsByMessageId`.
+3. `.threadLoaded`: `state.attachmentsByMessageId = Attachment.byMessageId(attachments)` → `= [:]` → RED `attachReceiveThreadLoadExposesAttachmentsByMessageId`.
 4. `.replyTapped`: `AttachmentPlaceholder.preview(...)` → `message.body` → RED `attachReceiveReplyToAPhotoQuotesThePlaceholder`.
+8. `messageReceived`: before the effect add `let hasAttachmentField = m.fields.contains { $0.key == 0x05 || $0.key == 0x06 }`, and in the transaction wrap `try Message.insert { row }.execute(db)` in `if decodedAttachment != nil || !hasAttachmentField { ... }` (a malformed attachment field drops the message) → RED `attachReceiveMalformedFieldKeepsTheText` (Review Focus 3: no message row). The other tests' fields all decode, so only this one turns red.
 
 Sub-batch B (alone):
 5. `messageReceived` effect: in the `catch`, `path = ""` → rethrow (`throw error`) → RED `attachReceiveStoreFailureKeepsTheMessageWithoutBytes` (no rows at all).
 
 Sub-batch C (alone):
 6. `messageReceived` effect: `if let decoded = decodedAttachment` → `if let decoded = decodedAttachment, decoded.data.count > 100_000` → RED `attachReceiveStoresAnImageOnDiskAndInTheTable`, `attachReceiveStoresAFileWithAnEmptyCaption`, `attachReceiveUndecodableImageBecomesAFile`, `attachReceiveThreadLoadExposesAttachmentsByMessageId` (no attachment rows) — while `attachReceiveMalformedFieldKeepsTheText` stays GREEN, which proves that test asserts the message survives rather than merely "no attachment".
-7. `reloadConversations`: `attachments: byMessage` → `attachments: [:]` → RED `attachReceiveThreadLoadExposesAttachmentsByMessageId` (preview is "").
+
+Sub-batch D (alone):
+7. `reloadConversations`: `attachments: byMessage` → `attachments: [:]` → RED `attachReceiveThreadLoadExposesAttachmentsByMessageId` (preview is ""). Alone: mutation 6 reddens the same test (no rows means no preview).
 
 Revert by hand, check the diff, run again: all PASS.
 
@@ -2067,13 +2303,13 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 
 **Files:**
 - Create: `CORE/Sources/ReTiCaMsgrCore/PendingAttachment.swift`
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (state, actions, `openConversation`/`startConversation`/`closeConversation`, `sendTapped`, new cases)
+- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (state, actions, `CancelID.attachmentPreparation`, `prepareEffect`, `openConversation`/`startConversation`/`closeConversation`, `sendTapped`, new cases)
 - Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: T2 `\.attachmentStore`, T3 `AttachmentWire.encodeImage/encodeFile`, T4 `ImageEncoder`.
-- Produces: `public struct PickedItem { kind: String, name: String, data: Data }` (what the view hands over after reading the picker's bytes); `public struct PendingAttachment { kind, name, format, data, width: Int?, height: Int?, originalSource: Data?, isOriginal: Bool; var size: Int }`; `public enum AttachmentSizeNote { propagationLimitBytes = 256_000, deliveryLimitBytes = 1_000_000, overDelivery, overPropagation, note(for size: Int) -> String?, formattedSize(_:) -> String }`; `public enum AttachmentPreparation { undecodableImage, storeFailed, prepare(_:original:now:) -> Result<PendingAttachment, PreparationError>, imageName(at:) -> String }`. `AppFeature.State.pendingAttachment: PendingAttachment?`, `attachmentPreparing: Bool`, `attachmentError: String?`; actions `attachmentPicked(PickedItem)`, `attachmentPrepared(PendingAttachment)`, `attachmentFailed(String)`, `attachmentRemoved`, `attachmentOriginalToggled(Bool)`.
-- Semantics (spec §3): picking replaces any pending attachment and prepares asynchronously (images → `ImageEncoder` standard; Original toggle re-encodes from `originalSource`; files pass through); `sendTapped` allows an empty draft when an attachment is pending, refuses while preparing, orders fields `[0x05|0x06] + reply`, writes the bytes BEFORE inserting the message + attachment rows in one transaction and only then sends; a store failure sends nothing and reports `attachmentFailed(storeFailed)`; `draft`/`replyTarget`/`pendingAttachment` clear synchronously; generated photo names are `IMG_<yyyyMMdd_HHmmss>.jpg` in UTC.
+- Produces: `public struct PickedItem { kind: String, name: String, data: Data }` (what the view hands over after reading the picker's bytes); `public struct PendingAttachment { kind, name, format, data, width: Int?, height: Int?, originalSource: Data?, isOriginal: Bool; var size: Int }`; `public enum AttachmentSizeNote { propagationLimitBytes = 256_000, deliveryLimitBytes = 1_000_000, overDelivery, overPropagation, note(for size: Int) -> String?, formattedSize(_:) -> String }`; `public enum AttachmentPreparation { undecodableImage, encodingFailed, storeFailed, prepare(_:original:now:) -> Result<PendingAttachment, PreparationError>, imageName(at:) -> String }`. `AppFeature.State.pendingAttachment: PendingAttachment?`, `attachmentPreparing: Bool`, `attachmentError: String?`; actions `attachmentPicked(PickedItem)`, `attachmentPrepared(PendingAttachment)`, `attachmentFailed(String)`, `attachmentRemoved`, `attachmentOriginalToggled(Bool)`, `attachmentSendFailed(draft: String)`; `CancelID.attachmentPreparation`; private reducer helper `prepareEffect(_ item: PickedItem, original: Bool) -> Effect<Action>`.
+- Semantics (spec §3): picking replaces any pending attachment and prepares asynchronously (images → `ImageEncoder` standard; Original toggle re-encodes from `originalSource`; files pass through); ONE preparation at a time — `prepareEffect` is `.cancellable(id: CancelID.attachmentPreparation, cancelInFlight: true)`, and `attachmentRemoved`, `openConversation`, `startConversation`, `closeConversation` and a proceeding `sendTapped` cancel it, so a late `attachmentPrepared` can never replace or resurrect the pending attachment; `sendTapped` allows an empty draft when an attachment is pending, refuses while preparing, orders fields `[0x05|0x06] + reply`, writes the bytes BEFORE inserting the message + attachment rows in one transaction and only then sends; a store failure sends nothing, logs the error, and sends `attachmentSendFailed(draft:)`, which shows `storeFailed` inline in the attachment bar and puts the caption back in the draft (the attachment must be picked again); `draft`/`replyTarget`/`pendingAttachment` clear synchronously; generated photo names are `IMG_<yyyyMMdd_HHmmss>.jpg` in UTC; an `ImageEncoder.Failure.encodingFailed` shows `encodingFailed` ("Couldn't encode that image"), anything else `undecodableImage`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2083,7 +2319,10 @@ Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
 
 // MARK: - Attachments: sending (spec 2026-09-28 §3)
 
-private let attachPNG = TestImages.png(width: 3000, height: 2000)
+/// 1600×1200: above the 1280 standard edge (so the standard preset scales it to 1280×960) but
+/// small enough that the PNG decode + JPEG encode inside `store.receive` stays well under the
+/// TestStore's 1 s receive timeout in a parallel full suite.
+private let attachPNG = TestImages.png(width: 1600, height: 1200)
 
 private func pendingImage(_ data: Data = TestImages.jpeg(width: 40, height: 30)) -> PendingAttachment {
     PendingAttachment(kind: AttachmentKind.image, name: "IMG_20231114_221320.jpg", format: "jpeg", data: data,
@@ -2105,7 +2344,7 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
     #expect(p.format == "jpeg")
     #expect(p.name == "IMG_20231114_221320.jpg")   // the frozen \.date, UTC
     #expect(p.width == 1280)
-    #expect(p.height == 853)
+    #expect(p.height == 960)
     #expect(p.originalSource == attachPNG)
     #expect(p.isOriginal == false)
     #expect(ImageEncoder.containerType(of: p.data) == "public.jpeg")
@@ -2120,12 +2359,14 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
     await store.send(.attachmentOriginalToggled(true))
     #expect(store.state.attachmentPreparing)
     await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
-    #expect(store.state.pendingAttachment?.width == 3000)
+    #expect(store.state.pendingAttachment?.width == 1600)
+    #expect(store.state.pendingAttachment?.height == 1200)
     #expect(store.state.pendingAttachment?.isOriginal == true)
     #expect(store.state.pendingAttachment?.name == "IMG_20231114_221320.jpg")   // the name is kept
     await store.send(.attachmentOriginalToggled(false))
     await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
     #expect(store.state.pendingAttachment?.width == 1280)
+    #expect(store.state.pendingAttachment?.height == 960)
     // Toggling to the state it is already in, or with a file pending, does nothing.
     store.exhaustivity = .on
     await store.send(.attachmentOriginalToggled(false))
@@ -2150,6 +2391,21 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
     #expect(p.width == nil && p.height == nil)
     #expect(p.originalSource == nil)
     #expect(p.size == bytes.count)
+}
+
+/// A late preparation result must not resurrect an attachment the user removed: Remove cancels
+/// the encode in flight.
+@MainActor @Test func attachSendRemoveCancelsAPendingPreparation() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG)))
+    await store.send(.attachmentRemoved)
+    // Exhaustive from here: once every effect has finished, a late `attachmentPrepared` would be
+    // an unhandled received action and the probe send fails.
+    store.exhaustivity = .on
+    await store.finish()
+    await store.send(.replyCancelled)   // probe
+    store.exhaustivity = .off
+    #expect(store.state.pendingAttachment == nil)
 }
 
 @MainActor @Test func attachSendUndecodableImageFails() async {
@@ -2258,7 +2514,8 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
     #expect(store.state.replyTarget == nil)
 }
 
-/// Review Focus 4 (send half): a store that cannot write sends NOTHING and says so.
+/// Review Focus 4 (send half): a store that cannot write sends NOTHING, says so inline, and gives
+/// the caption back.
 @MainActor @Test func attachSendStoreFailureSendsNothing() async throws {
     let db = try! AppDatabase.makeInMemory()
     let blocker = FileManager.default.temporaryDirectory.appending(path: "attachSendBlocker-\(UUID().uuidString)")
@@ -2275,9 +2532,9 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
         $0.pendingAttachment = nil
         $0.attachmentError = nil
     }
-    await store.receive(.attachmentFailed(AttachmentPreparation.storeFailed)) {
+    await store.receive(.attachmentSendFailed(draft: "cap")) {
         $0.attachmentError = AttachmentPreparation.storeFailed
-        $0.attachmentPreparing = false
+        $0.draft = "cap"
     }
     // Exhaustive probe: no sendMessage, no reload followed.
     await store.send(.replyCancelled)
@@ -2414,6 +2671,7 @@ public enum AttachmentSizeNote {
 /// an effect so a large photo never encodes on the main thread.
 public enum AttachmentPreparation {
     public static let undecodableImage = "Couldn't read that image"
+    public static let encodingFailed = "Couldn't encode that image"
     public static let storeFailed = "Couldn't save the attachment — nothing was sent"
 
     public struct PreparationError: Error, Equatable, Sendable {
@@ -2430,6 +2688,9 @@ public enum AttachmentPreparation {
                     kind: AttachmentKind.image, name: name, format: AttachmentWire.sentImageFormat,
                     data: encoded.data, width: encoded.width, height: encoded.height,
                     originalSource: item.data, isOriginal: original))
+            } catch ImageEncoder.Failure.encodingFailed {
+                // ImageIO read the image but could not write the JPEG: not the user's file's fault.
+                return .failure(PreparationError(message: encodingFailed))
             } catch {
                 return .failure(PreparationError(message: undecodableImage))
             }
@@ -2474,14 +2735,78 @@ In `Action`, after `replyCancelled` add:
         case attachmentRemoved
         /// The Original toggle on a pending photo: re-encode from the picker's bytes.
         case attachmentOriginalToggled(Bool)
+        /// The send could not write the attachment's bytes, so nothing was sent: show `storeFailed`
+        /// in the attachment bar and give the caption back. Internal.
+        case attachmentSendFailed(draft: String)
 ```
 
-In `.openConversation`, `.startConversation` and `.closeConversation`, beside `state.replyTarget = nil` add:
+In `CancelID` add:
 
 ```swift
+        /// The one in-flight preparation (photo encode) of a picked attachment.
+        case attachmentPreparation
+```
+
+Replace the `.openConversation`, `.closeConversation` and `.startConversation` cases with (Task 6's `attachmentsByMessageId` line is kept in `.closeConversation`):
+
+```swift
+            case let .openConversation(peerHex):
+                state.openPeerHex = peerHex
+                // Review fix: a target from the previous conversation must not survive the switch —
+                // it would point at a message the new thread doesn't even contain.
+                state.replyTarget = nil
+                // Neither may a pending attachment, nor its preparation still in flight.
                 state.pendingAttachment = nil
                 state.attachmentPreparing = false
                 state.attachmentError = nil
+                return .merge(
+                    .cancel(id: CancelID.attachmentPreparation),
+                    .run { [database] send in try await reloadThread(database, peerHex, send) }
+                )
+
+            case .closeConversation:
+                state.openPeerHex = nil
+                state.threadMessages = []
+                state.setThreadReactionRows([])
+                state.attachmentsByMessageId = [:]
+                state.draft = ""
+                state.replyTarget = nil
+                state.pendingAttachment = nil
+                state.attachmentPreparing = false
+                state.attachmentError = nil
+                return .cancel(id: CancelID.attachmentPreparation)
+
+            case let .startConversation(hex):
+                guard let data = Data(hexString: hex), data.count == 16 else { return .none }
+                state.openPeerHex = hex
+                // Review fix: same as `openConversation` — clear any stale target from before.
+                state.replyTarget = nil
+                state.pendingAttachment = nil
+                state.attachmentPreparing = false
+                state.attachmentError = nil
+                return .merge(
+                    .cancel(id: CancelID.attachmentPreparation),
+                    .run { [database] send in try await reloadThread(database, hex, send) }
+                )
+```
+
+Add a private method on `AppFeature` (after `body`, inside the struct):
+
+```swift
+    /// Encodes a picked item off the main thread (spec §3). One preparation at a time: a newer
+    /// pick or Original toggle cancels the one in flight (`cancelInFlight`), and Remove, leaving or
+    /// switching the thread, and Send cancel it too, so a late result can never replace or
+    /// resurrect the pending attachment (a cancelled effect's `send` is dropped).
+    private func prepareEffect(_ item: PickedItem, original: Bool) -> Effect<Action> {
+        let now = date.now
+        return .run { send in
+            switch AttachmentPreparation.prepare(item, original: original, now: now) {
+            case let .success(pending): await send(.attachmentPrepared(pending))
+            case let .failure(error): await send(.attachmentFailed(error.message))
+            }
+        }
+        .cancellable(id: CancelID.attachmentPreparation, cancelInFlight: true)
+    }
 ```
 
 Add the new cases after `.replyCancelled`:
@@ -2492,13 +2817,7 @@ Add the new cases after `.replyCancelled`:
                 state.pendingAttachment = nil
                 state.attachmentError = nil
                 state.attachmentPreparing = true
-                let now = date.now
-                return .run { send in
-                    switch AttachmentPreparation.prepare(item, original: false, now: now) {
-                    case let .success(pending): await send(.attachmentPrepared(pending))
-                    case let .failure(error): await send(.attachmentFailed(error.message))
-                    }
-                }
+                return prepareEffect(item, original: false)
 
             case let .attachmentOriginalToggled(original):
                 guard let pending = state.pendingAttachment, pending.isImage,
@@ -2506,14 +2825,8 @@ Add the new cases after `.replyCancelled`:
                 else { return .none }
                 state.attachmentPreparing = true
                 // The name is passed through so a toggle never renames the photo.
-                let item = PickedItem(kind: AttachmentKind.image, name: pending.name, data: source)
-                let now = date.now
-                return .run { send in
-                    switch AttachmentPreparation.prepare(item, original: original, now: now) {
-                    case let .success(pending): await send(.attachmentPrepared(pending))
-                    case let .failure(error): await send(.attachmentFailed(error.message))
-                    }
-                }
+                return prepareEffect(PickedItem(kind: AttachmentKind.image, name: pending.name, data: source),
+                                     original: original)
 
             case let .attachmentPrepared(pending):
                 state.pendingAttachment = pending
@@ -2531,6 +2844,13 @@ Add the new cases after `.replyCancelled`:
                 state.pendingAttachment = nil
                 state.attachmentPreparing = false
                 state.attachmentError = nil
+                return .cancel(id: CancelID.attachmentPreparation)
+
+            case let .attachmentSendFailed(draft):
+                // Inline, in the attachment bar (no alert plumbing): nothing was sent, the caption
+                // comes back, and the attachment has to be picked again.
+                state.attachmentError = AttachmentPreparation.storeFailed
+                state.draft = draft
                 return .none
 ```
 
@@ -2605,8 +2925,11 @@ Replace the `.sendTapped` case with:
                 state.replyTarget = nil
                 state.pendingAttachment = nil
                 state.attachmentError = nil
+                // The guard above refuses while preparing, so nothing should be in flight here;
+                // cancelling anyway means no late result can land on the emptied composer.
                 guard let pending else {
                     return .merge(
+                        .cancel(id: CancelID.attachmentPreparation),
                         .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
                         .run { [database] send in
                             try await database.write { try Message.insert { row }.execute($0) }
@@ -2619,57 +2942,69 @@ Replace the `.sendTapped` case with:
                 // and only then the send — a write failure sends nothing (spec §4 errors).
                 let attachmentStore = self.attachmentStore
                 let messageHash = msg.hash.hexString
-                return .run { [database] send in
-                    let path: String
-                    do {
-                        path = try attachmentStore.store(pending.data, messageHash: messageHash,
-                                                         outgoing: true, ext: pending.format)
-                    } catch {
-                        await send(.attachmentFailed(AttachmentPreparation.storeFailed))
-                        return
+                return .merge(
+                    .cancel(id: CancelID.attachmentPreparation),
+                    .run { [database] send in
+                        let path: String
+                        do {
+                            path = try attachmentStore.store(pending.data, messageHash: messageHash,
+                                                             outgoing: true, ext: pending.format)
+                        } catch {
+                            AppFeature.inbound.error("attachment send: store failed for \(String(messageHash.prefix(8)), privacy: .public): \(String(describing: error), privacy: .public)")
+                            await send(.attachmentSendFailed(draft: text))
+                            return
+                        }
+                        let attachment = Attachment(
+                            id: UUID(), messageId: row.id, kind: pending.kind, name: pending.name,
+                            format: pending.format, size: pending.data.count,
+                            width: pending.width, height: pending.height, path: path)
+                        try await database.write { db in
+                            try Message.insert { row }.execute(db)
+                            try Attachment.insert { attachment }.execute(db)
+                        }
+                        await send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation))))
+                        try await reloadThread(database, peerHex, send)
+                        try await reloadConversations(database, send)
                     }
-                    let attachment = Attachment(
-                        id: UUID(), messageId: row.id, kind: pending.kind, name: pending.name,
-                        format: pending.format, size: pending.data.count,
-                        width: pending.width, height: pending.height, path: path)
-                    try await database.write { db in
-                        try Message.insert { row }.execute(db)
-                        try Attachment.insert { attachment }.execute(db)
-                    }
-                    await send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation))))
-                    try await reloadThread(database, peerHex, send)
-                    try await reloadConversations(database, send)
-                }
+                )
 ```
 
 - [ ] **Step 6: Run the new tests**
 
 Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachSend`
-Expected: 11 tests PASS. `attachSendStoreFailureSendsNothing` is exhaustive: if it reports an unexpected state change, match the closure to exactly what `sendTapped` mutates (draft, replyTarget stays nil, pendingAttachment, attachmentError) — do not loosen to `.off`.
+Expected: 12 tests PASS. `attachSendStoreFailureSendsNothing` is exhaustive: if it reports an unexpected state change, match the closure to exactly what `sendTapped` and `attachmentSendFailed` mutate (draft cleared then restored, replyTarget stays nil, pendingAttachment, attachmentError) — do not loosen to `.off`. If `attachSendRemoveCancelsAPendingPreparation` fails with an unhandled `attachmentPrepared`, the preparation is not cancellable — fix the reducer, not the test.
 
-- [ ] **Step 7: Mutation batch**
+- [ ] **Step 7: Mutation batch (five sub-batches)**
 
 Sub-batch A (apply together):
-1. `sendTapped`: `attachmentFields + replyFields` → `replyFields + attachmentFields` → RED `attachSendWithReplyOrdersAttachmentFirst`.
 2. `sendTapped` attachment path: delete `try Attachment.insert { attachment }.execute(db)` → RED `attachSendImageWritesRowsFileAndFields`, `attachSendFileWithNoTextIsAllowed`.
-3. `sendTapped` guard: `!text.isEmpty || pending != nil` → `!text.isEmpty` → RED `attachSendFileWithNoTextIsAllowed`, `attachSendWithReplyOrdersAttachmentFirst` (draft is "" there too). (2 and 3 both redden the file test; 3 is also seen on the reply-order test, which 2 leaves green — no masking.)
-4. `sendTapped` catch: replace `await send(.attachmentFailed(...)); return` with `path = ""` (carry on) → RED `attachSendStoreFailureSendsNothing`.
+3. `sendTapped` guard: `!text.isEmpty || pending != nil` → `!text.isEmpty` → RED `attachSendFileWithNoTextIsAllowed`, `attachSendWithReplyOrdersAttachmentFirst` (draft is "" there too).
 5. `AttachmentSizeNote.note`: swap the two thresholds' messages → RED `attachSendSizeNotesAndFormatting`.
 6. `.attachmentFailed` case: delete `state.attachmentError = reason` → RED `attachSendUndecodableImageFails`.
 7. `sendTapped` guard: delete `!state.attachmentPreparing,` → RED `attachSendGuardsWhilePreparingAndClearsOnClose`.
+10. `prepareEffect`: delete `.cancellable(id: CancelID.attachmentPreparation, cancelInFlight: true)` → RED `attachSendRemoveCancelsAPendingPreparation` (the late `attachmentPrepared` fails the exhaustive probe).
+11. `.attachmentSendFailed` case: delete `state.draft = draft` → RED `attachSendStoreFailureSendsNothing` (the caption is not restored).
+12. `AttachmentPreparation.prepare` file branch: `format: AttachmentWire.fileExtension(name)` → `format: ""` → RED `attachSendPickingAFilePassesThrough` (format "pdf").
+13. `sendTapped` text-only `.run`: after `try Message.insert { row }.execute($0)` add `try Attachment.insert { Attachment(id: UUID(), messageId: row.id, kind: AttachmentKind.file, name: "", format: "", size: 0, width: nil, height: nil, path: "") }.execute($0)` → RED `attachSendTextOnlyLeavesNoAttachmentRow`.
 
-Sub-batch B (alone):
-8. `AttachmentPreparation.prepare`: `original ? .original : .standard` → `.original` → RED `attachSendPickingAnImagePreparesAStandardJPEG` (width 3000), `attachSendOriginalToggleReencodesFromTheSource` (toggle back stays 3000).
+Sub-batch B (alone, after A is reverted and green):
+1. `sendTapped`: `attachmentFields + replyFields` → `replyFields + attachmentFields` → RED `attachSendWithReplyOrdersAttachmentFirst`. Alone: mutation 3 reddens the same test.
 
 Sub-batch C (alone):
-9. `imageName(at:)`: dateFormat → `"'IMG.jpg'"` → RED `attachSendPickingAnImagePreparesAStandardJPEG` (name), `attachSendOriginalToggleReencodesFromTheSource` (name).
+4. `sendTapped` catch: replace the log + `await send(.attachmentSendFailed(draft: text)); return` with `path = ""` (carry on) → RED `attachSendStoreFailureSendsNothing` (a message is sent). Alone: mutation 11 reddens the same test.
+
+Sub-batch D (alone):
+8. `AttachmentPreparation.prepare`: `original ? .original : .standard` → `.original` → RED `attachSendPickingAnImagePreparesAStandardJPEG` (width 1600), `attachSendOriginalToggleReencodesFromTheSource` (toggle back stays 1600).
+
+Sub-batch E (alone):
+9. `imageName(at:)`: dateFormat → `"'IMG.jpg'"` → RED `attachSendPickingAnImagePreparesAStandardJPEG` (name), `attachSendOriginalToggleReencodesFromTheSource` (name). Alone: mutation 8 reddens the same tests.
 
 Revert by hand, check the diff, run again: all PASS.
 
 - [ ] **Step 8: Full suite, commit**
 
 Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t7-full.log 2>&1`
-Expected: all pass; count = Task 6 count + 11. The existing send tests (`deliveryFailedMarksFailedAndReloads`, `replySendAndFetch`-based tests) are unaffected: the text-only path is byte-for-byte the old one.
+Expected: all pass; count = Task 6 count + 12. The existing send tests (`deliveryFailedMarksFailedAndReloads`, `replySendAndFetch`-based tests) are unaffected: the text-only path is the old one plus a `.cancel` effect, which emits no action and changes no state.
 
 Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/PendingAttachment.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
 
@@ -2682,7 +3017,9 @@ The composer prepares a picked item off the main thread (photos become
 1280 px JPEG, with an Original toggle that re-encodes from the source),
 shows size notes, and sendTapped writes the bytes, inserts the message
 and attachment rows in one transaction, then sends with the 0x05/0x06
-field first. A store failure sends nothing and reports it.
+field first. One preparation runs at a time and Remove, leaving the
+thread or Send cancel it. A store failure sends nothing, logs the
+error, reports it inline and gives the caption back.
 
 Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
@@ -2701,7 +3038,7 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 **Interfaces:**
 - Consumes: ReTiCA `LXMFNode.Action.Delegate.deliveryProgress(messageHash:fraction:)`, `.inboundTransferProgress(sourceHash:linkID:fraction:)`, `.propagationRefused(messageHash:reason:)`, `.deliveryRejected`, `.deliveryCancelled`, `LXMFNode.Action.cancelOutbound(messageHash:)`, `TransportEndpoint.Action.Delegate.linkClosed(linkID:reason:)`; T1 `MessageStatus.cancelled`, `FailureReason`, `PropagationRefusal`.
 - Produces: `AppFeature.InboundTransfer { sourceHash: Data?, fraction: Double, updatedAt: Date }`; `State.outgoingProgress: [String: Double]` (by message hash hex, monotonic, cleared by every terminal delivery outcome), `State.inboundTransfers: [Data: InboundTransfer]` (by link ID), computed `inboundTransfersForOpenThread: [InboundTransfer]` (unattributed + attributed to the open peer) and `unattributedInboundTransfers`; `AppFeature.inboundTransferTimeout: Duration = .seconds(60)`; actions `cancelSendTapped(Message.ID)`, `inboundTransferTimedOut(linkID: Data)`; `CancelID.inboundTransfer(Data)`.
-- Semantics (spec §3–§4): `deliveryCancelled` → status `cancelled` + `failureReason = "cancelled"` with the delivered/stored/outgoing guards and the `failedAt` milestone; `deliveryRejected` → `failed` + `"rejected"`; `deliveryFailed` → `failed`, reason nil; `propagationRefused` → `propagationRefused` column on the outgoing row, status untouched; `cancelSendTapped` sends `cancelOutbound` only for an outgoing `.sending` row with a hash; inbound entries clear at fraction ≥ 1, on `linkClosed`, and after 60 s of silence (the timer restarts on every report).
+- Semantics (spec §3–§4): `propagationRefused`'s text is bound as `let text: String?` (the column is optional and the update subscript takes an optional expression, like `milestoneAt: Date?`); `deliveryCancelled` → status `cancelled` + `failureReason = "cancelled"` with the delivered/stored/outgoing guards and the `failedAt` milestone; `deliveryRejected` → `failed` + `"rejected"`; `deliveryFailed` → `failed`, reason nil; `propagationRefused` → `propagationRefused` column on the outgoing row, status untouched; `cancelSendTapped` sends `cancelOutbound` only for an outgoing `.sending` row with a hash; inbound entries clear at fraction ≥ 1, on `linkClosed`, and after 60 s of silence (the timer restarts on every report).
 
 - [ ] **Step 1: `makeStore` accepts a clock; two expectations move to `cancelled`**
 
@@ -2713,7 +3050,20 @@ In `makeStore` add a parameter after `attachmentStore`:
 
 and replace `$0.continuousClock = TestClock()` with `$0.continuousClock = clock ?? TestClock()`.
 
-In `tadCompatDeliveryCancelledMarksFailedAndRecordsFailedAt`, change `#expect(row?.status == MessageStatus.failed)` to `#expect(row?.status == MessageStatus.cancelled)` and rename the test to `tadCompatDeliveryCancelledMarksCancelledAndRecordsFailedAt`; update its doc comment ("must leave sending for cancelled"). In `tadCompatRejectedThenCancelledBothReachTheFailureMarkingCode`, change the final expectation to `#expect(rows["\(shared)/out"]?.status == MessageStatus.cancelled)`. These are the only existing expectations that change (they were written when cancelled shared the failed status).
+In `tadCompatDeliveryCancelledMarksFailedAndRecordsFailedAt`, change `#expect(row?.status == MessageStatus.failed)` to `#expect(row?.status == MessageStatus.cancelled)` and rename the test to `tadCompatDeliveryCancelledMarksCancelledAndRecordsFailedAt`. In `tadCompatRejectedThenCancelledBothReachTheFailureMarkingCode`, change the final expectation to `#expect(rows["\(shared)/out"]?.status == MessageStatus.cancelled)`. These are the only existing expectations that change (they were written when cancelled shared the failed status).
+
+Update the doc comments to match:
+- Above `tadCompatDeliveryRejectedMarksFailedAndRecordsFailedAt`, replace the two lines with:
+  ```swift
+  /// A message the recipient refused will never go out: it must leave "sending" for "failed" and
+  /// record when, exactly like `deliveryFailed`. (A cancelled one leaves it for "cancelled" — next.)
+  ```
+- Above the renamed `tadCompatDeliveryCancelledMarksCancelledAndRecordsFailedAt` (it has none today), add:
+  ```swift
+  /// A message the user cancelled will never go out either: it must leave "sending" for its own
+  /// "cancelled" status and still record `failedAt`, like `deliveryFailed`.
+  ```
+- Above `tadCompatRejectedThenCancelledBothReachTheFailureMarkingCode`, change `the outgoing "sending" row flips to "failed"` to `the outgoing "sending" row flips to "cancelled"`.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -2880,10 +3230,15 @@ private func inbound(_ link: Data, _ fraction: Double, source: Data? = nil) -> A
     let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
     await store.send(inbound(linkL, 0.3))
     await clock.advance(by: .seconds(59))
-    #expect(store.state.inboundTransfers[linkL] != nil)
     await store.send(inbound(linkL, 0.4))          // restarts the 60 s
+    // Exhaustive window: 59 s after the restart (118 s after the first report) nothing may fire.
+    // A timer that was NOT restarted fires at 60 s from the first report, inside this window, and
+    // its `inboundTransferTimedOut` fails the probe. (Under `.off`, a bare `store.state` check here
+    // would assert nothing: state lags until a receive.)
+    store.exhaustivity = .on
     await clock.advance(by: .seconds(59))
-    #expect(store.state.inboundTransfers[linkL] != nil)
+    await store.send(.replyCancelled)              // probe
+    store.exhaustivity = .off
     await clock.advance(by: .seconds(1))
     await store.receive(.inboundTransferTimedOut(linkID: linkL))
     #expect(store.state.inboundTransfers[linkL] == nil)
@@ -3036,7 +3391,9 @@ Add these cases before `case .node, .binding:`:
                 // The propagated copy was never sent; the direct copy decides the message. Recorded
                 // for the Info sheet so "stored" never arriving has an explanation.
                 let hex = hash.hexString
-                let text: String
+                // Optional on purpose: the column is `String?`, and structured-queries' update
+                // subscript takes an optional expression (the `milestoneAt: Date?` pattern).
+                let text: String?
                 switch reason {
                 case .tooLargeForNode: text = PropagationRefusal.tooLargeForNode
                 }
@@ -3100,10 +3457,10 @@ Replace the existing `linkClosed` case with:
 
 - [ ] **Step 7: Run the new tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachTransfer --filter tadCompat --filter publicKey`
-Expected: the 8 new tests PASS, the two edited `tadCompat` tests PASS, and the existing public-key link tests still pass (the `linkClosed` restructure is behaviour-preserving for them).
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachTransfer --filter tadCompat --filter linkClosed --filter PublicKey`
+Expected: the 8 new tests PASS, the two edited `tadCompat` tests PASS, and the existing link-close and public-key tests (`linkClosedMarksInFlightRequestFailed` and the `*PublicKey*` tests — the filter is case-sensitive) still pass (the `linkClosed` restructure is behaviour-preserving for them).
 
-- [ ] **Step 8: Mutation batch**
+- [ ] **Step 8: Mutation batch (six sub-batches)**
 
 Sub-batch A (apply together):
 1. `deliveryProgress`: `max(state.outgoingProgress[hex] ?? 0, clamped)` → `clamped` → RED `attachTransferProgressIsMonotonicAndClearedByEveryTerminal` (0.3 lands).
@@ -3111,19 +3468,25 @@ Sub-batch A (apply together):
 3. `propagationRefused`: `$0.messageHash.eq(hex) && $0.isOutgoing` → `$0.messageHash.eq(hex)` → RED `attachTransferPropagationRefusedRecordsTheReason` (the incoming row is written too).
 4. `cancelSendTapped`: delete `message.status == MessageStatus.sending,` → RED `attachTransferCancelIsIgnoredUnlessSending` (the delivered and failed rows send a cancel).
 5. `inboundTransferProgress`: `if fraction >= 1` → `if fraction >= 2` → RED `attachTransferInboundEntryTracksLinksAndAttribution` (1.0 keeps the entry) and `attachTransferInboundEntryExpiresAfterSilence` (the linkM timer fires).
-6. `inboundTransfersForOpenThread`: `$0.sourceHash == nil || $0.sourceHash == open` → `$0.sourceHash == nil` → RED `attachTransferInboundEntryTracksLinksAndAttribution`.
 
-Sub-batch B (alone):
+Sub-batch B (alone, after A is reverted and green):
+6. `inboundTransfersForOpenThread`: `$0.sourceHash == nil || $0.sourceHash == open` → `$0.sourceHash == nil` → RED `attachTransferInboundEntryTracksLinksAndAttribution`. Not in A: mutation 5 reddens the same test.
+
+Sub-batch C (apply together):
 7. `deliveryCancelled` case: `status: MessageStatus.cancelled` → `MessageStatus.failed` → RED `attachTransferCancelledStatusReasonAndGuards`, `tadCompatDeliveryCancelledMarksCancelledAndRecordsFailedAt`, `tadCompatRejectedThenCancelledBothReachTheFailureMarkingCode`.
+11. `cancelSendTapped`: replace the whole case body with `return .none` → RED `attachTransferCancelSendsCancelOutbound` (no `cancelOutbound` to receive), and nothing else. Not in A: it would make mutation 4 inert. Neither 7 nor 11 touches the other's tests.
 
-Sub-batch C (alone):
-8. `inboundTransferProgress`: remove `.cancellable(id: CancelID.inboundTransfer(linkID), cancelInFlight: true)` → RED `attachTransferInboundEntryExpiresAfterSilence` (the first timer fires at 60 s despite the restart, and the completed linkM's timer fires at the probe).
+Sub-batch D (apply together):
+8. `inboundTransferProgress`: remove `.cancellable(id: CancelID.inboundTransfer(linkID), cancelInFlight: true)` → RED `attachTransferInboundEntryExpiresAfterSilence` (the first timer fires at 60 s inside the exhaustive window, and the completed linkM's timer fires before the final probe).
 9. `linkClosed`: delete the `inboundTransfers.removeValue` block → RED `attachTransferInboundEntryTracksLinksAndAttribution`. (Masked by 5 in A; observed here.)
 
-Sub-batch D (alone):
+Sub-batch E (alone):
 10. `markUndeliverable`: delete `state.outgoingProgress[hex] = nil` and the same line in `deliveryConfirmed` → RED `attachTransferProgressIsMonotonicAndClearedByEveryTerminal`. (Masked by 1 in A; observed here.)
 
-Revert by hand, check the diff, run again: all PASS.
+Sub-batch F (alone):
+12. `inboundTransferProgress`: `.cancellable(id: CancelID.inboundTransfer(linkID), cancelInFlight: true)` → `cancelInFlight: false` → RED `attachTransferInboundEntryExpiresAfterSilence` (the first report's timer is not restarted and fires at t = 60, inside the exhaustive window). This pins "a report restarts the timer" on its own; mutation 8 also removes the completion cancel.
+
+Run A to F in order, reverting and re-greening between them. Revert by hand, check the diff, run again: all PASS.
 
 - [ ] **Step 9: Full suite, commit**
 
@@ -3161,7 +3524,8 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 - Modify: `ConversationListView.swift` (toolbar capsule)
 
 **Interfaces:**
-- Consumes: everything Tasks 1–8 produce through `StoreOf<AppFeature>` (`pendingAttachment`, `attachmentPreparing`, `attachmentError`, `attachmentsByMessageId`, `outgoingProgress`, `inboundTransfersForOpenThread`, `unattributedInboundTransfers`, actions `attachmentPicked`, `attachmentFailed`, `attachmentRemoved`, `attachmentOriginalToggled`, `cancelSendTapped`), `AttachmentStore` via `@Dependency(\.attachmentStore)`, `AttachmentSizeNote`, `AttachmentPlaceholder`, `MessageInfo.sections(for:attachment:)`.
+- Consumes: everything Tasks 1–8 produce through `StoreOf<AppFeature>` (`pendingAttachment`, `attachmentPreparing`, `attachmentError`, `attachmentsByMessageId`, `outgoingProgress`, `inboundTransfersForOpenThread`, `unattributedInboundTransfers`, actions `attachmentPicked`, `attachmentFailed`, `attachmentRemoved`, `attachmentOriginalToggled`, `cancelSendTapped`), `AttachmentStore` via `@Dependency(\.attachmentStore)` (`url(for:)`, and `exportURL(for:)` for the share sheet and QuickLook, falling back to the stored URL on error), `AttachmentSizeNote`, `AttachmentPlaceholder`, `MessageInfo.sections(for:attachment:)`, `ReplyPreview.resolve(for:in:peerName:attachments:)` (passed `store.attachmentsByMessageId`).
+- Decisions carried from the pre-flight rulings: the viewer is a `.fullScreenCover` that ALSO dismisses on a downward drag of more than 120 pt at zoom 1 (spec §4 swipe-down); a file row says "Attachment could not be saved" when `path == ""` and "Attachment unavailable" when the file is missing on disk (checked off the main thread in a `.task`); `fileImporter` reads the bytes in `Task.detached` and hops back to the main actor to call `onPicked`; every picker `catch` logs the error before showing the user text; `ThumbnailCache` has ONE private decode path; the pending preview is keyed `"pending-\(name)-\(size)-\(isOriginal)"` (not `Data.hashValue`, which hashes only the first 80 bytes).
 - Produces: nothing new for the core. No unit tests (views are not unit-tested in this app); verification is the app-target build plus the manual checklist in Step 8.
 
 - [ ] **Step 1: `AttachmentPicker.swift`**
@@ -3177,6 +3541,7 @@ Create `APP/ReTiCaMsgr/AttachmentPicker.swift`:
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import os
 import ReTiCaMsgrCore
 
 /// The paperclip beside the text field: Photo Library (one image) or Document (one file). Reads
@@ -3185,6 +3550,8 @@ import ReTiCaMsgrCore
 struct AttachmentPickerButton: View {
     let onPicked: (PickedItem) -> Void
     let onFailed: (String) -> Void
+
+    private static let log = Logger(subsystem: "com.reticamsgr", category: "attachments")
 
     @State private var photoItem: PhotosPickerItem?
     @State private var showingPhotos = false
@@ -3209,11 +3576,13 @@ struct AttachmentPickerButton: View {
             Task {
                 do {
                     guard let data = try await item.loadTransferable(type: Data.self) else {
+                        Self.log.error("photo pick: loadTransferable returned no data")
                         onFailed("Couldn't read that photo")
                         return
                     }
                     onPicked(PickedItem(kind: AttachmentKind.image, name: "", data: data))
                 } catch {
+                    Self.log.error("photo pick failed: \(String(describing: error), privacy: .public)")
                     onFailed("Couldn't read that photo")
                 }
             }
@@ -3221,15 +3590,24 @@ struct AttachmentPickerButton: View {
         .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item]) { result in
             switch result {
             case let .success(url):
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                do {
-                    let data = try Data(contentsOf: url)
-                    onPicked(PickedItem(kind: AttachmentKind.file, name: url.lastPathComponent, data: data))
-                } catch {
-                    onFailed("Couldn't read that file")
+                // The read happens off the main thread (a document can be large); the Task inherits
+                // the view's main-actor isolation, so `onPicked` / `onFailed` run back on it.
+                Task {
+                    let read = await Task.detached(priority: .userInitiated) { () -> Result<Data, Error> in
+                        let scoped = url.startAccessingSecurityScopedResource()
+                        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                        return Result { try Data(contentsOf: url) }
+                    }.value
+                    switch read {
+                    case let .success(data):
+                        onPicked(PickedItem(kind: AttachmentKind.file, name: url.lastPathComponent, data: data))
+                    case let .failure(error):
+                        Self.log.error("file import read failed: \(String(describing: error), privacy: .public)")
+                        onFailed("Couldn't read that file")
+                    }
                 }
-            case .failure:
+            case let .failure(error):
+                Self.log.error("file import failed: \(String(describing: error), privacy: .public)")
                 onFailed("Couldn't read that file")
             }
         }
@@ -3255,8 +3633,8 @@ import ReTiCaMsgrCore
 // MARK: - Thumbnails
 
 /// Decodes images at a capped pixel size off the main thread and keeps them in memory. Keyed by
-/// attachment id (or the pending bytes' hash) plus the size, so a thumbnail and the viewer's
-/// larger decode of the same file do not collide.
+/// attachment id (or the pending attachment's name, size and preset) plus the size, so a
+/// thumbnail and the viewer's larger decode of the same file do not collide.
 @MainActor
 final class ThumbnailCache {
     static let shared = ThumbnailCache()
@@ -3267,22 +3645,21 @@ final class ThumbnailCache {
     }
 
     func image(for url: URL, key: String, maxPixels: Int) async -> UIImage? {
-        let cacheKey = "\(key)/\(maxPixels)" as NSString
-        if let cached = cache.object(forKey: cacheKey) { return cached }
-        let decoded = await Task.detached(priority: .userInitiated) { () -> UIImage? in
-            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-            return Self.decode(source, maxPixels: maxPixels)
-        }.value
-        if let decoded { cache.setObject(decoded, forKey: cacheKey) }
-        return decoded
+        await image(key: key, maxPixels: maxPixels) { CGImageSourceCreateWithURL(url as CFURL, nil) }
     }
 
     func image(for data: Data, key: String, maxPixels: Int) async -> UIImage? {
+        await image(key: key, maxPixels: maxPixels) { CGImageSourceCreateWithData(data as CFData, nil) }
+    }
+
+    /// The one decode path: cache lookup, then the source is opened and decoded off the main thread.
+    private func image(key: String, maxPixels: Int,
+                       source: @escaping @Sendable () -> CGImageSource?) async -> UIImage? {
         let cacheKey = "\(key)/\(maxPixels)" as NSString
         if let cached = cache.object(forKey: cacheKey) { return cached }
         let decoded = await Task.detached(priority: .userInitiated) { () -> UIImage? in
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-            return Self.decode(source, maxPixels: maxPixels)
+            guard let src = source() else { return nil }
+            return Self.decode(src, maxPixels: maxPixels)
         }.value
         if let decoded { cache.setObject(decoded, forKey: cacheKey) }
         return decoded
@@ -3371,11 +3748,8 @@ struct AttachmentBubbleSlot: View {
                 .buttonStyle(.plain)
                 .disabled(onTapImage == nil || url == nil)
             } else {
-                Button { onTapFile?() } label: {
-                    FileAttachmentRow(attachment: attachment, unavailable: url == nil, onOutgoingBubble: onOutgoingBubble)
-                }
-                .buttonStyle(.plain)
-                .disabled(onTapFile == nil || url == nil)
+                FileAttachmentRow(attachment: attachment, url: url, onOutgoingBubble: onOutgoingBubble,
+                                  onTap: onTapFile)
             }
             if let progress {
                 TransferProgressBar(fraction: progress, onOutgoingBubble: onOutgoingBubble)
@@ -3384,32 +3758,52 @@ struct AttachmentBubbleSlot: View {
     }
 }
 
+/// A file attachment: icon, name, and size — or why it cannot be opened. `url == nil` means the
+/// bytes were never written ("could not be saved"); a URL whose file is gone from disk means they
+/// were removed since ("unavailable"). Either way the row is not tappable.
 struct FileAttachmentRow: View {
     let attachment: Attachment
-    let unavailable: Bool
+    let url: URL?
     let onOutgoingBubble: Bool
+    var onTap: (() -> Void)? = nil
+    @State private var missing = false
+
+    private var status: String {
+        if url == nil { return "Attachment could not be saved" }
+        if missing { return "Attachment unavailable" }
+        return AttachmentSizeNote.formattedSize(attachment.size)
+    }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: unavailable ? "doc.badge.ellipsis" : "doc.fill")
-                .font(.title2)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(attachment.name)
-                    .font(.callout.weight(.medium))
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                Text(unavailable ? "Attachment unavailable" : AttachmentSizeNote.formattedSize(attachment.size))
-                    .font(.caption)
-                    .opacity(0.8)
+        Button { onTap?() } label: {
+            HStack(spacing: 10) {
+                Image(systemName: (url == nil || missing) ? "doc.badge.ellipsis" : "doc.fill")
+                    .font(.title2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(attachment.name)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    Text(status)
+                        .font(.caption)
+                        .opacity(0.8)
+                }
             }
+            .padding(8)
+            // UI rule: the whole row is the tap target.
+            .frame(minWidth: 160, maxWidth: AttachmentThumbnail.maxWidth, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10)
+                .fill(onOutgoingBubble ? Color.white.opacity(0.2) : Color.primary.opacity(0.08)))
+            .contentShape(Rectangle())
         }
-        .padding(8)
-        // UI rule: the whole row is the tap target.
-        .frame(minWidth: 160, maxWidth: AttachmentThumbnail.maxWidth, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10)
-            .fill(onOutgoingBubble ? Color.white.opacity(0.2) : Color.primary.opacity(0.08)))
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .disabled(onTap == nil || url == nil || missing)
         .accessibilityElement(children: .combine)
+        .task(id: attachment.id) {
+            guard let url else { return }
+            let path = url.path()
+            missing = await Task.detached { !FileManager.default.fileExists(atPath: path) }.value
+        }
     }
 }
 
@@ -3472,6 +3866,13 @@ struct AttachmentComposerBar: View {
 
     @State private var preview: UIImage?
 
+    /// The pending preview's cache key: name, size and preset identify one encode (a toggle
+    /// changes the preset, a new pick the name or size). `Data.hashValue` would hash only the
+    /// first 80 bytes, which two JPEGs with the same headers share.
+    private var previewKey: String? {
+        pending.map { "pending-\($0.name)-\($0.size)-\($0.isOriginal)" }
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             previewView
@@ -3509,10 +3910,10 @@ struct AttachmentComposerBar: View {
         .padding(.leading, 16)
         .padding(.trailing, 4)
         .padding(.top, 4)
-        .task(id: pending?.data.count) {
+        .task(id: previewKey) {
             preview = nil
-            guard let pending, pending.isImage else { return }
-            preview = await ThumbnailCache.shared.image(for: pending.data, key: "pending-\(pending.data.hashValue)", maxPixels: 160)
+            guard let pending, pending.isImage, let previewKey else { return }
+            preview = await ThumbnailCache.shared.image(for: pending.data, key: previewKey, maxPixels: 160)
         }
     }
 
@@ -3533,14 +3934,20 @@ struct AttachmentComposerBar: View {
 
 // MARK: - Viewer
 
-/// Full-screen photo: pinch to zoom, share, done. Decodes at most 2048 px on the long edge.
+/// Full-screen photo: pinch to zoom, share, done, or swipe down (at zoom 1) to dismiss. Decodes at
+/// most 2048 px on the long edge. `shareURL` is the copy under the attachment's real name
+/// (`AttachmentStore.exportURL`), or the stored file if that copy failed.
 struct ImageViewerSheet: View {
+    static let dismissDragDistance: CGFloat = 120
+
     let attachment: Attachment
     let url: URL
+    let shareURL: URL
     @Environment(\.dismiss) private var dismiss
     @State private var image: UIImage?
     @State private var zoom: CGFloat = 1
     @State private var lastZoom: CGFloat = 1
+    @State private var dragOffset: CGFloat = 0
 
     var body: some View {
         NavigationStack {
@@ -3553,9 +3960,24 @@ struct ImageViewerSheet: View {
                             .scaledToFit()
                             .frame(width: UIScreen.main.bounds.width * zoom)
                     }
+                    .offset(y: dragOffset)
                     .gesture(MagnifyGesture()
                         .onChanged { value in zoom = min(max(lastZoom * value.magnification, 1), 5) }
                         .onEnded { _ in lastZoom = zoom })
+                    // Spec §4: swipe down to dismiss — only at zoom 1, where a drag is not a pan.
+                    .simultaneousGesture(DragGesture()
+                        .onChanged { value in
+                            guard zoom == 1 else { return }
+                            dragOffset = max(value.translation.height, 0)
+                        }
+                        .onEnded { value in
+                            guard zoom == 1 else { return }
+                            if value.translation.height > Self.dismissDragDistance {
+                                dismiss()
+                            } else {
+                                withAnimation(.spring) { dragOffset = 0 }
+                            }
+                        })
                 } else {
                     ProgressView().tint(.white)
                 }
@@ -3563,7 +3985,7 @@ struct ImageViewerSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    ShareLink(item: url, preview: SharePreview(attachment.name))
+                    ShareLink(item: shareURL, preview: SharePreview(attachment.name))
                 }
             }
             .toolbarBackground(.visible, for: .navigationBar)
@@ -3591,10 +4013,13 @@ Replace the whole file with:
 import SwiftUI
 import UIKit
 import QuickLook
+import os
 import ComposableArchitecture
 import ReTiCaMsgrCore
 
 struct ChatView: View {
+    private static let log = Logger(subsystem: "com.reticamsgr", category: "attachments")
+
     @Bindable var store: StoreOf<AppFeature>
     @Dependency(\.attachmentStore) private var attachmentStore
     @State private var pickerTarget: PickerTarget?
@@ -3628,7 +4053,9 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 List(store.threadMessages) { message in
                     let reactions = store.threadReactions[message.messageHash] ?? []
-                    let replyPreview = ReplyPreview.resolve(for: message, in: store.threadMessages, peerName: peerName)
+                    // A reply to a caption-less photo or file in the thread quotes its placeholder.
+                    let replyPreview = ReplyPreview.resolve(for: message, in: store.threadMessages, peerName: peerName,
+                                                            attachments: store.attachmentsByMessageId)
                     let attachment = store.attachmentsByMessageId[message.id]
                     let progress = message.isOutgoing && message.status == MessageStatus.sending
                         ? store.outgoingProgress[message.messageHash] : nil
@@ -3641,8 +4068,10 @@ struct ChatView: View {
                         progress: attachment != nil ? progress : nil,
                         isHighlighted: highlightedMessageID == message.id,
                         onQuoteTap: { showOriginal($0, proxy: proxy) },
-                        onImageTap: { a, url in viewerTarget = ViewerTarget(attachment: a, url: url) },
-                        onFileTap: { url in quickLookURL = url }
+                        onImageTap: { a, url in
+                            viewerTarget = ViewerTarget(attachment: a, url: url, shareURL: shareableURL(for: a, stored: url))
+                        },
+                        onFileTap: { a, url in quickLookURL = shareableURL(for: a, stored: url) }
                     )
                     .id(message.id)
                     .listRowSeparator(.hidden)
@@ -3736,9 +4165,21 @@ struct ChatView: View {
             }
         }
         .fullScreenCover(item: $viewerTarget) { target in
-            ImageViewerSheet(attachment: target.attachment, url: target.url)
+            ImageViewerSheet(attachment: target.attachment, url: target.url, shareURL: target.shareURL)
         }
         .quickLookPreview($quickLookURL)
+    }
+
+    /// The bytes under the attachment's real name for QuickLook and the share sheet, so "save to
+    /// Files" writes `Trail map.pdf`, not `<hash>-in.pdf`. Falls back to the stored file (and logs)
+    /// if the copy fails.
+    private func shareableURL(for attachment: Attachment, stored: URL) -> URL {
+        do {
+            return try attachmentStore.exportURL(for: attachment)
+        } catch {
+            Self.log.error("attachment export failed: \(String(describing: error), privacy: .public)")
+            return stored
+        }
     }
 
     /// Scroll the original to the middle of the list, outline it, then fade the outline over ~1 s.
@@ -3767,6 +4208,8 @@ private struct InfoTarget: Identifiable {
 private struct ViewerTarget: Identifiable {
     let attachment: Attachment
     let url: URL
+    /// What the share button hands over: the real-name copy, or `url` if the copy failed.
+    let shareURL: URL
     var id: UUID { attachment.id }
 }
 
@@ -3780,7 +4223,7 @@ struct MessageBubble: View {
     var isHighlighted = false
     var onQuoteTap: ((Message.ID) -> Void)? = nil
     var onImageTap: ((Attachment, URL) -> Void)? = nil
-    var onFileTap: ((URL) -> Void)? = nil
+    var onFileTap: ((Attachment, URL) -> Void)? = nil
 
     var body: some View {
         HStack {
@@ -3823,7 +4266,7 @@ struct BubbleText: View {
     var progress: Double? = nil
     var onQuoteTap: ((Message.ID) -> Void)? = nil
     var onImageTap: ((Attachment, URL) -> Void)? = nil
-    var onFileTap: ((URL) -> Void)? = nil
+    var onFileTap: ((Attachment, URL) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -3837,7 +4280,7 @@ struct BubbleText: View {
                     progress: progress,
                     onOutgoingBubble: message.isOutgoing,
                     onTapImage: (onImageTap != nil && attachmentURL != nil) ? { onImageTap?(attachment, attachmentURL!) } : nil,
-                    onTapFile: (onFileTap != nil && attachmentURL != nil) ? { onFileTap?(attachmentURL!) } : nil
+                    onTapFile: (onFileTap != nil && attachmentURL != nil) ? { onFileTap?(attachment, attachmentURL!) } : nil
                 )
             }
             if !message.body.isEmpty || attachment == nil {
@@ -3918,7 +4361,9 @@ Expected: same count and result as Task 8 (no core files changed).
 - Pick a photo → bar shows thumbnail, `IMG_….jpg · N KB`, Original toggle; Send enabled with an empty draft.
 - Toggle Original → size grows, note appears when over 256 KB / 1 MB.
 - Send → bubble shows the thumbnail, then a progress bar while `sending`; long-press → Cancel Send → status `cancelled`.
-- Pick a document → file row; send; tap the row on the receiving side → QuickLook with share.
+- Pick a document → file row; send; tap the row on the receiving side → QuickLook with share; "Save to Files" offers the real name (`Trail map.pdf`), not the hash.
+- Open a photo → pinch zooms; at zoom 1 a downward swipe of more than ~120 pt dismisses, a shorter one springs back; Share offers `IMG_….jpg` / `image.jpeg`.
+- Reply to a caption-less photo → the reply bubble's quote block says `📷 Photo`.
 - Info on an attachment message → Attachment section present.
 - A Sideband peer's WebP renders; an unknown format shows as a file row.
 
@@ -3937,7 +4382,8 @@ feat: attachment composer, bubbles, viewer, QuickLook and progress
 A paperclip menu picks a photo or a document, the attachment bar shows
 the pending item with size notes and an Original toggle, bubbles show
 thumbnails or file rows with a progress bar while sending, a tap opens
-the photo viewer or QuickLook, Cancel Send sits in the context menu,
+the photo viewer (swipe down to dismiss) or QuickLook with the real
+file name for sharing, Cancel Send sits in the context menu,
 a Receiving capsule tracks inbound transfers, and the Info sheet gets
 the attachment section.
 
@@ -3958,11 +4404,20 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 2. A store write failure on RECEIVE inserts the attachment row with `path == ""` (spec: "attachment dropped with a bubble note") — the row is what carries the note and the Info sheet's "Stored: No"; nothing else is stored.
 3. `PickedItem` is read by the view (security-scoped URLs), not by the reducer — the spec's "`.attachmentPicked` reads the bytes" is split into view read + reducer prepare, keeping the core free of PhotosUI.
 4. Generated photo names use UTC so tests are deterministic and the name is the same wherever the phone is.
-5. `propagationProgress` is deliberately not handled (falls into the catch-all) — the spec says the direct copy's progress is what the user waits for.
-6. The reply quote for an attachment message is built from `AttachmentPlaceholder.preview` at `replyTapped` time (the composer bar and the wire quote then agree), not at display time.
+5. `propagationProgress` is not handled (falls into the catch-all), as the spec says: the direct copy's progress is what the user waits for. (Listed for completeness; not a departure.)
+6. The reply quote for an attachment message is built from `AttachmentPlaceholder.preview` at `replyTapped` time (the composer bar and the wire quote then agree); the thread's quote block for a reply whose original is IN the thread resolves the same placeholder at display time (`ReplyPreview.resolve(…attachments:)`, Task 5).
+7. **File protection (spec §1 amended):** `AttachmentStore` writes with `.completeFileProtectionUntilFirstUserAuthentication` — the same class as the SQLite file — not complete protection. BLE runs in the background, and under complete protection an attachment received while the phone is locked could not be written (every such receive would end as "could not be saved"). The cost: attachment bytes are readable while locked after the first unlock, exactly like the database today.
+8. **Send-side store failure (P12 a):** the spec asks for an alert "Couldn't save attachment"; the plan shows `storeFailed` inline in the attachment bar (no alert plumbing) and `attachmentSendFailed(draft:)` puts the caption back in the draft. The attachment itself must be picked again.
+9. **Viewer dismissal (P12 b):** the viewer stays a `.fullScreenCover` (black, edge to edge) and gains the spec's swipe-down: a downward drag of more than 120 pt at zoom 1 dismisses it.
+10. **File-row wording (P12 c):** `path == ""` says "Attachment could not be saved"; a row whose file is missing on disk (checked off the main thread) says "Attachment unavailable". Both are untappable.
+11. **`fileImporter` off the main thread (P12 d):** the bytes are read in `Task.detached`, then `onPicked` runs back on the main actor, as the spec's "off the main thread" asks.
+12. **Dropped entries logged (P12 e):** `AttachmentWire.Decoded.droppedFileCount` counts the 0x05 entries left out (beyond the first, or all of them when an image wins); `AppFeature` logs `inbound.notice` when it is > 0.
+13. **`AttachmentStore` API (P12 f):** `url(for:)` returns `URL?` (nil for a row with no bytes) and `delete` takes a relative path, where the spec says `url(for:) -> URL` and `delete(_ attachment:)`; the spec is amended to match. `exportURL(for:)` is added for sharing under the real name.
+
+**Pre-flight rubric items addressed:** no verbatim duplicates remain — the two prepare `.run` blocks are one `prepareEffect` (which also makes the preparation cancellable), `ThumbnailCache` has one private decode path, and `Attachment.byMessageId(_:)` replaces the two dictionary builds; no swallowed errors — the send `catch` and every picker/export `catch` log the error before showing user text, and `encodingFailed` has its own message ("Couldn't encode that image"); the pending preview no longer keys on `Data.hashValue`; every new test is turned red by at least one mutation in its task, and no mutation is masked by another in its sub-batch; no tuple `#expect`s; the `Testing.Attachment` ambiguity is handled by a per-file typealias (Global Constraints).
 
 **Placeholder scan:** none — every code step carries the code. The only open-ended instructions are Task 4 Step 5's ImageIO rounding note and Task 9 Step 6's compile-fix latitude, both bounded.
 
-**Type consistency:** `Attachment(id:messageId:kind:name:format:size:width:height:path:)`, `AttachmentStore.store(_:messageHash:outgoing:ext:)`, `AttachmentWire.encodeImage(_:)`/`encodeFile(name:data:)`/`decode(_:)`, `ImageEncoder.encodeJPEG(_:preset:)`/`dimensions(of:)`, `AttachmentPlaceholder.preview(body:attachment:)`, `MessageInfo.sections(for:attachment:timeZone:)`, `Conversation.list(from:attachments:)`, `PickedItem(kind:name:data:)`, `PendingAttachment(kind:name:format:data:width:height:originalSource:isOriginal:)`, `AttachmentPreparation.prepare(_:original:now:)`, `AppFeature.InboundTransfer(sourceHash:fraction:updatedAt:)`, actions `attachmentPicked`/`attachmentPrepared`/`attachmentFailed`/`attachmentRemoved`/`attachmentOriginalToggled`/`cancelSendTapped`/`inboundTransferTimedOut(linkID:)`, `threadLoaded(_:reactions:attachments:)` are spelled the same in every task that defines or uses them.
+**Type consistency:** `Attachment(id:messageId:kind:name:format:size:width:height:path:)`, `Attachment.byMessageId(_:)`, `AttachmentStore.store(_:messageHash:outgoing:ext:)`, `AttachmentStore.exportURL(for:)`, `AttachmentWire.Decoded(kind:name:format:data:droppedFileCount:)`, `ReplyPreview.resolve(for:in:peerName:attachments:)`, action `attachmentSendFailed(draft:)`, `AttachmentWire.encodeImage(_:)`/`encodeFile(name:data:)`/`decode(_:)`, `ImageEncoder.encodeJPEG(_:preset:)`/`dimensions(of:)`, `AttachmentPlaceholder.preview(body:attachment:)`, `MessageInfo.sections(for:attachment:timeZone:)`, `Conversation.list(from:attachments:)`, `PickedItem(kind:name:data:)`, `PendingAttachment(kind:name:format:data:width:height:originalSource:isOriginal:)`, `AttachmentPreparation.prepare(_:original:now:)`, `AppFeature.InboundTransfer(sourceHash:fraction:updatedAt:)`, actions `attachmentPicked`/`attachmentPrepared`/`attachmentFailed`/`attachmentRemoved`/`attachmentOriginalToggled`/`cancelSendTapped`/`inboundTransferTimedOut(linkID:)`, `threadLoaded(_:reactions:attachments:)` are spelled the same in every task that defines or uses them.
 
 **Review Focus:** all eight lines are pinned by named tests in Tasks 2, 3, 4, 6, 8 (see the Review Focus section); none is left to the views.
