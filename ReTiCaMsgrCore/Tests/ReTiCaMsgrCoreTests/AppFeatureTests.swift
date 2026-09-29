@@ -8,11 +8,14 @@ import ReTiCAInterfaces
 import ReTiCANode
 import ReTiCATransport
 @testable import ReTiCaMsgrCore
+// `Testing` exports its own `Attachment`; this file means the model.
+import struct ReTiCaMsgrCore.Attachment
 
 // MARK: - Helpers
 
 @MainActor
 private func makeStore(_ db: any DatabaseWriter, identity: Identity,
+                       attachmentStore: AttachmentStore? = nil,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity)
     configure?(&initial)
@@ -20,6 +23,7 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
         AppFeature()
     } withDependencies: {
         $0.defaultDatabase = db
+        $0.attachmentStore = attachmentStore ?? AttachmentStore.testValue
         $0.date = .constant(Date(timeIntervalSince1970: 1700000000))
         // transportDate drives Transport's internal clock (learnedAt comparisons in
         // rehydrateLearnedDestinations). Set equal to \.date so a row with learnedAt = testNow
@@ -2833,4 +2837,147 @@ private let replyOriginalHash = Data((0..<32).map { UInt8(($0 * 37 + 11) & 0xFF)
     await store.skipReceivedActions(strict: false)
     let rows = await rowsByHashAndDirection(db)
     #expect(rows["\(shared)/out"]?.status == MessageStatus.failed)
+}
+
+// MARK: - Attachments: receiving (spec 2026-09-28 §4)
+
+private func attachTempStore() -> AttachmentStore {
+    AttachmentStore(baseDirectory: FileManager.default.temporaryDirectory
+        .appending(path: "attachReceive-\(UUID().uuidString)"))
+}
+
+/// Deliver one message and return the stored message rows and attachment rows.
+@MainActor
+private func attachReceiveAndFetch(_ m: LXMessage, me: Identity, store attachmentStore: AttachmentStore)
+    async throws -> (messages: [Message], attachments: [Attachment], state: AppFeature.State) {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: me, attachmentStore: attachmentStore) { s in
+        s.openPeerHex = nil
+    }
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .direct)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let messages = try await db.read { try Message.all.fetchAll($0) }
+    let attachments = try await db.read { try Attachment.all.fetchAll($0) }
+    return (messages, attachments, store.state)
+}
+
+@MainActor @Test func attachReceiveStoresAnImageOnDiskAndInTheTable() async throws {
+    let me = Identity()
+    let files = attachTempStore()
+    let png = TestImages.png(width: 640, height: 480)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "look",
+                        fields: [.init(0x06, .array([.string("png"), .bin(png)]))])
+    let (messages, attachments, _) = try await attachReceiveAndFetch(m, me: me, store: files)
+    let row = try #require(messages.first)
+    #expect(row.body == "look")
+    #expect(row.fieldKeys == "0x06")
+    let a = try #require(attachments.first)
+    #expect(a.messageId == row.id)
+    #expect(a.kind == "image")
+    #expect(a.name == "image.png")
+    #expect(a.format == "png")
+    #expect(a.size == png.count)
+    #expect(a.width == 640)
+    #expect(a.height == 480)
+    #expect(a.path == "\(m.hash.hexString)-in.png")
+    #expect(try Data(contentsOf: files.url(forRelativePath: a.path)) == png)
+}
+
+@MainActor @Test func attachReceiveStoresAFileWithAnEmptyCaption() async throws {
+    let me = Identity()
+    let files = attachTempStore()
+    let pdf = Data("%PDF-1.4 fake".utf8)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "",
+                        fields: [.init(0x05, .array([.array([.string("Trail map.pdf"), .bin(pdf)])]))])
+    let (messages, attachments, _) = try await attachReceiveAndFetch(m, me: me, store: files)
+    #expect(messages.first?.body == "")
+    let a = try #require(attachments.first)
+    #expect(a.kind == "file")
+    #expect(a.name == "Trail map.pdf")
+    #expect(a.format == "pdf")
+    #expect(a.width == nil && a.height == nil)
+    #expect(a.path == "\(m.hash.hexString)-in.pdf")
+    #expect(try Data(contentsOf: files.url(forRelativePath: a.path)) == pdf)
+}
+
+/// Review Focus 3: a bad field never loses the message.
+@MainActor @Test func attachReceiveMalformedFieldKeepsTheText() async throws {
+    let me = Identity()
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "still here",
+                        fields: [.init(0x06, .array([.string("jpeg")]))])   // one element: malformed
+    let (messages, attachments, _) = try await attachReceiveAndFetch(m, me: me, store: attachTempStore())
+    #expect(messages.count == 1)
+    #expect(messages.first?.body == "still here")
+    #expect(messages.first?.fieldKeys == "0x06")
+    #expect(attachments.isEmpty)
+}
+
+/// An image the decoder cannot read (a jpeg field carrying junk) is kept as a file row, so the
+/// bytes can still be opened or shared.
+@MainActor @Test func attachReceiveUndecodableImageBecomesAFile() async throws {
+    let me = Identity()
+    let junk = Data("not really a jpeg".utf8)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "",
+                        fields: [.init(0x06, .array([.string("jpeg"), .bin(junk)]))])
+    let (_, attachments, _) = try await attachReceiveAndFetch(m, me: me, store: attachTempStore())
+    let a = try #require(attachments.first)
+    #expect(a.kind == "file")
+    #expect(a.name == "image.jpeg")
+    #expect(a.format == "jpeg")
+    #expect(a.width == nil)
+}
+
+/// Review Focus 4: a store that cannot write keeps the message and marks the bytes unavailable.
+@MainActor @Test func attachReceiveStoreFailureKeepsTheMessageWithoutBytes() async throws {
+    let me = Identity()
+    let blocker = FileManager.default.temporaryDirectory.appending(path: "attachReceiveBlocker-\(UUID().uuidString)")
+    try Data([0]).write(to: blocker)
+    let broken = AttachmentStore(baseDirectory: blocker.appending(path: "Attachments"))
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "photo!",
+                        fields: [.init(0x06, .array([.string("png"), .bin(TestImages.png(width: 8, height: 8))]))])
+    let (messages, attachments, _) = try await attachReceiveAndFetch(m, me: me, store: broken)
+    #expect(messages.first?.body == "photo!")
+    let a = try #require(attachments.first)
+    #expect(a.kind == "image")
+    #expect(a.path == "")
+    #expect(!a.hasBytes)
+    #expect(a.width == 8)
+}
+
+@MainActor @Test func attachReceiveThreadLoadExposesAttachmentsByMessageId() async throws {
+    let me = Identity()
+    let sender = Identity()
+    let files = attachTempStore()
+    let db = try! AppDatabase.makeInMemory()
+    let peerHex = LXMessage.deliveryHash(identityHash: sender.hash).hexString
+    let store = makeStore(db, identity: me, attachmentStore: files) { s in s.openPeerHex = peerHex }
+    let m = wireMessage(from: sender, to: me, at: 1699999900, content: "",
+                        fields: [.init(0x05, .array([.array([.string("a.txt"), .bin(Data("x".utf8))])]))])
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .direct)))))
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    let row = try #require(store.state.threadMessages.first)
+    let a = try #require(store.state.attachmentsByMessageId[row.id])
+    #expect(a.name == "a.txt")
+    // The conversation preview shows the placeholder for the empty caption.
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.conversations.first?.lastBody == "📎 a.txt")
+    // Closing the conversation clears the map.
+    await store.send(.closeConversation)
+    #expect(store.state.attachmentsByMessageId.isEmpty)
+}
+
+/// A reply to a photo quotes the placeholder, not an empty line.
+@MainActor @Test func attachReceiveReplyToAPhotoQuotesThePlaceholder() async {
+    let hash = String(repeating: "7a", count: 32)
+    let original = msg(1, peerA, "", 1000, outgoing: false, status: MessageStatus.received, hash: hash)
+    let photo = Attachment(id: UUID(), messageId: original.id, kind: AttachmentKind.image, name: "image.jpeg",
+                           format: "jpeg", size: 10, width: 4, height: 4, path: "x")
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.threadMessages = [original]
+        s.attachmentsByMessageId = [original.id: photo]
+    }
+    await store.send(.replyTapped(uuid(1)))
+    #expect(store.state.replyTarget == AppFeature.ReplyTarget(messageHash: hash, body: "📷 Photo", isOutgoing: false))
 }

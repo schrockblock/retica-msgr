@@ -81,6 +81,8 @@ public struct AppFeature {
         public var threadReactionRows: [Reaction] = []
         /// Badge data keyed by message hash hex. Derived from `threadReactionRows`.
         public var threadReactions: [String: [ReactionSummary.Item]] = [:]
+        /// The open thread's attachments by message id, loaded with the thread. Session-only.
+        public var attachmentsByMessageId: [UUID: Attachment] = [:]
         // Peers with a known path (from pathLearned); gates Send in the UI. Session-only.
         public var reachablePeers: Set<String> = []
         // In-flight / settled public-key requests, keyed by the peer's delivery-destination hash hex.
@@ -176,7 +178,7 @@ public struct AppFeature {
         case announceRowTapped(destinationHashHex: String)
         case sendTapped
         case conversationsLoaded([Conversation])
-        case threadLoaded([Message], reactions: [Reaction] = [])
+        case threadLoaded([Message], reactions: [Reaction] = [], attachments: [Attachment] = [])
         case reactionSelected(messageHash: String, emoji: String)
         /// Long-press → Reply. Ignored for a hashless message or one no longer in the thread.
         case replyTapped(Message.ID)
@@ -215,6 +217,7 @@ public struct AppFeature {
     @Dependency(\.defaultDatabase) var database
     @Dependency(\.date) var date
     @Dependency(\.continuousClock) var clock
+    @Dependency(\.attachmentStore) var attachmentStore
 
     /// Path expiry for pruning `learnedDestinationRows`, taken from the library rather than copied.
     ///
@@ -512,6 +515,7 @@ public struct AppFeature {
                 state.openPeerHex = nil
                 state.threadMessages = []
                 state.setThreadReactionRows([])
+                state.attachmentsByMessageId = [:]
                 state.draft = ""
                 state.replyTarget = nil
                 return .none
@@ -627,7 +631,10 @@ public struct AppFeature {
                 guard let message = state.threadMessages.first(where: { $0.id == id }),
                       !message.messageHash.isEmpty else { return .none }
                 state.replyTarget = ReplyTarget(
-                    messageHash: message.messageHash, body: message.body, isOutgoing: message.isOutgoing)
+                    messageHash: message.messageHash,
+                    body: AttachmentPlaceholder.preview(body: message.body,
+                                                        attachment: state.attachmentsByMessageId[message.id]),
+                    isOutgoing: message.isOutgoing)
                 return .none
 
             case .replyCancelled:
@@ -739,6 +746,15 @@ public struct AppFeature {
                 // Standard LXMF reply fields (0x30 / 0x31). Only an ordinary message gets here: a
                 // reaction that also carries reply fields was handled above, reply fields ignored.
                 let reply = ReplyWire.decode(m.fields)
+                // Standard LXMF attachment fields (0x05 / 0x06). Decoded here, written inside the
+                // effect: the bytes go to disk first, then the message and attachment rows land in
+                // one transaction. A field that does not decode leaves an ordinary text message.
+                let decodedAttachment = AttachmentWire.decode(m.fields)
+                if let dropped = decodedAttachment?.droppedFileCount, dropped > 0 {
+                    // Spec §2: one attachment per message is kept; say what was left out.
+                    AppFeature.inbound.notice("attachment: kept one, dropped \(dropped, privacy: .public) other file entries from \(String(m.hash.hexString.prefix(8)), privacy: .public)")
+                }
+                let attachmentStore = self.attachmentStore
                 let row = Message(
                     id: UUID(),
                     peerHex: incomingPeer,
@@ -759,8 +775,33 @@ public struct AppFeature {
                     replyQuote: reply?.quote
                 )
                 return .run { [database] send in
+                    var pendingAttachmentRow: Attachment? = nil
+                    if let decoded = decodedAttachment {
+                        // An image ImageIO cannot read is kept as a file so it can still be shared.
+                        let dims = decoded.kind == AttachmentKind.image ? ImageEncoder.dimensions(of: decoded.data) : nil
+                        let kind = (decoded.kind == AttachmentKind.image && dims == nil) ? AttachmentKind.file : decoded.kind
+                        // Review Focus 4: a failed write keeps the row with no bytes (path "").
+                        let path: String
+                        do {
+                            path = try attachmentStore.store(decoded.data, messageHash: seenHashHex,
+                                                             outgoing: false, ext: decoded.format)
+                        } catch {
+                            AppFeature.inbound.error("attachment write failed for \(seenHashHex.prefix(8), privacy: .public): \(String(describing: error), privacy: .public)")
+                            path = ""
+                        }
+                        pendingAttachmentRow = Attachment(
+                            id: UUID(), messageId: row.id, kind: kind, name: decoded.name,
+                            format: decoded.format, size: decoded.data.count,
+                            width: dims?.width, height: dims?.height, path: path)
+                    }
+                    // A `let` copy so an escaping `@Sendable` closure captures a value, not the
+                    // mutable var above.
+                    let attachmentRow = pendingAttachmentRow
                     try await database.write { db in
                         try Message.insert { row }.execute(db)
+                        if let attachmentRow {
+                            try Attachment.insert { attachmentRow }.execute(db)
+                        }
                         // Persist the seen hash so a cold start doesn't re-deliver this message.
                         // Upsert: replace any existing row for the same hash (a duplicate from a
                         // previous session should already be in seen, but a re-deliver would be
@@ -818,10 +859,11 @@ public struct AppFeature {
                 state.conversations = rows
                 return .none
 
-            case let .threadLoaded(rows, reactions):
+            case let .threadLoaded(rows, reactions, attachments):
                 state.threadMessages = rows
                 let allowed: Set<String> = [state.myAddressHex, state.openPeerHex ?? ""]
                 state.setThreadReactionRows(reactions.filter { allowed.contains($0.reactorHex) })
+                state.attachmentsByMessageId = Attachment.byMessageId(attachments)
                 return .none
 
             case let .setNodeMode(enabled):
@@ -1122,18 +1164,27 @@ private func seedReachablePeers(_ state: inout AppFeature.State,
 
 // Reload helpers (file-scope free functions — no self capture in @Sendable effects).
 private func reloadConversations(_ database: any DatabaseWriter, _ send: Send<AppFeature.Action>) async throws {
-    let all = try await database.read { try Message.fetchAll($0) }
-    await send(.conversationsLoaded(Conversation.list(from: all)))
+    let (all, attachments) = try await database.read { db -> ([Message], [Attachment]) in
+        let all = try Message.fetchAll(db)
+        // Only a message with no text needs its attachment for the preview placeholder.
+        let ids = all.filter { $0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.map(\.id)
+        let attachments = ids.isEmpty ? [] : try Attachment.where { $0.messageId.in(ids) }.fetchAll(db)
+        return (all, attachments)
+    }
+    let byMessage = Attachment.byMessageId(attachments)
+    await send(.conversationsLoaded(Conversation.list(from: all, attachments: byMessage)))
 }
 
 private func reloadThread(_ database: any DatabaseWriter, _ peerHex: String, _ send: Send<AppFeature.Action>) async throws {
-    let (rows, reactions) = try await database.read { db in
+    let (rows, reactions, attachments) = try await database.read { db -> ([Message], [Reaction], [Attachment]) in
         let rows = try Message.where { $0.peerHex.eq(peerHex) }.order(by: \.timestamp).fetchAll(db)
         let hashes = rows.map(\.messageHash).filter { !$0.isEmpty }
         let reactions = hashes.isEmpty ? [] : try Reaction.where { $0.messageHash.in(hashes) }.fetchAll(db)
-        return (rows, reactions)
+        let ids = rows.map(\.id)
+        let attachments = ids.isEmpty ? [] : try Attachment.where { $0.messageId.in(ids) }.fetchAll(db)
+        return (rows, reactions, attachments)
     }
-    await send(.threadLoaded(rows, reactions: reactions))
+    await send(.threadLoaded(rows, reactions: reactions, attachments: attachments))
 }
 
 /// Persist the full `learned` snapshot to `learnedDestinationRows`, replacing the table atomically.
