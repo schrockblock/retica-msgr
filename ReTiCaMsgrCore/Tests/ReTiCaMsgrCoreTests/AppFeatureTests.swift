@@ -16,6 +16,9 @@ import struct ReTiCaMsgrCore.Attachment
 @MainActor
 private func makeStore(_ db: any DatabaseWriter, identity: Identity,
                        attachmentStore: AttachmentStore? = nil,
+                       // Task 8 also adds this parameter for its own tests; left here once
+                       // rather than re-added there.
+                       clock: TestClock<Duration>? = nil,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity)
     configure?(&initial)
@@ -30,7 +33,7 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
         // is neither "in the future" nor expired from Transport's perspective.
         $0.transportDate = .constant(Date(timeIntervalSince1970: 1700000000))
         $0.uuid = .incrementing
-        $0.continuousClock = TestClock()
+        $0.continuousClock = clock ?? TestClock()
         $0.tcpConnection = TCPConnection(
             open: { _, _ in AsyncStream { _ in } },
             send: { _ in },
@@ -3000,9 +3003,11 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 }
 
 @MainActor @Test func attachSendPickingAnImagePreparesAStandardJPEG() async {
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    let clock = TestClock()
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
     await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG)))
     #expect(store.state.attachmentPreparing)
+    await clock.advance(by: .milliseconds(1))
     await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
     let p = try! #require(store.state.pendingAttachment)
     #expect(p.kind == "image")
@@ -3018,17 +3023,21 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 }
 
 @MainActor @Test func attachSendOriginalToggleReencodesFromTheSource() async {
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    let clock = TestClock()
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
     await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG)))
+    await clock.advance(by: .milliseconds(1))
     await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
     await store.send(.attachmentOriginalToggled(true))
     #expect(store.state.attachmentPreparing)
+    await clock.advance(by: .milliseconds(1))
     await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
     #expect(store.state.pendingAttachment?.width == 1600)
     #expect(store.state.pendingAttachment?.height == 1200)
     #expect(store.state.pendingAttachment?.isOriginal == true)
     #expect(store.state.pendingAttachment?.name == "IMG_20231114_221320.jpg")   // the name is kept
     await store.send(.attachmentOriginalToggled(false))
+    await clock.advance(by: .milliseconds(1))
     await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
     #expect(store.state.pendingAttachment?.width == 1280)
     #expect(store.state.pendingAttachment?.height == 960)
@@ -3044,9 +3053,11 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 }
 
 @MainActor @Test func attachSendPickingAFilePassesThrough() async {
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    let clock = TestClock()
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
     let bytes = Data("%PDF fake".utf8)
     await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.file, name: "Trail map.pdf", data: bytes)))
+    await clock.advance(by: .milliseconds(1))
     await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
     let p = try! #require(store.state.pendingAttachment)
     #expect(p.kind == "file")
@@ -3061,9 +3072,13 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 /// A late preparation result must not resurrect an attachment the user removed: Remove cancels
 /// the encode in flight.
 @MainActor @Test func attachSendRemoveCancelsAPendingPreparation() async {
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    let clock = TestClock()
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
     await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG)))
     await store.send(.attachmentRemoved)
+    // Only now does the preparation's `clock.sleep` checkpoint resolve — deterministically AFTER
+    // Remove's `.cancel(id:)` already ran, so a correctly-cancelled effect never wakes at all.
+    await clock.advance(by: .milliseconds(1))
     // Exhaustive from here: once every effect has finished, a late `attachmentPrepared` would be
     // an unhandled received action and the probe send fails.
     store.exhaustivity = .on
@@ -3074,11 +3089,13 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 }
 
 @MainActor @Test func attachSendUndecodableImageFails() async {
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+    let clock = TestClock()
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in
         s.pendingAttachment = pendingFile()   // replaced by the new pick, even when it fails
     }
     await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: Data("junk".utf8))))
     #expect(store.state.pendingAttachment == nil)
+    await clock.advance(by: .milliseconds(1))
     await store.receive(.attachmentFailed(AttachmentPreparation.undecodableImage))
     #expect(store.state.attachmentError == AttachmentPreparation.undecodableImage)
     #expect(!store.state.attachmentPreparing)

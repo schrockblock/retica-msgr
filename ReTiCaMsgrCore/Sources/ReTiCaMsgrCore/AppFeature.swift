@@ -1209,19 +1209,22 @@ public struct AppFeature {
     /// resurrect the pending attachment (a cancelled effect's `send` is dropped).
     private func prepareEffect(_ item: PickedItem, original: Bool) -> Effect<Action> {
         let now = date.now
-        return .run { send in
-            // A real (not cooperative-yield) suspension point BEFORE the encode: `Task.sleep`
-            // requires the runtime to schedule a timer callback, which — unlike `Task.yield()` —
-            // cannot be satisfied by simply running this task to completion in one scheduling
-            // turn. That gives a `.cancel(id:)` issued concurrently (Remove, leaving, or Send) a
-            // real window to land before the (synchronous, ImageIO-bound) encode ever starts, so
-            // cancellation is not merely theoretical for a fast/small picked item. `Task.sleep`
-            // throws `CancellationError` immediately once cancelled, which this `try?` swallows —
-            // the function simply returns, and the cancelled `send` below would have been dropped
-            // anyway.
-            try? await Task.sleep(for: .milliseconds(1))
+        return .run { [clock] send in
+            // A real (clock-driven, not cooperative-yield) suspension point BEFORE the encode:
+            // under the live `ContinuousClock` this costs 1 ms; under `TestClock` it waits until
+            // the test explicitly advances it. Unlike `Task.yield()`, this cannot be satisfied by
+            // simply running this task to completion in one scheduling turn, so a `.cancel(id:)`
+            // issued concurrently (Remove, leaving, or Send) gets a real, deterministic window to
+            // land before the (synchronous, ImageIO-bound) encode ever starts. `clock.sleep`
+            // throws `CancellationError` once cancelled; `Effect.run` swallows that silently, so
+            // the function simply returns and the cancelled `send` below is never reached.
+            try await clock.sleep(for: .milliseconds(1))
+            let result = AttachmentPreparation.prepare(item, original: original, now: now)
+            // The encode itself is synchronous with no suspension point, so a cancel arriving
+            // WHILE it runs can't be caught mid-flight — check again here: a cancel during a long
+            // encode must not deliver either.
             guard !Task.isCancelled else { return }
-            switch AttachmentPreparation.prepare(item, original: original, now: now) {
+            switch result {
             case let .success(pending): await send(.attachmentPrepared(pending))
             case let .failure(error): await send(.attachmentFailed(error.message))
             }
