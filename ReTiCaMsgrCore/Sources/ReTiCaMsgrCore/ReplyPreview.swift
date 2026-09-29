@@ -26,15 +26,20 @@ public enum ReplyPreview {
     }
 
     /// nil when `message` is not a reply. Otherwise the original from `thread` when present (its
-    /// body, trimmed like a quote), else the carried quote, else "Original message not available".
+    /// body, trimmed like a quote — or, when the body is empty and the original carries a photo or
+    /// a file, its placeholder from `attachments`, keyed by message id), else the carried quote,
+    /// else "Original message not available".
     ///
-    /// When the original IS found but its trimmed body is empty (a whitespace-only body), `text`
-    /// still falls back to `unavailable` — but `originalID` stays set, so the quote block still
-    /// scrolls to that (blank) original.
-    public static func resolve(for message: Message, in thread: [Message], peerName: String?) -> Resolved? {
+    /// When the original IS found but its trimmed text is empty (a whitespace-only body with no
+    /// attachment), `text` still falls back to `unavailable` — but `originalID` stays set, so the
+    /// quote block still scrolls to that (blank) original.
+    public static func resolve(for message: Message, in thread: [Message], peerName: String?,
+                               attachments: [UUID: Attachment] = [:]) -> Resolved? {
         guard let hash = message.replyToHash else { return nil }
         if let original = thread.first(where: { $0.messageHash == hash }) {
-            let trimmedBody = ReplyWire.trimQuote(original.body)
+            // Spec 2026-09-28 §4: a caption-less photo or file quotes its placeholder.
+            let body = AttachmentPlaceholder.preview(body: original.body, attachment: attachments[original.id])
+            let trimmedBody = ReplyWire.trimQuote(body)
             return Resolved(
                 senderLabel: senderLabel(originalIsOutgoing: original.isOutgoing, peerName: peerName),
                 text: trimmedBody.isEmpty ? unavailable : trimmedBody,

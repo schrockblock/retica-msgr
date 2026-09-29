@@ -36,8 +36,13 @@ public enum MessageInfo {
     public static let missing = "—"
     public static let legacyFooter = "Some details weren't recorded for messages from before this feature."
 
-    public static func sections(for message: Message, timeZone: TimeZone = .current) -> [Section] {
-        [timeline(message, timeZone), delivery(message), identity(message), payload(message)]
+    public static func sections(for message: Message, attachment: Attachment? = nil,
+                                timeZone: TimeZone = .current) -> [Section] {
+        var sections = [timeline(message, timeZone), delivery(message), identity(message), payload(message)]
+        if let attachment {
+            sections.append(attachmentSection(attachment))
+        }
+        return sections
     }
 
     // MARK: - Sections
@@ -72,14 +77,20 @@ public enum MessageInfo {
             }
         }
         rows.append(Row("Status", m.status))
+        if let reason = m.failureReason {
+            rows.append(Row("Reason", failureReasonName(reason)))
+        }
         return Section(title: "Timeline", rows: rows)
     }
 
     static func delivery(_ m: Message) -> Section {
-        let row = m.isOutgoing
+        var rows = [m.isOutgoing
             ? optionalRow("Propagation node copy", m.sentViaPropagation.map { $0 ? "Yes" : "No" })
-            : optionalRow("Arrival", m.arrivalMethod.map(arrivalName))
-        return Section(title: "Delivery", rows: [row])
+            : optionalRow("Arrival", m.arrivalMethod.map(arrivalName))]
+        if m.isOutgoing, let refusal = m.propagationRefused {
+            rows.append(Row("Propagation refusal", "Refused: \(refusal)"))
+        }
+        return Section(title: "Delivery", rows: rows)
     }
 
     static func identity(_ m: Message) -> Section {
@@ -103,6 +114,18 @@ public enum MessageInfo {
         rows += fieldRows(m.fieldKeys)
         rows.append(m.isOutgoing ? missingRow("Stamp") : optionalRow("Stamp", m.stampState.map(stampName)))
         return Section(title: "Payload", rows: rows)
+    }
+
+    static func attachmentSection(_ a: Attachment) -> Section {
+        let dimensions: String? = (a.width != nil && a.height != nil) ? "\(a.width!) × \(a.height!)" : nil
+        return Section(title: "Attachment", rows: [
+            Row("Kind", a.isImage ? "Image" : "File"),
+            Row("Name", a.name),
+            optionalRow("Format", a.format.isEmpty ? nil : a.format.uppercased()),
+            Row("Size", bytes(a.size)),
+            optionalRow("Dimensions", dimensions),
+            Row("Stored", a.hasBytes ? "Yes" : "No"),
+        ])
     }
 
     // MARK: - Rows
@@ -188,6 +211,14 @@ public enum MessageInfo {
         case StampState.unchecked: return "Not checked"
         case StampState.valid: return "Valid"
         case StampState.invalid: return "Invalid"
+        default: return raw
+        }
+    }
+
+    static func failureReasonName(_ raw: String) -> String {
+        switch raw {
+        case FailureReason.rejected: return "Rejected by recipient"
+        case FailureReason.cancelled: return "Cancelled"
         default: return raw
         }
     }

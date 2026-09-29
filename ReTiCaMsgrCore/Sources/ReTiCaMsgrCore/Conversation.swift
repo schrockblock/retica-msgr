@@ -17,8 +17,9 @@ public struct Conversation: Identifiable, Equatable, Sendable {
 
 public extension Conversation {
     /// Build the conversation list from all messages: keep the newest row per
-    /// `peerHex`, sorted most-recent-first.
-    static func list(from messages: [Message]) -> [Conversation] {
+    /// `peerHex`, sorted most-recent-first. `attachments` (by message id) supplies the preview
+    /// for a message whose body is empty because it carried a photo or a file.
+    static func list(from messages: [Message], attachments: [UUID: Attachment] = [:]) -> [Conversation] {
         var latest: [String: Message] = [:]
         for m in messages {
             if let existing = latest[m.peerHex] {
@@ -28,7 +29,11 @@ public extension Conversation {
             }
         }
         return latest.values
-            .map { Conversation(peerHex: $0.peerHex, lastBody: $0.body, lastTimestamp: $0.timestamp) }
+            .map {
+                Conversation(peerHex: $0.peerHex,
+                             lastBody: AttachmentPlaceholder.preview(body: $0.body, attachment: attachments[$0.id]),
+                             lastTimestamp: $0.timestamp)
+            }
             .sorted { $0.lastTimestamp > $1.lastTimestamp }
     }
 }
