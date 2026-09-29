@@ -432,6 +432,9 @@ After Part A merges, Nbhd's `Packages/NbhdKernel/Sources/NbhdStore/IdentityStore
 and 110 (two exhaustive `switch failure`) need the two new cases: line 103 adds
 `.ambiguousItems, .synchronizableItem` to the throw list; line 110's `reason(for:)` maps both to
 `.strayItem`-equivalent (`IdentityFailureReason.strayItem(service:)` with the location's service).
+A third exhaustive switch, `NbhdTests/SharedIdentityKeychainHostedTests.swift` `TestKeychain.productionState()`
+(over `KeychainOps.ReadResult`), needs `case let .rejected(r): "rejected \(r)"`, or Nbhd's hosted test
+target fails to compile (final review I1, 2026-09-29).
 This work appends that note to Nbhd's `docs/STATUS.md` follow-ups (uncommitted, no other Nbhd change).
 
 ## 7. Out of scope
