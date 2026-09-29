@@ -25,7 +25,7 @@ final class ReTiCaMsgrUITests: XCTestCase {
     @MainActor
     func testExample() throws {
         // UI tests must launch the application that they test.
-        let app = XCUIApplication()
+        let app = TestApp.make()
         app.launch()
 
         // Use XCTAssert and related functions to verify your tests produce the correct results.
@@ -37,7 +37,7 @@ final class ReTiCaMsgrUITests: XCTestCase {
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
+            TestApp.make().launch()
         }
     }
 }
