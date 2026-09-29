@@ -43,6 +43,12 @@ public struct Message: Identifiable, Equatable, Sendable {
     /// Replies (LXMF FIELD_REPLY_QUOTE 0x31): the quote as sent or received, already trimmed.
     /// nil when not a reply, or when a received quote was missing or unusable.
     public var replyQuote: String?
+    /// Outgoing only: why the message will not go out, beside `status` — `FailureReason.*`.
+    /// nil for an ordinary failure (retries exhausted) and for every non-failed row.
+    public var failureReason: String?
+    /// Outgoing only: the propagated copy was refused up front — `PropagationRefusal.*`.
+    /// nil when it was not refused (or no propagation node was configured).
+    public var propagationRefused: String?
 
     public init(
         id: UUID,
@@ -65,7 +71,9 @@ public struct Message: Identifiable, Equatable, Sendable {
         fieldKeys: String? = nil,
         stampState: String? = nil,
         replyToHash: String? = nil,
-        replyQuote: String? = nil
+        replyQuote: String? = nil,
+        failureReason: String? = nil,
+        propagationRefused: String? = nil
     ) {
         self.id = id
         self.peerHex = peerHex
@@ -88,6 +96,8 @@ public struct Message: Identifiable, Equatable, Sendable {
         self.stampState = stampState
         self.replyToHash = replyToHash
         self.replyQuote = replyQuote
+        self.failureReason = failureReason
+        self.propagationRefused = propagationRefused
     }
 }
 
@@ -100,6 +110,9 @@ public enum MessageStatus {
     /// The recipient proved receipt (`deliveryConfirmed`). Beats "stored": a delivered row is
     /// never downgraded by a later `propagationAccepted` or `deliveryFailed`.
     public static let delivered = "delivered"
+    /// The user stopped the send (`deliveryCancelled`). Terminal, like `failed`; a cancelled
+    /// message is never retried (ReTiCA forbids re-sending a hash — re-attach and send again).
+    public static let cancelled = "cancelled"
 }
 
 /// How an incoming message reached us (`Message.arrivalMethod`), from ReTiCA's
@@ -119,4 +132,18 @@ public enum StampState {
     public static let unchecked = "unchecked"
     public static let valid = "valid"
     public static let invalid = "invalid"
+}
+
+/// Why an outgoing message ended as `failed`/`cancelled` (`Message.failureReason`).
+public enum FailureReason {
+    /// The recipient refused the transfer (`deliveryRejected`).
+    public static let rejected = "rejected"
+    /// The user cancelled the send (`deliveryCancelled`).
+    public static let cancelled = "cancelled"
+}
+
+/// Why the propagated copy was never sent (`Message.propagationRefused`), from ReTiCA's
+/// `LXMFRouter.RefusalReason`.
+public enum PropagationRefusal {
+    public static let tooLargeForNode = "too large for node"
 }

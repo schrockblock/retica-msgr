@@ -109,6 +109,29 @@ public enum AppDatabase {
                 t.add(column: "replyQuote", .text)
             }
         }
+        m.registerMigration("createAttachments") { db in
+            // One row per attachment (spec 2026-09-28 §1). `messageId` cascades so a deleted
+            // message can never leave a row pointing at a file. Indexed, not unique: the app
+            // enforces one attachment per message today, the schema does not assume it.
+            try db.create(table: "attachments") { t in
+                t.primaryKey("id", .text).notNull()
+                t.column("messageId", .text).notNull().references("messages", onDelete: .cascade)
+                t.column("kind", .text).notNull()
+                t.column("name", .text).notNull()
+                t.column("format", .text).notNull()
+                t.column("size", .integer).notNull()
+                t.column("width", .integer)
+                t.column("height", .integer)
+                t.column("path", .text).notNull()
+            }
+            try db.create(indexOn: "attachments", columns: ["messageId"])
+            // Outgoing-only reasons for the Info sheet. Nullable: rows from before this migration
+            // and every ordinary row read back NULL.
+            try db.alter(table: "messages") { t in
+                t.add(column: "failureReason", .text)
+                t.add(column: "propagationRefused", .text)
+            }
+        }
         return m
     }
 
