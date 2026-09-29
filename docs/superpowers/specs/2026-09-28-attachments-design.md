@@ -251,9 +251,10 @@ override the text above where they conflict.
    macOS; §5's "app target" placement no longer applies.
 9. **`AttachmentStore`'s API** is `store(_:messageHash:outgoing:ext:) -> String`,
    `url(forRelativePath:)`, `url(for:) -> URL?`, `exists(_:)`, `delete(_:)`, `exportURL(for:)`.
-10. **Test files alias the model:** Swift Testing exports its own `Attachment` type, so every test
-    file declares `private typealias Attachment = ReTiCaMsgrCore.Attachment`. The model keeps its
-    name.
+10. **Test files disambiguate the model with a scoped import:** Swift Testing exports its own
+    generic `Attachment<AttachableValue>`, and a `typealias Attachment = ReTiCaMsgrCore.Attachment`
+    does not compile (the module also exposes `public enum ReTiCaMsgrCore`), so a test file that
+    names the type adds `import struct ReTiCaMsgrCore.Attachment`. The model keeps its name.
 
 ## Out of scope
 
