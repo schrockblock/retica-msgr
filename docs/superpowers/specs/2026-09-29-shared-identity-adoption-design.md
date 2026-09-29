@@ -303,8 +303,10 @@ public struct IdentityStore: Sendable {
 
 - `AppDatabase.hasMessages(_ database: any DatabaseWriter) throws -> Bool` — synchronous
   `database.read { try Message.count > 0 }` (any row in `messages`).
-  `LoadPolicy.forLaunch(database:) -> LoadPolicy`: `hasMessages` true → `.loadOnly`; false →
-  `.loadOrCreate`; **throws → `.loadOnly`** (unknown is never "fresh install").
+  `LoadPolicy.forLaunch(database:anchor:) -> LoadPolicy`: an anchor exists → `.loadOnly` (amendment 2:
+  the anchor is itself the record that this device used an identity, whether or not any message
+  survives); else `hasMessages` true → `.loadOnly`; false → `.loadOrCreate`; **throws →
+  `.loadOnly`** (unknown is never "fresh install"). "No anchor" is therefore the only way to mint.
 - `IdentityAnchor` (core): UserDefaults key `reticamsgr.expectedIdentityHash` (hex of the 16-byte
   identity hash; public, not secret), `UserDefaults` injected (`.standard` live, a suite-named
   instance in tests).
@@ -369,15 +371,15 @@ public struct IdentityStore: Sendable {
 | `.unavailable(.corrupt)` | "The identity stored on this device can't be read." | Retry, details |
 | `.unavailable(.accessDenied)` | "ReTiCaMsgr isn't allowed to read the identity. This is a signing or configuration problem, not your data." | Retry, details |
 | `.unavailable(.other(s))` | "Your identity couldn't be loaded." Details: the status. | Retry, details |
-| `.missing(expected:)` | "Your conversations are here, but your identity key isn't. This happens after restoring from an unencrypted backup. Restore it from an identity backup." + "Expected ID: <short>" (or, with no anchor, "Restore isn't possible: this device has no record of which identity your conversations used.") | Restore from backup (only with an anchor), Retry; with NO anchor also "Create a new identity" → confirmation ("Your existing conversations were sent from an identity this device no longer has. Peers will see you as a new address.") → `createNewIdentity()` (amendment 1) |
-| `.identityChanged(expected, got)` | "The identity on this device is different from the one your conversations used." + "Expected <short>, found <short>." | Retry; "Use the new identity" → confirmation dialog ("Your existing conversations were sent from the old identity. Peers will see you as a new address.") → `acceptNewIdentity()` |
+| `.missing(expected:)` | "Your conversations are here, but your identity key isn't. This happens after restoring from an unencrypted backup. Restore it from an identity backup." + "Expected ID: <short>" IN THE MESSAGE, not behind Details (amendment 3) (or, with no anchor, "Restore isn't possible: this device has no record of which identity your conversations used.") | Restore from backup (only with an anchor), Retry; with NO anchor also "Create a new identity" → confirmation ("Your existing conversations were sent from a different identity. Peers will see you as a new address, and other Reticulum apps on this device (such as Nbhd) will use the new identity too." — amendment 3 wording) → `createNewIdentity()` (amendment 1) |
+| `.identityChanged(expected, got)` | "The identity on this device is different from the one your conversations used." + "Expected <short>, found <short>." IN THE MESSAGE (amendment 3) | Retry; "Use the new identity" → confirmation dialog ("Your existing conversations were sent from the old identity. Peers will see you as a new address.") → `acceptNewIdentity()` |
 
 Retry is disabled while a rebuild is in flight. `RestoreIdentitySheet`: a `PasteButton(payloadType: String.self)`
 (no text field; the clipboard is never read automatically) and a "Choose identity file" button
 (`fileImporter`, `[.data, .item]`, `allowsMultipleSelection: false`), a summary line ("Pasted text"
 / the file name) with a Clear button, and Restore. Rejections show plain text: `badEncoding` →
 "That isn't an identity backup. Paste the text form or choose the identity file."; `wrongLength(n)`
-→ "That file is n bytes; an identity is 64."; `mismatch(got, expected)` → "That backup is identity
+→ "That backup is n bytes; an identity is 64." (amendment 3: it applies to pasted text too); `mismatch(got, expected)` → "That backup is identity
 <short got>, but your conversations belong to <short expected>."; `noExpectedIdentity` → as above;
 `refused(.identityPresent)` → "Another Reticulum identity already exists on this device, so
 ReTiCaMsgr won't replace it. Nothing was changed."; `refused(.notMissing)` → dismiss;
