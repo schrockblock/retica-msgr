@@ -146,4 +146,10 @@ public enum AppDatabase {
         try migrator().migrate(queue)
         return queue
     }
+
+    /// Any row in `messages`: the local state tied to this device's identity (every peer in a
+    /// conversation knows this address). Throws when the table cannot be read.
+    public static func hasMessages(_ database: any DatabaseWriter) throws -> Bool {
+        try database.read { try Message.fetchCount($0) > 0 }
+    }
 }
