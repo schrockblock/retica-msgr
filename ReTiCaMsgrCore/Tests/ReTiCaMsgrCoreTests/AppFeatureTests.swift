@@ -1341,45 +1341,13 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(reconstructed.stamp != nil, "Sent message must carry a delivery stamp (cost \(stampCost) was persisted and rehydrated)")
 }
 
-// MARK: - Public key requests (announce row tap)
+// MARK: - Public keys (announce row tap)
+//
+// The tap reads the key from the peer's announce in the learned table; it sends nothing. The former
+// link + `/publicKey` request could only run when that entry already existed, and reference LXMF
+// peers never answer it (the NomadNet "no response" report, 2026-09-29).
 
-@MainActor @Test func announceRowTappedOpensLinkAndMarksRequesting() async {
-    let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity())
-    await store.send(.announceRowTapped(destinationHashHex: peerA))
-    #expect(store.state.publicKeyRequests[peerA] == .requesting)
-    await store.receive { action in
-        if case let .node(.client(.endpoint(.openLink(destinationHash)))) = action {
-            #expect(destinationHash == Data(hexString: peerA))
-            return true
-        }
-        return false
-    }
-}
-
-/// With no learned path (the test store's transport has never heard of this peer), openLink
-/// fails immediately with .noPath and the request settles as failed — a row can never stick on
-/// "requesting" because of an unroutable peer.
-@MainActor @Test func announceRowTappedWithoutPathFails() async {
-    let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity())
-    await store.send(.announceRowTapped(destinationHashHex: peerA))
-    await store.receive { if case .node(.client(.endpoint(.openLink))) = $0 { return true }; return false }
-    await store.receive { action in
-        if case let .node(.client(.endpoint(.delegate(.linkFailed(destinationHash, reason))))) = action {
-            #expect(destinationHash == Data(hexString: peerA))
-            #expect(reason == .noPath)
-            return true
-        }
-        return false
-    }
-    #expect(store.state.publicKeyRequests[peerA] == .failed(reason: "link failed"))
-}
-
-/// The key is already known from the peer's signed announce (`Transport.learned`, the same entry
-/// `openLink` would need). A reference LXMF peer (NomadNet, Sideband) never answers the app's custom
-/// `/publicKey` request, so the tap must settle from the learned identity with no link at all —
-/// before this it opened a link, sent the request and ended in "no response".
+/// Known identity: the key from the learned announce, and no link or any other action.
 @MainActor @Test func announceRowTappedWithKnownIdentityUsesLearnedKeyWithoutALink() async {
     let db = try! AppDatabase.makeInMemory()
     let peer = Identity()
@@ -1400,6 +1368,17 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.finish()
 }
 
+/// Unknown identity: fails at once with the reason, and no link or any other action.
+@MainActor @Test func announceRowTappedWithUnknownIdentityFailsWithoutALink() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    store.exhaustivity = .on
+    await store.send(.announceRowTapped(destinationHashHex: peerA)) {
+        $0.publicKeyRequests[peerA] = .failed(reason: "key unknown (no announce heard)")
+    }
+    await store.finish()
+}
+
 @MainActor @Test func announceRowTappedRejectsInvalidHex() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
@@ -1407,121 +1386,6 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(store.state.publicKeyRequests.isEmpty)
     await store.send(.announceRowTapped(destinationHashHex: String(repeating: "a", count: 10)))   // 5 bytes — not a hash
     #expect(store.state.publicKeyRequests.isEmpty)
-}
-
-/// A request already in flight owns its link; a second tap must not open a duplicate one.
-/// Tapping after the request settles (received/failed) is the retry path and IS allowed.
-@MainActor @Test func announceRowTappedWhileRequestingIsIgnored() async {
-    let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity()) { s in
-        s.publicKeyRequests[peerA] = .requesting
-    }
-    await store.send(.announceRowTapped(destinationHashHex: peerA))
-    #expect(store.state.publicKeyRequests[peerA] == .requesting)
-
-    let store2 = makeStore(db, identity: Identity()) { s in
-        s.publicKeyRequests[peerA] = .failed(reason: "no response")
-    }
-    await store2.send(.announceRowTapped(destinationHashHex: peerA))
-    #expect(store2.state.publicKeyRequests[peerA] == .requesting)   // retry after failure
-}
-
-@MainActor @Test func linkEstablishedForRequestingPeerSendsPublicKeyRequest() async {
-    let db = try! AppDatabase.makeInMemory()
-    let linkID = Data(repeating: 0x42, count: 16)
-    let store = makeStore(db, identity: Identity()) { s in
-        s.publicKeyRequests[peerA] = .requesting
-    }
-    await store.send(.node(.client(.endpoint(
-        .delegate(.linkEstablished(linkID: linkID, destinationHash: Data(hexString: peerA)!))))))
-    await store.receive { action in
-        if case let .node(.client(.endpoint(.sendRequestOverLink(linkID: l, path: p, data: d)))) = action {
-            #expect(l == linkID)
-            #expect(p == AppFeature.publicKeyRequestPath)
-            #expect(d.isEmpty)
-            return true
-        }
-        return false
-    }
-    #expect(store.state.publicKeyRequestLinks[linkID] == peerA)
-}
-
-/// Links established for other reasons (e.g. direct message delivery) must not be hijacked for
-/// a public-key request: only links opened by announceRowTapped are correlated.
-@MainActor @Test func linkEstablishedForNonRequestingPeerSendsNoRequest() async {
-    let db = try! AppDatabase.makeInMemory()
-    let linkID = Data(repeating: 0x42, count: 16)
-    let store = makeStore(db, identity: Identity())   // no requesting peer
-    await store.send(.node(.client(.endpoint(
-        .delegate(.linkEstablished(linkID: linkID, destinationHash: Data(hexString: peerA)!))))))
-    #expect(store.state.publicKeyRequestLinks.isEmpty)
-}
-
-@MainActor @Test func responseReceivedStoresValidPublicKey() async {
-    let db = try! AppDatabase.makeInMemory()
-    let linkID = Data(repeating: 0x42, count: 16)
-    let peerKey = Identity().publicKey
-    let store = makeStore(db, identity: Identity()) { s in
-        s.publicKeyRequests[peerA] = .requesting
-        s.publicKeyRequestLinks[linkID] = peerA
-    }
-    await store.send(.node(.client(.endpoint(
-        .delegate(.responseReceived(linkID: linkID, requestID: Data(repeating: 1, count: 32), data: peerKey))))))
-    #expect(store.state.publicKeyRequests[peerA] == .received(publicKeyHex: peerKey.hexString))
-    #expect(store.state.publicKeyRequestLinks.isEmpty)
-}
-
-/// A malformed or low-order key must be rejected, not stored — a poisoned Identity would break
-/// every later use of it.
-@MainActor @Test func responseReceivedWithInvalidDataMarksFailed() async {
-    let db = try! AppDatabase.makeInMemory()
-    let linkID = Data(repeating: 0x42, count: 16)
-    let store = makeStore(db, identity: Identity()) { s in
-        s.publicKeyRequests[peerA] = .requesting
-        s.publicKeyRequestLinks[linkID] = peerA
-    }
-    await store.send(.node(.client(.endpoint(
-        .delegate(.responseReceived(linkID: linkID, requestID: Data(repeating: 1, count: 32), data: Data("not a key".utf8)))))))
-    #expect(store.state.publicKeyRequests[peerA] == .failed(reason: "invalid public key"))
-    #expect(store.state.publicKeyRequestLinks.isEmpty)
-}
-
-@MainActor @Test func linkFailedMarksRequestingPeerFailed() async {
-    let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity()) { s in
-        s.publicKeyRequests[peerA] = .requesting
-    }
-    await store.send(.node(.client(.endpoint(
-        .delegate(.linkFailed(destinationHash: Data(hexString: peerA)!, reason: .establishmentTimedOut))))))
-    #expect(store.state.publicKeyRequests[peerA] == .failed(reason: "link failed"))
-}
-
-@MainActor @Test func requestFailedMarksRequestingPeerFailed() async {
-    let db = try! AppDatabase.makeInMemory()
-    let linkID = Data(repeating: 0x42, count: 16)
-    let store = makeStore(db, identity: Identity()) { s in
-        s.publicKeyRequests[peerA] = .requesting
-        s.publicKeyRequestLinks[linkID] = peerA
-    }
-    await store.send(.node(.client(.endpoint(
-        .delegate(.requestFailed(linkID: linkID, requestID: Data(repeating: 1, count: 32)))))))
-    #expect(store.state.publicKeyRequests[peerA] == .failed(reason: "no response (peer does not answer key requests)"))
-    #expect(store.state.publicKeyRequestLinks.isEmpty)
-}
-
-/// A link that closes while a request is in flight emits NO requestFailed (LinkSession's close
-/// path only cancels the deadline) — without this branch the row would stick on "requesting".
-@MainActor @Test func linkClosedMarksInFlightRequestFailed() async {
-    let db = try! AppDatabase.makeInMemory()
-    let linkID = Data(repeating: 0x42, count: 16)
-    let store = makeStore(db, identity: Identity()) { s in
-        s.publicKeyRequests[peerA] = .requesting
-        s.publicKeyRequestLinks[linkID] = peerA
-    }
-    await store.send(.node(.client(.endpoint(
-        .delegate(.linkClosed(linkID: linkID, reason: .timedOut))))))
-    #expect(store.state.publicKeyRequests[peerA] == .failed(reason: "link closed"))
-    #expect(store.state.publicKeyRequestLinks.isEmpty)
 }
 
 @MainActor @Test func interfaceConnectedRegistersPublicKeyRequestHandler() async {
@@ -2021,14 +1885,26 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 }
 
 // MARK: - Send gate: replying to a sender we have no path to (NomadNet report, 2026-09-29)
+//
+// The gate keeps its 2026-08-22 meaning ("a send would route right now"). What changes is that the
+// app now ASKS for the missing path when it learns a peer exists: a received message, or opening
+// the conversation. `Transport.State.pathRequests` records every `.requestPath` that reached the
+// router, even with no interface up, so it is the observable for "a path was requested".
+
+private func learnedEntry(_ identity: Identity) -> LearnedDestination {
+    LearnedDestination(identity: identity, appData: nil, ratchet: nil,
+                       interfaceID: InterfaceID("tcp"), hops: 1, nextHop: nil,
+                       announceEmitted: 1700000000,
+                       learnedAt: Date(timeIntervalSince1970: 1700000000))
+}
 
 /// The phone's state in the report: a message from a peer (NomadNet) arrived, but the phone has no
 /// live path to the sender's delivery destination — its announce was never heard (identity unknown,
-/// unvalidated) or only a persisted path exists on an interface that is not up. ReTiCA can still send
-/// (the router requests a path and retries), so the conversation must be sendable, whether or not a
-/// propagation node is configured.
+/// unvalidated) or only a persisted path exists on an interface that is not up — with or without a
+/// propagation node. The receipt must request the sender's path, and the path's arrival must unlock
+/// Send through the existing gate.
 @MainActor @Test(arguments: [(false, false), (false, true), (true, false), (true, true)])
-func receivedMessageMakesPathlessSenderSendable(announceHeard: Bool, propagationNode: Bool) async throws {
+func receivedMessageFromPathlessSenderRequestsItsPath(announceHeard: Bool, propagationNode: Bool) async throws {
     let db = try AppDatabase.makeInMemory()
     let me = Identity()
     let sender = Identity()
@@ -2043,59 +1919,79 @@ func receivedMessageMakesPathlessSenderSendable(announceHeard: Bool, propagation
     if announceHeard {
         // Identity known from an earlier announce, but its interface is not registered: no live path.
         await store.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations([
-            senderHash: LearnedDestination(identity: sender, appData: nil, ratchet: nil,
-                                           interfaceID: InterfaceID("tcp"), hops: 1, nextHop: nil,
-                                           announceEmitted: 1700000000,
-                                           learnedAt: Date(timeIntervalSince1970: 1700000000))
+            senderHash: learnedEntry(sender)
         ]))))))
     }
-    #expect(!store.state.openPeerSendable, "precondition: nothing received yet and no live path")
+    #expect(!store.state.reachablePeers.contains(senderHex), "precondition: Send is gated")
 
     let m = LXMessage.create(source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
                              timestamp: 1700000000.5, title: Data(), content: Data("hello from nomadnet".utf8))
     await store.send(.node(.client(.delegate(.messageReceived(
         message: m, signatureValidated: announceHeard, method: .propagated)))))
-    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    await store.receive { action in
+        if case let .node(.client(.endpoint(.requestPath(dest)))) = action { return dest == senderHash }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.transport.pathRequests[senderHash] != nil)
+    #expect(!store.state.reachablePeers.contains(senderHex), "the gate itself is not widened")
 
-    #expect(!store.state.reachablePeers.contains(senderHex), "still no path: the gate must not need one")
-    #expect(store.state.openPeerSendable, "a peer that messaged us must be repliable")
+    // The path response (an announce) arrives → the existing gate unlocks.
+    await store.send(.node(.client(.endpoint(.delegate(.pathLearned(destinationHash: senderHash, hops: 1))))))
+    #expect(store.state.reachablePeers.contains(senderHex))
 }
 
-/// After a relaunch the session-only `reachablePeers` is empty; reopening the conversation with the
-/// sender must still allow a reply, because the received message is still in the thread.
-@MainActor @Test func reopenedConversationWithReceivedMessageIsSendable() async throws {
+/// A sender already admitted by the gate needs no path request.
+@MainActor @Test func receivedMessageFromReachableSenderRequestsNoPath() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHash = LXMessage.deliveryHash(identityHash: sender.hash)
+    let store = makeStore(db, identity: me) { s in
+        s.reachablePeers.insert(senderHash.hexString)
+    }
+    let m = LXMessage.create(source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+                             timestamp: 1700000000.5, title: Data(), content: Data("hi".utf8))
+    await store.send(.node(.client(.delegate(.messageReceived(
+        message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.transport.pathRequests.isEmpty)
+}
+
+/// After a relaunch `reachablePeers` is empty and the peer may have no persisted path: opening the
+/// conversation requests it, so Send unlocks once the peer answers instead of on its next announce.
+@MainActor @Test func openingConversationWithUnreachablePeerRequestsItsPath() async throws {
     let db = try AppDatabase.makeInMemory()
     try await seed(db, [msg(1, peerA, "from them", 1000, outgoing: false, status: MessageStatus.received)])
     let store = makeStore(db, identity: Identity())
     await store.send(.openConversation(peerA))
-    await store.receive { if case .threadLoaded = $0 { return true }; return false }
-    #expect(store.state.reachablePeers.isEmpty)
-    #expect(store.state.openPeerSendable)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.transport.pathRequests[Data(hexString: peerA)!] != nil)
 }
 
-/// Switching conversations leaves the previous thread in `threadMessages` until the new one loads;
-/// the previous peer's received messages must not unlock the newly opened peer.
-@MainActor @Test func staleThreadFromAnotherPeerDoesNotUnlockSend() async {
-    let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity()) { s in
-        s.openPeerHex = peerB
-        s.threadMessages = [msg(1, peerA, "from A", 1000, outgoing: false, status: MessageStatus.received)]
-    }
-    #expect(!store.state.openPeerSendable)
-}
-
-/// A peer we have only written to, with no path, stays gated: nothing shows it exists.
-@MainActor @Test func conversationWithOnlyOutgoingMessagesAndNoPathIsNotSendable() async throws {
+@MainActor @Test func openingConversationWithReachablePeerRequestsNoPath() async throws {
     let db = try AppDatabase.makeInMemory()
-    try await seed(db, [msg(1, peerA, "to them", 1000, outgoing: true)])
-    let store = makeStore(db, identity: Identity())
+    let store = makeStore(db, identity: Identity()) { s in
+        s.reachablePeers.insert(peerA)
+    }
     await store.send(.openConversation(peerA))
-    await store.receive { if case .threadLoaded = $0 { return true }; return false }
-    #expect(store.state.threadMessages.count == 1)
-    #expect(!store.state.openPeerSendable)
-    // …and a live path still unlocks it, as before.
-    await store.send(.node(.client(.endpoint(.delegate(.pathLearned(destinationHash: Data(hexString: peerA)!, hops: 1))))))
-    #expect(store.state.openPeerSendable)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.transport.pathRequests.isEmpty)
+}
+
+/// Starting a conversation by address is the same "this peer exists" moment.
+@MainActor @Test func startingConversationWithUnreachablePeerRequestsItsPath() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.startConversation(peerB))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.transport.pathRequests[Data(hexString: peerB)!] != nil)
 }
 
 // MARK: - Reactions: receive path (ReactionWire.encode = standard 0x40 format)
@@ -3505,7 +3401,12 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 @MainActor @Test func attachSendOpenAndStartConversationCancelAPendingPreparation() async {
     for leave: AppFeature.Action in [.openConversation(peerB), .startConversation(peerB)] {
         let clock = TestClock()
-        let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in s.openPeerHex = peerA }
+        // peerB is reachable, so opening it issues no path request: this test is about the
+        // preparation's cancellation, and the thread load stays the only action that may arrive.
+        let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in
+            s.openPeerHex = peerA
+            s.reachablePeers.insert(peerB)
+        }
         await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG, peerHex: peerA)))
         await store.send(leave)
         store.exhaustivity = .on

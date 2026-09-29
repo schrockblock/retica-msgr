@@ -23,13 +23,11 @@ public struct AppFeature {
         case unsupported
     }
 
-    /// Status of a public-key request for one peer.
+    /// Outcome of an announce-row tap: the peer's public key, looked up locally.
     public enum PublicKeyRequestStatus: Equatable {
-        /// A link to the peer is being established (or a request is in flight over it).
-        case requesting
-        /// The peer answered with a valid 64-byte public key.
+        /// The key from the peer's signed announce (`Transport.learned`).
         case received(publicKeyHex: String)
-        /// The request could not be completed (link failed, no response, or a malformed key).
+        /// No key is known for the peer (no announce heard, or its entry expired).
         case failed(reason: String)
     }
 
@@ -139,17 +137,12 @@ public struct AppFeature {
         public var threadReactions: [String: [ReactionSummary.Item]] = [:]
         /// The open thread's attachments by message id, loaded with the thread. Session-only.
         public var attachmentsByMessageId: [UUID: Attachment] = [:]
-        // Peers with a known path (from pathLearned); gates Send in the UI. Session-only.
+        // The Send gate: peers a send would route to right now (live learned path; from pathLearned
+        // and seedReachablePeers). A peer outside it gets a path request on receipt / open
+        // (`pathRequestIfUnreachable`); the answer lands here via pathLearned. Session-only.
         public var reachablePeers: Set<String> = []
-        // In-flight / settled public-key requests, keyed by the peer's delivery-destination hash hex.
-        // Session-only: a request is a live network exchange, not something to persist.
+        // Announce-row tap outcomes, keyed by the peer's delivery-destination hash hex. Session-only.
         public var publicKeyRequests: [String: PublicKeyRequestStatus] = [:]
-        // linkID → destination hash hex, for links opened by a public-key request. Correlates the
-        // link-scoped delegates (responseReceived / requestFailed / linkClosed) back to a peer.
-        // LXMFNode's directLinks cannot be used for this: it is cleared on linkClosed BEFORE this
-        // reducer sees the action (the node Scope reduces first), and it is also written by links
-        // opened for message delivery, which this feature must not touch.
-        public var publicKeyRequestLinks: [Data: String] = [:]
         @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
         @Shared(.appStorage("propagationNodeModeEnabled")) public var nodeModeEnabled: Bool = false
         @Shared(.appStorage("displayName")) public var displayName: String = ""
@@ -192,19 +185,17 @@ public struct AppFeature {
             _port = Shared(wrappedValue: port, .appStorage("port"))
         }
 
-        /// The Send gate for the open conversation. True when the peer has a live learned path
-        /// (`reachablePeers`) OR the open thread holds a message received from it. The second clause
-        /// is what lets a user reply to a sender whose `lxmf.delivery` announce this device never
-        /// heard (e.g. a NomadNet user whose message arrived via a propagation node): receiving gives
-        /// us no path to the sender, but ReTiCA does not need one up front — the router requests a
-        /// path and retries (LXMFRouter `retryDue`), and reports `deliveryFailed` if none comes.
-        /// Derived from the loaded thread, so it holds after a relaunch too.
-        public var openPeerSendable: Bool {
-            guard let hex = openPeerHex else { return false }
-            return reachablePeers.contains(hex)
-                // `peerHex` check: `threadMessages` still holds the previous thread until the new
-                // one loads, and its incoming messages must not unlock a different peer.
-                || threadMessages.contains { !$0.isOutgoing && $0.peerHex == hex }
+        /// A path request for `hex` when the Send gate does not admit it yet, else `.none`.
+        ///
+        /// The gate stays "a send would route right now" (2026-08-22 unlock-send design): this does
+        /// not widen it, it asks the network for the path that would satisfy it. The answer is an
+        /// announce (path response) → `.pathLearned` → `reachablePeers`, the existing unlock. Used
+        /// where the app learns a peer exists but may hold no path to it: a received message (the
+        /// sender needs a path to us, not the reverse) and opening a conversation (after a relaunch).
+        func pathRequestIfUnreachable(_ hex: String) -> Effect<Action> {
+            guard !reachablePeers.contains(hex),
+                  let hash = Data(hexString: hex), hash.count == 16 else { return .none }
+            return .send(.node(.client(.endpoint(.requestPath(destinationHash: hash)))))
         }
 
         public mutating func setThreadReactionRows(_ rows: [Reaction]) {
@@ -320,7 +311,8 @@ public struct AppFeature {
     /// produced a real stamp-cost bug in this project.
     static var pathExpiry: TimeInterval { Transport.pathExpiry }
 
-    /// Request path for the public-key exchange: a peer answers with its 64-byte public key
+    /// Request path for the public-key exchange this device ANSWERS (older builds of this app send
+    /// it; this build no longer does — see `.announceRowTapped`): it replies with its 64-byte public key
     /// (`Identity.publicKey`). The key is already public — every delivery announce carries it,
     /// signed — so answering discloses nothing new; the exchange's value is that it happens over
     /// an authenticated link, i.e. the peer demonstrably holds the matching private key.
@@ -480,7 +472,8 @@ public struct AppFeature {
                 // InterfaceID. The app is `.connected` while any interface is up.
                 state.connectedInterfaces.insert(interfaceID)
                 state.connection = .connected
-                // Restore the Send gate for peers whose persisted path is now usable (interface just registered).
+                // Admit to the Send gate (`reachablePeers`) every peer whose persisted path is now usable
+                // (interface just registered).
                 // The Transport Scope has already run (child reducers reduce before this Reduce body — see the
                 // pathLearned comment), so `endpoint.interfaces` already contains the new interface here.
                 let learnedForSeed = state.node.client.endpoint.learned
@@ -542,66 +535,11 @@ public struct AppFeature {
                 }
                 return .none
 
-            // --- Public-key requests: link lifecycle → request/response ---
-
-            case let .node(.client(.endpoint(.delegate(.linkEstablished(linkID, destHash))))):
-                // The link to a requesting peer is up (the handshake authenticated the peer) — send
-                // the /publicKey request over it. Links established for other reasons (direct
-                // message delivery) are not ours to use here: only links WE opened for a request,
-                // recorded below, are correlated.
-                let hex = destHash.hexString
-                guard state.publicKeyRequests[hex] == .requesting else { return .none }
-                state.publicKeyRequestLinks[linkID] = hex
-                return .send(.node(.client(.endpoint(
-                    .sendRequestOverLink(linkID: linkID, path: AppFeature.publicKeyRequestPath, data: Data())))))
-
-            case let .node(.client(.endpoint(.delegate(.responseReceived(linkID, _, data))))):
-                guard let hex = state.publicKeyRequestLinks[linkID],
-                      state.publicKeyRequests[hex] == .requesting else { return .none }
-                state.publicKeyRequestLinks[linkID] = nil
-                // Validate before trusting: a malformed or low-order key would poison any later
-                // use of the Identity (Identity.init?(publicKey:) rejects both).
-                if data.count == Identity.keySize, Identity(publicKey: data) != nil {
-                    state.publicKeyRequests[hex] = .received(publicKeyHex: data.hexString)
-                } else {
-                    state.publicKeyRequests[hex] = .failed(reason: "invalid public key")
-                }
-                return .none
-
-            case let .node(.client(.endpoint(.delegate(.linkFailed(destHash, _))))):
-                // The link never came up (no path, stale path, or the peer rejected the handshake).
-                // LXMFNode may still recover the route and re-establish — but this attempt is over;
-                // tapping the row again starts a fresh request. No correlation-map entry exists:
-                // linkFailed only fires for links that never reached established.
-                if state.publicKeyRequests[destHash.hexString] == .requesting {
-                    state.publicKeyRequests[destHash.hexString] = .failed(reason: "link failed")
-                }
-                return .none
-
-            case let .node(.client(.endpoint(.delegate(.requestFailed(linkID, _))))):
-                // The request deadline fired with no response (the link is still up — a closed
-                // link cancels the deadline instead, and surfaces via linkClosed below).
-                guard let hex = state.publicKeyRequestLinks[linkID],
-                      state.publicKeyRequests[hex] == .requesting else { return .none }
-                state.publicKeyRequestLinks[linkID] = nil
-                // `/publicKey` is this app's own handler: a reference LXMF peer (NomadNet, Sideband)
-                // registers none, and RNS ignores a request for an unknown path, so it never answers.
-                state.publicKeyRequests[hex] = .failed(reason: "no response (peer does not answer key requests)")
-                return .none
-
             case let .node(.client(.endpoint(.delegate(.linkClosed(linkID, _))))):
                 // An inbound transfer on this link is over, one way or the other.
                 var effects: [Effect<Action>] = []
                 if state.inboundTransfers.removeValue(forKey: linkID) != nil {
                     effects.append(.cancel(id: CancelID.inboundTransfer(linkID)))
-                }
-                // The link went away while a public-key request was in flight. LinkSession's close
-                // path only CANCELS the pending request deadlines — it emits no requestFailed — so
-                // without this a closed link would leave the row stuck on "requesting" forever.
-                if let hex = state.publicKeyRequestLinks[linkID],
-                   state.publicKeyRequests[hex] == .requesting {
-                    state.publicKeyRequestLinks[linkID] = nil
-                    state.publicKeyRequests[hex] = .failed(reason: "link closed")
                 }
                 return .merge(effects)
 
@@ -617,7 +555,11 @@ public struct AppFeature {
                 state.attachmentOriginalRequested = nil
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
-                    .run { [database] send in try await reloadThread(database, peerHex, send) }
+                    .run { [database] send in try await reloadThread(database, peerHex, send) },
+                    // After a relaunch a conversation peer may have no path (session-only gate, none
+                    // persisted or it expired): ask for one instead of leaving Send disabled until
+                    // the peer happens to re-announce.
+                    state.pathRequestIfUnreachable(peerHex)
                 )
 
             case .closeConversation:
@@ -644,7 +586,8 @@ public struct AppFeature {
                 state.attachmentOriginalRequested = nil
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
-                    .run { [database] send in try await reloadThread(database, hex, send) }
+                    .run { [database] send in try await reloadThread(database, hex, send) },
+                    state.pathRequestIfUnreachable(hex)
                 )
 
             case .sendTapped:
@@ -972,6 +915,10 @@ public struct AppFeature {
                     AppFeature.inbound.notice("attachment: kept one, dropped \(dropped, privacy: .public) other file entries from \(String(m.hash.hexString.prefix(8)), privacy: .public)")
                 }
                 let attachmentStore = self.attachmentStore
+                // Receiving gives no path back to the sender (it needed a path to US; a propagated
+                // download gives none at all), so a sender whose delivery announce we never heard
+                // would stay un-repliable. Ask for its path; the response unlocks Send via pathLearned.
+                let pathRequest = state.pathRequestIfUnreachable(incomingPeer)
                 let row = Message(
                     id: UUID(),
                     peerHex: incomingPeer,
@@ -991,7 +938,7 @@ public struct AppFeature {
                     replyToHash: reply?.replyTo.hexString,
                     replyQuote: reply?.quote
                 )
-                return .run { [database] send in
+                let storeMessage: Effect<Action> = .run { [database] send in
                     var pendingAttachmentRow: Attachment? = nil
                     if let decoded = decodedAttachment {
                         // An image ImageIO cannot read is kept as a file so it can still be shared.
@@ -1031,6 +978,7 @@ public struct AppFeature {
                         try await reloadThread(database, incomingPeer, send)
                     }
                 }
+                return .merge(pathRequest, storeMessage)
 
             case let .node(.client(.delegate(.deliveryFailed(hash)))):
                 return markUndeliverable(&state, hash, status: MessageStatus.failed, reason: nil)
@@ -1117,26 +1065,19 @@ public struct AppFeature {
                 return .send(.node(.client(.announceDelivery)))
 
             case let .announceRowTapped(hex):
-                // A request already in flight owns its link; a second tap would open a duplicate
-                // authenticated link to the same peer for no benefit. Tapping after settled
-                // (received/failed) starts a fresh request — that is the retry path.
-                guard state.publicKeyRequests[hex] != .requesting else { return .none }
                 guard let hash = Data(hexString: hex), hash.count == 16 else { return .none }
-                // The key is already known when the peer's announce is in the learned table: the
-                // announce is signed by that key and the destination hash is derived from it, so it
-                // is as authenticated as a link handshake — and `openLink` below could not run
-                // without this very entry. Settle from it: the `/publicKey` request is this app's own
-                // handler, which a reference LXMF peer (NomadNet, Sideband) never answers.
+                // The key comes from the peer's announce in the learned table: the announce is signed
+                // by that key and the destination hash is derived from it, so it is authenticated.
+                // There is no network request. The former link + `/publicKey` request could only run
+                // when this entry existed (`openLink` needs it), so it never learned anything new, and
+                // reference LXMF peers (NomadNet, Sideband) never answer `/publicKey` ("no response").
+                // This device still ANSWERS `/publicKey` (handler registered on interfaceConnected).
                 if let known = state.node.client.endpoint.learned[hash]?.identity {
                     state.publicKeyRequests[hex] = .received(publicKeyHex: known.publicKey.hexString)
-                    return .none
+                } else {
+                    state.publicKeyRequests[hex] = .failed(reason: "key unknown (no announce heard)")
                 }
-                state.publicKeyRequests[hex] = .requesting
-                // The link handshake itself authenticates the peer (the responder must sign with
-                // the destination identity's private key); the /publicKey request over that link
-                // then fetches the key from the device. `openLink` resolves the destination's
-                // identity from the transport's learned table (populated by this peer's announce).
-                return .send(.node(.client(.endpoint(.openLink(destinationHash: hash)))))
+                return .none
 
             case let .node(.client(.delegate(.propagationAccepted(hash)))):
                 let hex = hash.hexString
@@ -1508,7 +1449,8 @@ private func syncEndpointHostPort(_ state: inout AppFeature.State) {
     }
 }
 
-// Seed `reachablePeers` (the Send gate) from learned destinations that are reachable RIGHT NOW:
+// Seed `reachablePeers` (the Send gate, "a send would route now") from learned destinations that
+// are reachable RIGHT NOW:
 // present in `destinations` AND whose interface is currently registered. `interfaces` is EMPTY
 // whenever the socket is down (every interface deregisters), so this no-ops until an interface
 // registers — the same reachability test `reachableLearned` uses (ReTiCA Transport.swift:159-163)

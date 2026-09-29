@@ -71,8 +71,6 @@ struct AnnounceListView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        // A request in flight owns its link; re-tapping would be a no-op anyway.
-                        .disabled(store.state.publicKeyRequests[announce.hex] == .requesting)
                     }
                     .listStyle(.plain)
                 }
@@ -88,16 +86,10 @@ struct AnnounceListView: View {
         }
     }
 
-    /// The status of the tapped-row public-key request for this peer, if any.
+    /// The tapped row's public key (from the peer's announce), if any.
     @ViewBuilder
     private func publicKeyRequestStatus(for hex: String) -> some View {
         switch store.state.publicKeyRequests[hex] {
-        case .requesting:
-            HStack(spacing: 6) {
-                ProgressView()
-                Text("Requesting public key…")
-            }
-            .font(.caption)
         case let .received(keyHex):
             Label(shortHex(keyHex), systemImage: "checkmark.seal")
                 .font(.system(.caption, design: .monospaced))
