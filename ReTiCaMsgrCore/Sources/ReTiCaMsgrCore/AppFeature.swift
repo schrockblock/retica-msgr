@@ -70,6 +70,11 @@ public struct AppFeature {
         public var draft = ""
         /// The message being replied to, or nil. Session-only.
         public var replyTarget: ReplyTarget? = nil
+        /// The attachment waiting in the composer, its in-flight preparation, and the last error.
+        /// Session-only; cleared by send, remove, or leaving the conversation.
+        public var pendingAttachment: PendingAttachment? = nil
+        public var attachmentPreparing = false
+        public var attachmentError: String? = nil
         // Derived list of peers, reloaded after every write.
         public var conversations: [Conversation] = []
         // The peer whose thread is currently open (drives navigation), and its messages.
@@ -184,6 +189,17 @@ public struct AppFeature {
         case replyTapped(Message.ID)
         /// The ✕ on the reply bar.
         case replyCancelled
+        /// The composer's picker delivered bytes; prepare them (encode a photo) off the main thread.
+        case attachmentPicked(PickedItem)
+        case attachmentPrepared(PendingAttachment)
+        case attachmentFailed(String)
+        /// The × on the attachment bar.
+        case attachmentRemoved
+        /// The Original toggle on a pending photo: re-encode from the picker's bytes.
+        case attachmentOriginalToggled(Bool)
+        /// The send could not write the attachment's bytes, so nothing was sent: show `storeFailed`
+        /// in the attachment bar and give the caption back. Internal.
+        case attachmentSendFailed(draft: String)
         case rehydratePropagationStore([Data])
         /// Restore the router's dedup sets (seen-message hashes + downloaded transient IDs) from the
         /// previous session. Sent on launch after reading the three durability tables.
@@ -212,6 +228,8 @@ public struct AppFeature {
         /// The running debounce timer for learned-destination persistence.
         /// Cancelled and restarted on every `.pathLearned`; cancelled on `.backgrounded` flush.
         case learnedDebounce
+        /// The one in-flight preparation (photo encode) of a picked attachment.
+        case attachmentPreparation
     }
 
     @Dependency(\.defaultDatabase) var database
@@ -509,7 +527,14 @@ public struct AppFeature {
                 // Review fix: a target from the previous conversation must not survive the switch —
                 // it would point at a message the new thread doesn't even contain.
                 state.replyTarget = nil
-                return .run { [database] send in try await reloadThread(database, peerHex, send) }
+                // Neither may a pending attachment, nor its preparation still in flight.
+                state.pendingAttachment = nil
+                state.attachmentPreparing = false
+                state.attachmentError = nil
+                return .merge(
+                    .cancel(id: CancelID.attachmentPreparation),
+                    .run { [database] send in try await reloadThread(database, peerHex, send) }
+                )
 
             case .closeConversation:
                 state.openPeerHex = nil
@@ -518,18 +543,30 @@ public struct AppFeature {
                 state.attachmentsByMessageId = [:]
                 state.draft = ""
                 state.replyTarget = nil
-                return .none
+                state.pendingAttachment = nil
+                state.attachmentPreparing = false
+                state.attachmentError = nil
+                return .cancel(id: CancelID.attachmentPreparation)
 
             case let .startConversation(hex):
                 guard let data = Data(hexString: hex), data.count == 16 else { return .none }
                 state.openPeerHex = hex
                 // Review fix: same as `openConversation` — clear any stale target from before.
                 state.replyTarget = nil
-                return .run { [database] send in try await reloadThread(database, hex, send) }
+                state.pendingAttachment = nil
+                state.attachmentPreparing = false
+                state.attachmentError = nil
+                return .merge(
+                    .cancel(id: CancelID.attachmentPreparation),
+                    .run { [database] send in try await reloadThread(database, hex, send) }
+                )
 
             case .sendTapped:
                 let text = state.draft
-                guard !text.isEmpty,
+                let pending = state.pendingAttachment
+                // Text or an attachment, not while a pick is still being prepared.
+                guard !text.isEmpty || pending != nil,
+                      !state.attachmentPreparing,
                       let peerHex = state.openPeerHex,
                       let peer = Data(hexString: peerHex) else { return .none }
                 // A reply carries the original's full hash and a trimmed quote in the standard LXMF
@@ -547,6 +584,13 @@ public struct AppFeature {
                     // nil, matching the wire, which now omits 0x31 for an empty quote too.
                     replyQuote = quote.isEmpty ? nil : quote
                 }
+                // The attachment field (0x05 or 0x06) comes first, then any reply fields.
+                var attachmentFields: [MsgPackValue.IntPair] = []
+                if let pending {
+                    attachmentFields = pending.isImage
+                        ? AttachmentWire.encodeImage(pending.data)
+                        : AttachmentWire.encodeFile(name: pending.name, data: pending.data)
+                }
                 let title = Data()
                 let content = Data(text.utf8)
                 let now = date.now
@@ -556,7 +600,7 @@ public struct AppFeature {
                     timestamp: now.timeIntervalSince1970,
                     title: title,
                     content: content,
-                    fields: replyFields
+                    fields: attachmentFields + replyFields
                 )
                 let alsoViaPropagation = !state.propagationNodeHex.isEmpty
                 // Outgoing Info metadata. `wireSize` is the unstamped packed size: LXMFNode adds any
@@ -581,10 +625,46 @@ public struct AppFeature {
                 )
                 state.draft = ""
                 state.replyTarget = nil
+                state.pendingAttachment = nil
+                state.attachmentError = nil
+                // The guard above refuses while preparing, so nothing should be in flight here;
+                // cancelling anyway means no late result can land on the emptied composer.
+                guard let pending else {
+                    return .merge(
+                        .cancel(id: CancelID.attachmentPreparation),
+                        .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
+                        .run { [database] send in
+                            try await database.write { try Message.insert { row }.execute($0) }
+                            try await reloadThread(database, peerHex, send)
+                            try await reloadConversations(database, send)
+                        }
+                    )
+                }
+                // With an attachment the bytes go to disk first, then both rows in one transaction,
+                // and only then the send — a write failure sends nothing (spec §4 errors).
+                let attachmentStore = self.attachmentStore
+                let messageHash = msg.hash.hexString
                 return .merge(
-                    .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
+                    .cancel(id: CancelID.attachmentPreparation),
                     .run { [database] send in
-                        try await database.write { try Message.insert { row }.execute($0) }
+                        let path: String
+                        do {
+                            path = try attachmentStore.store(pending.data, messageHash: messageHash,
+                                                             outgoing: true, ext: pending.format)
+                        } catch {
+                            AppFeature.inbound.error("attachment send: store failed for \(String(messageHash.prefix(8)), privacy: .public): \(String(describing: error), privacy: .public)")
+                            await send(.attachmentSendFailed(draft: text))
+                            return
+                        }
+                        let attachment = Attachment(
+                            id: UUID(), messageId: row.id, kind: pending.kind, name: pending.name,
+                            format: pending.format, size: pending.data.count,
+                            width: pending.width, height: pending.height, path: path)
+                        try await database.write { db in
+                            try Message.insert { row }.execute(db)
+                            try Attachment.insert { attachment }.execute(db)
+                        }
+                        await send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation))))
                         try await reloadThread(database, peerHex, send)
                         try await reloadConversations(database, send)
                     }
@@ -639,6 +719,47 @@ public struct AppFeature {
 
             case .replyCancelled:
                 state.replyTarget = nil
+                return .none
+
+            case let .attachmentPicked(item):
+                // A new pick replaces whatever was pending, even if it then fails.
+                state.pendingAttachment = nil
+                state.attachmentError = nil
+                state.attachmentPreparing = true
+                return prepareEffect(item, original: false)
+
+            case let .attachmentOriginalToggled(original):
+                guard let pending = state.pendingAttachment, pending.isImage,
+                      let source = pending.originalSource, pending.isOriginal != original
+                else { return .none }
+                state.attachmentPreparing = true
+                // The name is passed through so a toggle never renames the photo.
+                return prepareEffect(PickedItem(kind: AttachmentKind.image, name: pending.name, data: source),
+                                     original: original)
+
+            case let .attachmentPrepared(pending):
+                state.pendingAttachment = pending
+                state.attachmentPreparing = false
+                state.attachmentError = nil
+                return .none
+
+            case let .attachmentFailed(reason):
+                state.pendingAttachment = nil
+                state.attachmentPreparing = false
+                state.attachmentError = reason
+                return .none
+
+            case .attachmentRemoved:
+                state.pendingAttachment = nil
+                state.attachmentPreparing = false
+                state.attachmentError = nil
+                return .cancel(id: CancelID.attachmentPreparation)
+
+            case let .attachmentSendFailed(draft):
+                // Inline, in the attachment bar (no alert plumbing): nothing was sent, the caption
+                // comes back, and the attachment has to be picked again.
+                state.attachmentError = AttachmentPreparation.storeFailed
+                state.draft = draft
                 return .none
 
             case let .node(.client(.endpoint(.delegate(.pathLearned(h, _))))):
@@ -1080,6 +1201,32 @@ public struct AppFeature {
                 return .none
             }
         }
+    }
+
+    /// Encodes a picked item off the main thread (spec §3). One preparation at a time: a newer
+    /// pick or Original toggle cancels the one in flight (`cancelInFlight`), and Remove, leaving or
+    /// switching the thread, and Send cancel it too, so a late result can never replace or
+    /// resurrect the pending attachment (a cancelled effect's `send` is dropped).
+    private func prepareEffect(_ item: PickedItem, original: Bool) -> Effect<Action> {
+        let now = date.now
+        return .run { send in
+            // A real (not cooperative-yield) suspension point BEFORE the encode: `Task.sleep`
+            // requires the runtime to schedule a timer callback, which — unlike `Task.yield()` —
+            // cannot be satisfied by simply running this task to completion in one scheduling
+            // turn. That gives a `.cancel(id:)` issued concurrently (Remove, leaving, or Send) a
+            // real window to land before the (synchronous, ImageIO-bound) encode ever starts, so
+            // cancellation is not merely theoretical for a fast/small picked item. `Task.sleep`
+            // throws `CancellationError` immediately once cancelled, which this `try?` swallows —
+            // the function simply returns, and the cancelled `send` below would have been dropped
+            // anyway.
+            try? await Task.sleep(for: .milliseconds(1))
+            guard !Task.isCancelled else { return }
+            switch AttachmentPreparation.prepare(item, original: original, now: now) {
+            case let .success(pending): await send(.attachmentPrepared(pending))
+            case let .failure(error): await send(.attachmentFailed(error.message))
+            }
+        }
+        .cancellable(id: CancelID.attachmentPreparation, cancelInFlight: true)
     }
 }
 

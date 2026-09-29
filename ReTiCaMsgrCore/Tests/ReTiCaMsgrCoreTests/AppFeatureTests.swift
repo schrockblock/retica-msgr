@@ -2981,3 +2981,274 @@ private func attachReceiveAndFetch(_ m: LXMessage, me: Identity, store attachmen
     await store.send(.replyTapped(uuid(1)))
     #expect(store.state.replyTarget == AppFeature.ReplyTarget(messageHash: hash, body: "📷 Photo", isOutgoing: false))
 }
+
+// MARK: - Attachments: sending (spec 2026-09-28 §3)
+
+/// 1600×1200: above the 1280 standard edge (so the standard preset scales it to 1280×960) but
+/// small enough that the PNG decode + JPEG encode inside `store.receive` stays well under the
+/// TestStore's 1 s receive timeout in a parallel full suite.
+private let attachPNG = TestImages.png(width: 1600, height: 1200)
+
+private func pendingImage(_ data: Data = TestImages.jpeg(width: 40, height: 30)) -> PendingAttachment {
+    PendingAttachment(kind: AttachmentKind.image, name: "IMG_20231114_221320.jpg", format: "jpeg", data: data,
+                      width: 40, height: 30, originalSource: data, isOriginal: false)
+}
+
+private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF fake".utf8)) -> PendingAttachment {
+    PendingAttachment(kind: AttachmentKind.file, name: name, format: "pdf", data: data,
+                      width: nil, height: nil, originalSource: nil, isOriginal: false)
+}
+
+@MainActor @Test func attachSendPickingAnImagePreparesAStandardJPEG() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG)))
+    #expect(store.state.attachmentPreparing)
+    await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
+    let p = try! #require(store.state.pendingAttachment)
+    #expect(p.kind == "image")
+    #expect(p.format == "jpeg")
+    #expect(p.name == "IMG_20231114_221320.jpg")   // the frozen \.date, UTC
+    #expect(p.width == 1280)
+    #expect(p.height == 960)
+    #expect(p.originalSource == attachPNG)
+    #expect(p.isOriginal == false)
+    #expect(ImageEncoder.containerType(of: p.data) == "public.jpeg")
+    #expect(!store.state.attachmentPreparing)
+    #expect(store.state.attachmentError == nil)
+}
+
+@MainActor @Test func attachSendOriginalToggleReencodesFromTheSource() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG)))
+    await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
+    await store.send(.attachmentOriginalToggled(true))
+    #expect(store.state.attachmentPreparing)
+    await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
+    #expect(store.state.pendingAttachment?.width == 1600)
+    #expect(store.state.pendingAttachment?.height == 1200)
+    #expect(store.state.pendingAttachment?.isOriginal == true)
+    #expect(store.state.pendingAttachment?.name == "IMG_20231114_221320.jpg")   // the name is kept
+    await store.send(.attachmentOriginalToggled(false))
+    await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
+    #expect(store.state.pendingAttachment?.width == 1280)
+    #expect(store.state.pendingAttachment?.height == 960)
+    // Toggling to the state it is already in, or with a file pending, does nothing.
+    store.exhaustivity = .on
+    await store.send(.attachmentOriginalToggled(false))
+    await store.send(.attachmentRemoved) {
+        $0.pendingAttachment = nil
+        $0.attachmentPreparing = false
+        $0.attachmentError = nil
+    }
+    store.exhaustivity = .off
+}
+
+@MainActor @Test func attachSendPickingAFilePassesThrough() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    let bytes = Data("%PDF fake".utf8)
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.file, name: "Trail map.pdf", data: bytes)))
+    await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
+    let p = try! #require(store.state.pendingAttachment)
+    #expect(p.kind == "file")
+    #expect(p.name == "Trail map.pdf")
+    #expect(p.format == "pdf")
+    #expect(p.data == bytes)
+    #expect(p.width == nil && p.height == nil)
+    #expect(p.originalSource == nil)
+    #expect(p.size == bytes.count)
+}
+
+/// A late preparation result must not resurrect an attachment the user removed: Remove cancels
+/// the encode in flight.
+@MainActor @Test func attachSendRemoveCancelsAPendingPreparation() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG)))
+    await store.send(.attachmentRemoved)
+    // Exhaustive from here: once every effect has finished, a late `attachmentPrepared` would be
+    // an unhandled received action and the probe send fails.
+    store.exhaustivity = .on
+    await store.finish()
+    await store.send(.replyCancelled)   // probe
+    store.exhaustivity = .off
+    #expect(store.state.pendingAttachment == nil)
+}
+
+@MainActor @Test func attachSendUndecodableImageFails() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.pendingAttachment = pendingFile()   // replaced by the new pick, even when it fails
+    }
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: Data("junk".utf8))))
+    #expect(store.state.pendingAttachment == nil)
+    await store.receive(.attachmentFailed(AttachmentPreparation.undecodableImage))
+    #expect(store.state.attachmentError == AttachmentPreparation.undecodableImage)
+    #expect(!store.state.attachmentPreparing)
+    #expect(store.state.pendingAttachment == nil)
+}
+
+@Test func attachSendSizeNotesAndFormatting() {
+    #expect(AttachmentSizeNote.note(for: 100) == nil)
+    #expect(AttachmentSizeNote.note(for: 256_000) == nil)
+    #expect(AttachmentSizeNote.note(for: 256_001) == AttachmentSizeNote.overPropagation)
+    #expect(AttachmentSizeNote.note(for: 1_000_000) == AttachmentSizeNote.overPropagation)
+    #expect(AttachmentSizeNote.note(for: 1_000_001) == AttachmentSizeNote.overDelivery)
+    #expect(AttachmentSizeNote.formattedSize(900) == "900 B")
+    #expect(AttachmentSizeNote.formattedSize(34_211) == "34 KB")
+    #expect(AttachmentSizeNote.formattedSize(1_234_567) == "1.2 MB")
+    #expect(AttachmentSizeNote.formattedSize(10_500_000) == "10.5 MB")
+}
+
+/// The whole send saga for an image: bytes on disk, both rows, the 0x06 field, and the caption.
+@MainActor @Test func attachSendImageWritesRowsFileAndFields() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let files = attachTempStore()
+    let jpeg = TestImages.jpeg(width: 40, height: 30)
+    let store = makeStore(db, identity: Identity(), attachmentStore: files) { s in
+        s.openPeerHex = peerA
+        s.draft = "cap"
+        s.pendingAttachment = pendingImage(jpeg)
+    }
+    await store.send(.sendTapped)
+    #expect(store.state.pendingAttachment == nil)
+    #expect(store.state.draft == "")
+    var sent: LXMessage?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action { sent = msg; return true }
+        return false
+    }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    let msg = try #require(sent)
+    #expect(msg.fields.map(\.key) == [0x06])
+    #expect(AttachmentWire.decode(msg.fields)?.data == jpeg)
+    #expect(msg.content == Data("cap".utf8))
+    let row = try #require(try await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }.first)
+    #expect(row.body == "cap")
+    #expect(row.fieldKeys == "0x06")
+    #expect(row.wireSize == msg.packed.count)
+    #expect(row.status == MessageStatus.sending)
+    let a = try #require(try await db.read { try Attachment.all.fetchAll($0) }.first)
+    #expect(a.messageId == row.id)
+    #expect(a.kind == "image")
+    #expect(a.name == "IMG_20231114_221320.jpg")
+    #expect(a.format == "jpeg")
+    #expect(a.size == jpeg.count)
+    #expect(a.width == 40 && a.height == 30)
+    #expect(a.path == "\(msg.hash.hexString)-out.jpeg")
+    #expect(try Data(contentsOf: files.url(forRelativePath: a.path)) == jpeg)
+    #expect(store.state.attachmentsByMessageId[row.id] == a)
+}
+
+@MainActor @Test func attachSendFileWithNoTextIsAllowed() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let files = attachTempStore()
+    let store = makeStore(db, identity: Identity(), attachmentStore: files) { s in
+        s.openPeerHex = peerA
+        s.draft = ""
+        s.pendingAttachment = pendingFile()
+    }
+    await store.send(.sendTapped)
+    var sent: LXMessage?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action { sent = msg; return true }
+        return false
+    }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    let msg = try #require(sent)
+    #expect(msg.fields.map(\.key) == [0x05])
+    #expect(AttachmentWire.decode(msg.fields)?.name == "Trail map.pdf")
+    #expect(msg.content.isEmpty)
+    let a = try #require(try await db.read { try Attachment.all.fetchAll($0) }.first)
+    #expect(a.kind == "file")
+    #expect(a.path == "\(msg.hash.hexString)-out.pdf")
+    #expect(files.exists(a.path))
+}
+
+@MainActor @Test func attachSendWithReplyOrdersAttachmentFirst() async throws {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), attachmentStore: attachTempStore()) { s in
+        s.openPeerHex = peerA
+        s.draft = ""
+        s.pendingAttachment = pendingImage()
+        s.replyTarget = AppFeature.ReplyTarget(messageHash: replyTargetHash, body: "see you", isOutgoing: false)
+    }
+    await store.send(.sendTapped)
+    var sent: LXMessage?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action { sent = msg; return true }
+        return false
+    }
+    #expect(sent?.fields.map(\.key) == [0x06, 0x30, 0x31])
+    #expect(store.state.replyTarget == nil)
+}
+
+/// Review Focus 4 (send half): a store that cannot write sends NOTHING, says so inline, and gives
+/// the caption back.
+@MainActor @Test func attachSendStoreFailureSendsNothing() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let blocker = FileManager.default.temporaryDirectory.appending(path: "attachSendBlocker-\(UUID().uuidString)")
+    try Data([0]).write(to: blocker)
+    let broken = AttachmentStore(baseDirectory: blocker.appending(path: "Attachments"))
+    let store = makeStore(db, identity: Identity(), attachmentStore: broken) { s in
+        s.openPeerHex = peerA
+        s.draft = "cap"
+        s.pendingAttachment = pendingImage()
+    }
+    store.exhaustivity = .on
+    await store.send(.sendTapped) {
+        $0.draft = ""
+        $0.pendingAttachment = nil
+        $0.attachmentError = nil
+    }
+    await store.receive(.attachmentSendFailed(draft: "cap")) {
+        $0.attachmentError = AttachmentPreparation.storeFailed
+        $0.draft = "cap"
+    }
+    // Exhaustive probe: no sendMessage, no reload followed.
+    await store.send(.replyCancelled)
+    store.exhaustivity = .off
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    #expect(try await db.read { try Attachment.all.fetchAll($0) }.isEmpty)
+}
+
+@MainActor @Test func attachSendTextOnlyLeavesNoAttachmentRow() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = "just text"
+    }
+    await store.send(.sendTapped)
+    var sent: LXMessage?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action { sent = msg; return true }
+        return false
+    }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    #expect(sent?.fields.isEmpty == true)
+    #expect(try await db.read { try Attachment.all.fetchAll($0) }.isEmpty)
+}
+
+@MainActor @Test func attachSendGuardsWhilePreparingAndClearsOnClose() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = "x"
+        s.attachmentPreparing = true
+    }
+    store.exhaustivity = .on
+    await store.send(.sendTapped)            // nothing happens while a pick is being prepared
+    await store.send(.replyCancelled)         // probe
+    store.exhaustivity = .off
+    #expect(store.state.draft == "x")
+    // Empty draft and no attachment: nothing happens either.
+    let empty = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in s.openPeerHex = peerA }
+    empty.exhaustivity = .on
+    await empty.send(.sendTapped)
+    await empty.send(.replyCancelled)
+    empty.exhaustivity = .off
+    // Leaving the conversation drops a pending attachment and its error.
+    let leaving = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.pendingAttachment = pendingFile()
+        s.attachmentError = "old"
+    }
+    await leaving.send(.closeConversation)
+    #expect(leaving.state.pendingAttachment == nil)
+    #expect(leaving.state.attachmentError == nil)
+}
