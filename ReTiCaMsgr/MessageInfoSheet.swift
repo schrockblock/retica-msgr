@@ -27,7 +27,9 @@ struct MessageInfoSheet: View {
             Group {
                 if let message {
                     List {
-                        ForEach(Array(MessageInfo.sections(for: message).enumerated()), id: \.offset) { _, section in
+                        ForEach(Array(MessageInfo.sections(for: message,
+                                                           attachment: store.attachmentsByMessageId[message.id]).enumerated()),
+                                id: \.offset) { _, section in
                             Section {
                                 ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
                                     InfoRow(row: row) { copy(row.copy) }
