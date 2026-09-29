@@ -117,7 +117,8 @@ public enum MessageInfo {
     }
 
     static func attachmentSection(_ a: Attachment) -> Section {
-        let dimensions: String? = (a.width != nil && a.height != nil) ? "\(a.width!) × \(a.height!)" : nil
+        var dimensions: String? = nil
+        if let width = a.width, let height = a.height { dimensions = "\(width) × \(height)" }
         return Section(title: "Attachment", rows: [
             Row("Kind", a.isImage ? "Image" : "File"),
             Row("Name", a.name),

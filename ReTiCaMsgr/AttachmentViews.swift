@@ -6,6 +6,7 @@
 import SwiftUI
 import UIKit
 import ImageIO
+import ComposableArchitecture
 import ReTiCaMsgrCore
 
 // MARK: - Thumbnails
@@ -18,8 +19,13 @@ final class ThumbnailCache {
     static let shared = ThumbnailCache()
     private let cache = NSCache<NSString, UIImage>()
 
+    /// Decoded bitmaps are width × height × 4 bytes: a viewer decode at 2048 px is up to 16 MB, so
+    /// a count limit alone would let a few of them pin a lot of memory.
+    static let totalCostLimit = 64 * 1024 * 1024
+
     private init() {
         cache.countLimit = 200
+        cache.totalCostLimit = Self.totalCostLimit
     }
 
     func image(for url: URL, key: String, maxPixels: Int) async -> UIImage? {
@@ -39,8 +45,14 @@ final class ThumbnailCache {
             guard let src = source() else { return nil }
             return Self.decode(src, maxPixels: maxPixels)
         }.value
-        if let decoded { cache.setObject(decoded, forKey: cacheKey) }
+        if let decoded { cache.setObject(decoded, forKey: cacheKey, cost: Self.cost(of: decoded)) }
         return decoded
+    }
+
+    /// The decoded bitmap's size in bytes (4 per pixel).
+    private static func cost(of image: UIImage) -> Int {
+        guard let cg = image.cgImage else { return 0 }
+        return cg.width * cg.height * 4
     }
 
     nonisolated private static func decode(_ source: CGImageSource, maxPixels: Int) -> UIImage? {
@@ -65,6 +77,9 @@ struct AttachmentThumbnail: View {
 
     let attachment: Attachment
     let url: URL?
+    /// Told whether the decode failed, so the bubble can stop offering a viewer for bytes that
+    /// cannot be shown.
+    var onFailedChange: ((Bool) -> Void)? = nil
     @State private var image: UIImage?
     @State private var failed = false
 
@@ -95,11 +110,15 @@ struct AttachmentThumbnail: View {
         }
         .frame(width: displaySize.width, height: displaySize.height)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        // The hit area is the clipped frame, not a `scaledToFill` overflow that would otherwise
+        // steal taps from the quote block above.
+        .contentShape(RoundedRectangle(cornerRadius: 12))
         .task(id: attachment.id) {
             guard let url else { return }
             let decoded = await ThumbnailCache.shared.image(for: url, key: attachment.id.uuidString, maxPixels: Self.decodePixels)
             image = decoded
             failed = decoded == nil
+            onFailedChange?(failed)
         }
         .accessibilityLabel(attachment.isImage ? "Photo" : attachment.name)
     }
@@ -116,15 +135,18 @@ struct AttachmentBubbleSlot: View {
     let onOutgoingBubble: Bool
     var onTapImage: (() -> Void)? = nil
     var onTapFile: (() -> Void)? = nil
+    /// The thumbnail could not decode (the file is gone or unreadable): no viewer to open.
+    @State private var thumbnailFailed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if attachment.isImage {
                 Button { onTapImage?() } label: {
-                    AttachmentThumbnail(attachment: attachment, url: url)
+                    AttachmentThumbnail(attachment: attachment, url: url,
+                                        onFailedChange: { thumbnailFailed = $0 })
                 }
                 .buttonStyle(.plain)
-                .disabled(onTapImage == nil || url == nil)
+                .disabled(onTapImage == nil || url == nil || thumbnailFailed)
             } else {
                 FileAttachmentRow(attachment: attachment, url: url, onOutgoingBubble: onOutgoingBubble,
                                   onTap: onTapFile)
@@ -144,6 +166,7 @@ struct FileAttachmentRow: View {
     let url: URL?
     let onOutgoingBubble: Bool
     var onTap: (() -> Void)? = nil
+    @Dependency(\.attachmentStore) private var attachmentStore
     @State private var missing = false
 
     private var status: String {
@@ -178,9 +201,11 @@ struct FileAttachmentRow: View {
         .disabled(onTap == nil || url == nil || missing)
         .accessibilityElement(children: .combine)
         .task(id: attachment.id) {
-            guard let url else { return }
-            let path = url.path
-            missing = await Task.detached { !FileManager.default.fileExists(atPath: path) }.value
+            guard url != nil else { return }
+            // Through the store, the one type that touches attachment files.
+            let store = attachmentStore
+            let path = attachment.path
+            missing = await Task.detached { !store.exists(path) }.value
         }
     }
 }
@@ -323,39 +348,45 @@ struct ImageViewerSheet: View {
     let shareURL: URL
     @Environment(\.dismiss) private var dismiss
     @State private var image: UIImage?
+    /// The decode came back empty (the file is gone or unreadable): say so instead of spinning.
+    @State private var decodeFailed = false
     @State private var zoom: CGFloat = 1
     @State private var lastZoom: CGFloat = 1
     @State private var dragOffset: CGFloat = 0
+
+    /// Whether the image, fitted to the viewport's width at zoom 1, is no taller than the viewport.
+    /// A taller one scrolls vertically, so a downward drag there must pan, not dismiss.
+    static func fitsVertically(_ image: UIImage, in viewport: CGSize) -> Bool {
+        guard image.size.width > 0 else { return true }
+        return viewport.width * image.size.height / image.size.width <= viewport.height
+    }
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.black.ignoresSafeArea()
                 if let image {
-                    ScrollView([.horizontal, .vertical], showsIndicators: false) {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: UIScreen.main.bounds.width * zoom)
-                    }
-                    .offset(y: dragOffset)
-                    .gesture(MagnifyGesture()
-                        .onChanged { value in zoom = min(max(lastZoom * value.magnification, 1), 5) }
-                        .onEnded { _ in lastZoom = zoom })
-                    // Spec §4: swipe down to dismiss — only at zoom 1, where a drag is not a pan.
-                    .simultaneousGesture(DragGesture()
-                        .onChanged { value in
-                            guard zoom == 1 else { return }
-                            dragOffset = max(value.translation.height, 0)
+                    GeometryReader { geo in
+                        ScrollView([.horizontal, .vertical], showsIndicators: false) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: geo.size.width * zoom)
+                                // Centred at zoom 1: the content is at least the viewport.
+                                .frame(minWidth: geo.size.width, minHeight: geo.size.height)
                         }
-                        .onEnded { value in
-                            guard zoom == 1 else { return }
-                            if value.translation.height > Self.dismissDragDistance {
-                                dismiss()
-                            } else {
-                                withAnimation(.spring) { dragOffset = 0 }
-                            }
-                        })
+                        .offset(y: dragOffset)
+                        .gesture(MagnifyGesture()
+                            .onChanged { value in zoom = min(max(lastZoom * value.magnification, 1), 5) }
+                            .onEnded { _ in lastZoom = zoom })
+                        // Spec §4: swipe down to dismiss — only at zoom 1, where a drag is not a pan,
+                        // and only when the image fits vertically (otherwise the drag scrolls it).
+                        .simultaneousGesture(dismissDrag,
+                                             including: Self.fitsVertically(image, in: geo.size) ? .all : .subviews)
+                    }
+                } else if decodeFailed {
+                    Label("Photo unavailable", systemImage: "photo")
+                        .foregroundStyle(.white)
                 } else {
                     ProgressView().tint(.white)
                 }
@@ -370,7 +401,25 @@ struct ImageViewerSheet: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .task(id: attachment.id) {
-            image = await ThumbnailCache.shared.image(for: url, key: attachment.id.uuidString, maxPixels: 2048)
+            let decoded = await ThumbnailCache.shared.image(for: url, key: attachment.id.uuidString, maxPixels: 2048)
+            image = decoded
+            decodeFailed = decoded == nil
         }
+    }
+
+    private var dismissDrag: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard zoom == 1 else { return }
+                dragOffset = max(value.translation.height, 0)
+            }
+            .onEnded { value in
+                guard zoom == 1 else { return }
+                if value.translation.height > Self.dismissDragDistance {
+                    dismiss()
+                } else {
+                    withAnimation(.spring) { dragOffset = 0 }
+                }
+            }
     }
 }

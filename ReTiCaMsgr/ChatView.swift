@@ -52,8 +52,10 @@ struct ChatView: View {
                     let replyPreview = ReplyPreview.resolve(for: message, in: store.threadMessages, peerName: peerName,
                                                             attachments: store.attachmentsByMessageId)
                     let attachment = store.attachmentsByMessageId[message.id]
+                    // A sending message shows the bar from the start: 0 until the first report,
+                    // which the bar draws as indeterminate ("waiting for link").
                     let progress = message.isOutgoing && message.status == MessageStatus.sending
-                        ? store.outgoingProgress[message.messageHash] : nil
+                        ? store.outgoingProgress[message.messageHash] ?? 0 : nil
                     MessageBubble(
                         message: message,
                         reactions: reactions,
@@ -92,8 +94,11 @@ struct ChatView: View {
                         Button("Info", systemImage: "info.circle") {
                             infoTarget = InfoTarget(id: message.id)
                         }
-                        Button("Copy", systemImage: "doc.on.doc") {
-                            UIPasteboard.general.string = message.body
+                        // A caption-less photo or file has no text to copy.
+                        if !message.body.isEmpty {
+                            Button("Copy", systemImage: "doc.on.doc") {
+                                UIPasteboard.general.string = message.body
+                            }
                         }
                     } preview: {
                         BubbleText(message: message, replyPreview: replyPreview,
@@ -132,6 +137,8 @@ struct ChatView: View {
 
             HStack(spacing: 4) {
                 AttachmentPickerButton(
+                    peerHex: store.openPeerHex ?? "",
+                    onLoadStarted: { store.send(.attachmentLoadStarted(peerHex: $0)) },
                     onPicked: { store.send(.attachmentPicked($0)) },
                     onFailed: { store.send(.attachmentFailed($0)) }
                 )

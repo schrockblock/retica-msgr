@@ -93,6 +93,9 @@ public struct AppFeature {
         public var pendingAttachment: PendingAttachment? = nil
         public var attachmentPreparing = false
         public var attachmentError: String? = nil
+        /// The Original value last asked for while a toggle's re-encode is in flight, nil when idle,
+        /// so toggling back before the first re-encode lands is compared with what was asked for.
+        public var attachmentOriginalRequested: Bool? = nil
         /// Outgoing transfer progress by message hash hex, from `deliveryProgress`: monotonic, and
         /// cleared by every terminal delivery outcome. Session-only.
         public var outgoingProgress: [String: Double] = [:]
@@ -103,12 +106,25 @@ public struct AppFeature {
         /// the open peer.
         public var inboundTransfersForOpenThread: [InboundTransfer] {
             let open = openPeerHex.flatMap { Data(hexString: $0) }
-            return inboundTransfers.values.filter { $0.sourceHash == nil || $0.sourceHash == open }
+            return sortedInboundTransfers { $0.sourceHash == nil || $0.sourceHash == open }
         }
 
         /// Transfers nobody can be named for, shown on the conversation list.
         public var unattributedInboundTransfers: [InboundTransfer] {
-            inboundTransfers.values.filter { $0.sourceHash == nil }
+            sortedInboundTransfers { $0.sourceHash == nil }
+        }
+
+        /// A stable order for the UI (a dictionary's is arbitrary): oldest report first, ties by
+        /// link ID hex.
+        private func sortedInboundTransfers(_ include: (InboundTransfer) -> Bool) -> [InboundTransfer] {
+            inboundTransfers
+                .filter { include($0.value) }
+                .sorted { a, b in
+                    a.value.updatedAt != b.value.updatedAt
+                        ? a.value.updatedAt < b.value.updatedAt
+                        : a.key.hexString < b.key.hexString
+                }
+                .map(\.value)
         }
         // Derived list of peers, reloaded after every write.
         public var conversations: [Conversation] = []
@@ -226,6 +242,9 @@ public struct AppFeature {
         case replyCancelled
         /// The composer's picker delivered bytes; prepare them (encode a photo) off the main thread.
         case attachmentPicked(PickedItem)
+        /// The picker began a slow read (a photo's `loadTransferable`, a document's bytes) for the
+        /// conversation `peerHex`: show the spinner meanwhile. Ignored for any other conversation.
+        case attachmentLoadStarted(peerHex: String)
         case attachmentPrepared(PendingAttachment)
         case attachmentFailed(String)
         /// The × on the attachment bar.
@@ -578,6 +597,7 @@ public struct AppFeature {
                 state.pendingAttachment = nil
                 state.attachmentPreparing = false
                 state.attachmentError = nil
+                state.attachmentOriginalRequested = nil
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
                     .run { [database] send in try await reloadThread(database, peerHex, send) }
@@ -593,6 +613,7 @@ public struct AppFeature {
                 state.pendingAttachment = nil
                 state.attachmentPreparing = false
                 state.attachmentError = nil
+                state.attachmentOriginalRequested = nil
                 return .cancel(id: CancelID.attachmentPreparation)
 
             case let .startConversation(hex):
@@ -603,6 +624,7 @@ public struct AppFeature {
                 state.pendingAttachment = nil
                 state.attachmentPreparing = false
                 state.attachmentError = nil
+                state.attachmentOriginalRequested = nil
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
                     .run { [database] send in try await reloadThread(database, hex, send) }
@@ -631,45 +653,9 @@ public struct AppFeature {
                     // nil, matching the wire, which now omits 0x31 for an empty quote too.
                     replyQuote = quote.isEmpty ? nil : quote
                 }
-                // The attachment field (0x05 or 0x06) comes first, then any reply fields.
-                var attachmentFields: [MsgPackValue.IntPair] = []
-                if let pending {
-                    attachmentFields = pending.isImage
-                        ? AttachmentWire.encodeImage(pending.data)
-                        : AttachmentWire.encodeFile(name: pending.name, data: pending.data)
-                }
-                let title = Data()
-                let content = Data(text.utf8)
+                let identity = state.identity
                 let now = date.now
-                let msg = LXMessage.create(
-                    source: state.identity,
-                    destinationHash: peer,
-                    timestamp: now.timeIntervalSince1970,
-                    title: title,
-                    content: content,
-                    fields: attachmentFields + replyFields
-                )
                 let alsoViaPropagation = !state.propagationNodeHex.isEmpty
-                // Outgoing Info metadata. `wireSize` is the unstamped packed size: LXMFNode adds any
-                // stamp downstream, where the app cannot see it (hence no stampState either).
-                let row = Message(
-                    id: UUID(),
-                    peerHex: peerHex,
-                    isOutgoing: true,
-                    body: text,
-                    timestamp: now,
-                    status: MessageStatus.sending,
-                    validated: false,
-                    messageHash: msg.hash.hexString,
-                    senderTimestamp: now,
-                    sentViaPropagation: alsoViaPropagation,
-                    wireSize: msg.packed.count,
-                    titleSize: msg.title.count,
-                    contentSize: msg.content.count,
-                    fieldKeys: MessageMetadata.fieldKeys(msg.fields),
-                    replyToHash: replyToHash,
-                    replyQuote: replyQuote
-                )
                 state.draft = ""
                 state.replyTarget = nil
                 state.pendingAttachment = nil
@@ -677,6 +663,10 @@ public struct AppFeature {
                 // The guard above refuses while preparing, so nothing should be in flight here;
                 // cancelling anyway means no late result can land on the emptied composer.
                 guard let pending else {
+                    let (msg, row) = Self.outgoing(
+                        identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
+                        fields: replyFields, alsoViaPropagation: alsoViaPropagation,
+                        replyToHash: replyToHash, replyQuote: replyQuote)
                     return .merge(
                         .cancel(id: CancelID.attachmentPreparation),
                         .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
@@ -687,13 +677,23 @@ public struct AppFeature {
                         }
                     )
                 }
-                // With an attachment the bytes go to disk first, then both rows in one transaction,
-                // and only then the send — a write failure sends nothing (spec §4 errors).
+                // With an attachment the message (several copies of the bytes deep) is built inside
+                // the effect, off the main thread. The bytes go to disk first, then both rows in one
+                // transaction, and only then the send — a failure at either step sends nothing, gives
+                // the caption back, and leaves no file behind (spec §4 errors).
                 let attachmentStore = self.attachmentStore
-                let messageHash = msg.hash.hexString
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
-                    .run { [database] send in
+                    .run { [database, replyFields, replyToHash, replyQuote] send in
+                        // The attachment field (0x05 or 0x06) comes first, then any reply fields.
+                        let attachmentFields = pending.isImage
+                            ? AttachmentWire.encodeImage(pending.data)
+                            : AttachmentWire.encodeFile(name: pending.name, data: pending.data)
+                        let (msg, row) = Self.outgoing(
+                            identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
+                            fields: attachmentFields + replyFields, alsoViaPropagation: alsoViaPropagation,
+                            replyToHash: replyToHash, replyQuote: replyQuote)
+                        let messageHash = row.messageHash
                         let path: String
                         do {
                             path = try attachmentStore.store(pending.data, messageHash: messageHash,
@@ -707,9 +707,16 @@ public struct AppFeature {
                             id: UUID(), messageId: row.id, kind: pending.kind, name: pending.name,
                             format: pending.format, size: pending.data.count,
                             width: pending.width, height: pending.height, path: path)
-                        try await database.write { db in
-                            try Message.insert { row }.execute(db)
-                            try Attachment.insert { attachment }.execute(db)
+                        do {
+                            try await database.write { db in
+                                try Message.insert { row }.execute(db)
+                                try Attachment.insert { attachment }.execute(db)
+                            }
+                        } catch {
+                            AppFeature.inbound.error("attachment send: database write failed for \(String(messageHash.prefix(8)), privacy: .public): \(String(describing: error), privacy: .public)")
+                            try? attachmentStore.delete(path)
+                            await send(.attachmentSendFailed(draft: text))
+                            return
                         }
                         await send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation))))
                         try await reloadThread(database, peerHex, send)
@@ -769,37 +776,62 @@ public struct AppFeature {
                 return .none
 
             case let .attachmentPicked(item):
+                // A read that outlived its chat view (the user switched conversations while the
+                // picker was still loading) must not land in another conversation's composer.
+                guard item.peerHex == state.openPeerHex else { return .none }
                 // A new pick replaces whatever was pending, even if it then fails.
                 state.pendingAttachment = nil
                 state.attachmentError = nil
                 state.attachmentPreparing = true
+                state.attachmentOriginalRequested = nil
                 return prepareEffect(item, original: false)
 
+            case let .attachmentLoadStarted(peerHex):
+                // The spinner shows while the picker reads (an iCloud photo can take a while). Any
+                // earlier pick is being replaced, so its preparation stops too.
+                guard peerHex == state.openPeerHex else { return .none }
+                state.pendingAttachment = nil
+                state.attachmentError = nil
+                state.attachmentPreparing = true
+                state.attachmentOriginalRequested = nil
+                return .cancel(id: CancelID.attachmentPreparation)
+
             case let .attachmentOriginalToggled(original):
+                // Compared with the value last ASKED for while a re-encode is in flight, so toggling
+                // back before it lands is not mistaken for "already in that state".
                 guard let pending = state.pendingAttachment, pending.isImage,
-                      let source = pending.originalSource, pending.isOriginal != original
+                      let source = pending.originalSource,
+                      (state.attachmentOriginalRequested ?? pending.isOriginal) != original
                 else { return .none }
                 state.attachmentPreparing = true
+                state.attachmentOriginalRequested = original
                 // The name is passed through so a toggle never renames the photo.
-                return prepareEffect(PickedItem(kind: AttachmentKind.image, name: pending.name, data: source),
+                return prepareEffect(PickedItem(kind: AttachmentKind.image, name: pending.name, data: source,
+                                                peerHex: state.openPeerHex ?? ""),
                                      original: original)
 
             case let .attachmentPrepared(pending):
                 state.pendingAttachment = pending
                 state.attachmentPreparing = false
                 state.attachmentError = nil
+                state.attachmentOriginalRequested = nil
                 return .none
 
             case let .attachmentFailed(reason):
                 state.pendingAttachment = nil
                 state.attachmentPreparing = false
                 state.attachmentError = reason
-                return .none
+                state.attachmentOriginalRequested = nil
+                // The view sends this too (a picker read failed) while an earlier pick may still be
+                // encoding: stop it, or its late result would replace the error. Harmless when the
+                // preparation itself sent it.
+                return .cancel(id: CancelID.attachmentPreparation)
 
             case .attachmentRemoved:
                 state.pendingAttachment = nil
                 state.attachmentPreparing = false
                 state.attachmentError = nil
+                state.attachmentOriginalRequested = nil
                 return .cancel(id: CancelID.attachmentPreparation)
 
             case let .attachmentSendFailed(draft):
@@ -1115,12 +1147,19 @@ public struct AppFeature {
                 state.outgoingProgress[hex] = nil
                 let openPeer = state.openPeerHex
                 let milestoneAt: Date? = date.now
+                // Optional on purpose, like `milestoneAt`: the update subscript takes an optional
+                // expression, not a nil literal.
+                let noReason: String? = nil
                 return .run { [database] send in
                     try await database.write { db in
                         // Same hash-collision hazard as `deliveryFailed` above: scope to outgoing
                         // rows only so an incoming row sharing this hash isn't rewritten.
                         try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing }
-                            .update { $0.status = MessageStatus.delivered }
+                            .update {
+                                $0.status = MessageStatus.delivered
+                                // A failure reported before the proof no longer applies.
+                                $0.failureReason = noReason
+                            }
                             .execute(db)
                         // Info milestone: the FIRST proof time. A repeat proof never moves it.
                         try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing && $0.deliveredAt.is(nil) }
@@ -1258,7 +1297,9 @@ public struct AppFeature {
                     state.inboundTransfers[linkID] = nil
                     return .cancel(id: CancelID.inboundTransfer(linkID))
                 }
-                state.inboundTransfers[linkID] = InboundTransfer(sourceHash: sourceHash, fraction: fraction, updatedAt: date.now)
+                // Clamped like `deliveryProgress`; NaN (which fails every comparison) reads as 0.
+                let clamped = fraction.isNaN ? 0 : min(max(fraction, 0), 1)
+                state.inboundTransfers[linkID] = InboundTransfer(sourceHash: sourceHash, fraction: clamped, updatedAt: date.now)
                 // Review Focus 7: every report restarts the silence timer.
                 return .run { [clock] send in
                     try await clock.sleep(for: AppFeature.inboundTransferTimeout)
@@ -1278,8 +1319,10 @@ public struct AppFeature {
 
     /// A message that will not go out: `failed` or `cancelled`, with the reason the Info sheet
     /// shows. The status guards keep a stored or delivered row as it is (a success is never
-    /// clobbered), `messageHash` alone is not unique (an incoming row can share it) so only
-    /// outgoing rows are touched, and `failedAt` records the FIRST failure time only.
+    /// clobbered) and a cancelled one too (the user's cancel is terminal, and a later failure
+    /// report for it must not rewrite its reason). `messageHash` alone is not unique (an incoming
+    /// row can share it) so only outgoing rows are touched, and `failedAt` records the FIRST
+    /// failure time only.
     private func markUndeliverable(_ state: inout State, _ hash: Data, status: String, reason: String?) -> Effect<Action> {
         let hex = hash.hexString
         state.outgoingProgress[hex] = nil
@@ -1291,6 +1334,7 @@ public struct AppFeature {
                     $0.messageHash.eq(hex)
                         && $0.status.neq(MessageStatus.propagated)
                         && $0.status.neq(MessageStatus.delivered)
+                        && $0.status.neq(MessageStatus.cancelled)
                         && $0.isOutgoing
                 }
                     .update {
@@ -1307,6 +1351,42 @@ public struct AppFeature {
                 try await reloadThread(database, openPeer, send)
             }
         }
+    }
+
+    /// The outgoing LXMessage and its `sending` row. Outgoing Info metadata: `wireSize` is the
+    /// unstamped packed size (LXMFNode adds any stamp downstream, where the app cannot see it, hence
+    /// no stampState either). `packed` is a computed re-encode, so it is read once.
+    static func outgoing(identity: Identity, peer: Data, peerHex: String, text: String, now: Date,
+                         fields: [MsgPackValue.IntPair], alsoViaPropagation: Bool,
+                         replyToHash: String?, replyQuote: String?) -> (LXMessage, Message) {
+        let msg = LXMessage.create(
+            source: identity,
+            destinationHash: peer,
+            timestamp: now.timeIntervalSince1970,
+            title: Data(),
+            content: Data(text.utf8),
+            fields: fields
+        )
+        let packed = msg.packed
+        let row = Message(
+            id: UUID(),
+            peerHex: peerHex,
+            isOutgoing: true,
+            body: text,
+            timestamp: now,
+            status: MessageStatus.sending,
+            validated: false,
+            messageHash: msg.hash.hexString,
+            senderTimestamp: now,
+            sentViaPropagation: alsoViaPropagation,
+            wireSize: packed.count,
+            titleSize: msg.title.count,
+            contentSize: msg.content.count,
+            fieldKeys: MessageMetadata.fieldKeys(msg.fields),
+            replyToHash: replyToHash,
+            replyQuote: replyQuote
+        )
+        return (msg, row)
     }
 
     /// Encodes a picked item off the main thread (spec §3). One preparation at a time: a newer

@@ -16,8 +16,6 @@ import struct ReTiCaMsgrCore.Attachment
 @MainActor
 private func makeStore(_ db: any DatabaseWriter, identity: Identity,
                        attachmentStore: AttachmentStore? = nil,
-                       // Task 8 also adds this parameter for its own tests; left here once
-                       // rather than re-added there.
                        clock: TestClock<Duration>? = nil,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity)
@@ -3006,8 +3004,8 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 
 @MainActor @Test func attachSendPickingAnImagePreparesAStandardJPEG() async {
     let clock = TestClock()
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
-    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG)))
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in s.openPeerHex = peerA }
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG, peerHex: peerA)))
     #expect(store.state.attachmentPreparing)
     await clock.advance(by: .milliseconds(1))
     await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
@@ -3026,8 +3024,8 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 
 @MainActor @Test func attachSendOriginalToggleReencodesFromTheSource() async {
     let clock = TestClock()
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
-    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG)))
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in s.openPeerHex = peerA }
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG, peerHex: peerA)))
     await clock.advance(by: .milliseconds(1))
     await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
     await store.send(.attachmentOriginalToggled(true))
@@ -3056,9 +3054,9 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 
 @MainActor @Test func attachSendPickingAFilePassesThrough() async {
     let clock = TestClock()
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in s.openPeerHex = peerA }
     let bytes = Data("%PDF fake".utf8)
-    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.file, name: "Trail map.pdf", data: bytes)))
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.file, name: "Trail map.pdf", data: bytes, peerHex: peerA)))
     await clock.advance(by: .milliseconds(1))
     await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
     let p = try! #require(store.state.pendingAttachment)
@@ -3075,8 +3073,8 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 /// the encode in flight.
 @MainActor @Test func attachSendRemoveCancelsAPendingPreparation() async {
     let clock = TestClock()
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
-    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG)))
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in s.openPeerHex = peerA }
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG, peerHex: peerA)))
     await store.send(.attachmentRemoved)
     // Only now does the preparation's `clock.sleep` checkpoint resolve — deterministically AFTER
     // Remove's `.cancel(id:)` already ran, so a correctly-cancelled effect never wakes at all.
@@ -3093,9 +3091,10 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 @MainActor @Test func attachSendUndecodableImageFails() async {
     let clock = TestClock()
     let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in
+        s.openPeerHex = peerA
         s.pendingAttachment = pendingFile()   // replaced by the new pick, even when it fails
     }
-    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: Data("junk".utf8))))
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: Data("junk".utf8), peerHex: peerA)))
     #expect(store.state.pendingAttachment == nil)
     await clock.advance(by: .milliseconds(1))
     await store.receive(.attachmentFailed(AttachmentPreparation.undecodableImage))
@@ -3272,6 +3271,153 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
     #expect(leaving.state.attachmentError == nil)
 }
 
+/// T7-m1: the bytes are on disk but the rows cannot be written. Nothing is sent, the caption comes
+/// back, and the stored file is removed. The failure is made deterministic with a trigger that
+/// aborts every attachment insert, so the one transaction (message row included) rolls back after
+/// the store step has already succeeded.
+@MainActor @Test func attachSendDatabaseFailureRestoresTheDraftAndRemovesTheFile() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try await db.write { db in
+        try db.execute(sql: """
+            CREATE TRIGGER refuseAttachmentInsert BEFORE INSERT ON attachments
+            BEGIN SELECT RAISE(ABORT, 'test: attachment insert refused'); END
+            """)
+    }
+    let files = attachTempStore()
+    let store = makeStore(db, identity: Identity(), attachmentStore: files) { s in
+        s.openPeerHex = peerA
+        s.draft = "cap"
+        s.pendingAttachment = pendingImage()
+    }
+    store.exhaustivity = .on
+    await store.send(.sendTapped) {
+        $0.draft = ""
+        $0.pendingAttachment = nil
+        $0.attachmentError = nil
+    }
+    await store.receive(.attachmentSendFailed(draft: "cap")) {
+        $0.attachmentError = AttachmentPreparation.storeFailed
+        $0.draft = "cap"
+    }
+    // Exhaustive probe: no sendMessage, no reload followed.
+    await store.send(.replyCancelled)
+    store.exhaustivity = .off
+    #expect(store.state.draft == "cap")
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    #expect(try await db.read { try Attachment.all.fetchAll($0) }.isEmpty)
+    // The store step did run (the directory exists), and its file is gone again.
+    #expect(FileManager.default.fileExists(atPath: files.baseDirectory.path()))
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: files.baseDirectory.path())
+    #expect(leftovers.isEmpty)
+}
+
+/// T7-m3: toggling back while the first toggle's re-encode is still in flight wins. The guard
+/// compares with the value last asked for, not the stale pending one.
+@MainActor @Test func attachSendToggleBackWhilePreparingWins() async {
+    let clock = TestClock()
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in s.openPeerHex = peerA }
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG, peerHex: peerA)))
+    await clock.advance(by: .milliseconds(1))
+    await store.receive { if case .attachmentPrepared = $0 { return true }; return false }
+    await store.send(.attachmentOriginalToggled(true))    // not advanced: still preparing
+    await store.send(.attachmentOriginalToggled(false))   // back again before it lands
+    await clock.advance(by: .milliseconds(1))
+    await store.receive {
+        if case let .attachmentPrepared(p) = $0 { return p.isOriginal == false && p.width == 1280 }
+        return false
+    }
+    // Exhaustive probe: nothing else arrives (the toggle-to-Original encode was cancelled).
+    store.exhaustivity = .on
+    await store.finish()
+    await store.send(.replyCancelled)
+    store.exhaustivity = .off
+    #expect(store.state.pendingAttachment?.isOriginal == false)
+    #expect(store.state.pendingAttachment?.width == 1280)
+    #expect(store.state.attachmentOriginalRequested == nil)
+}
+
+/// I-1: a picker read that outlived conversation A's chat view must not land in B's composer,
+/// and neither may its load-started spinner. The pending file in B stays exactly as it was.
+@MainActor @Test func attachSendPickFromAnotherConversationIsDropped() async {
+    let clock = TestClock()
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in
+        s.openPeerHex = peerB
+        s.pendingAttachment = pendingFile()
+    }
+    store.exhaustivity = .on
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG, peerHex: peerA)))
+    await store.send(.attachmentLoadStarted(peerHex: peerA))
+    await clock.advance(by: .milliseconds(1))
+    await store.finish()
+    await store.send(.replyCancelled)   // probe: no preparation was started
+    store.exhaustivity = .off
+}
+
+/// I-1: the view says a slow read began: the bar shows the spinner, a stale pending attachment and
+/// error go, and a preparation still running for an earlier pick is cancelled.
+@MainActor @Test func attachSendLoadStartedShowsPreparing() async {
+    let clock = TestClock()
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in
+        s.openPeerHex = peerA
+        s.pendingAttachment = pendingFile()
+        s.attachmentError = "old"
+    }
+    store.exhaustivity = .on
+    await store.send(.attachmentLoadStarted(peerHex: peerA)) {
+        $0.pendingAttachment = nil
+        $0.attachmentError = nil
+        $0.attachmentPreparing = true
+    }
+    await store.send(.replyCancelled)   // probe
+    store.exhaustivity = .off
+    // An earlier pick still encoding is cancelled by the next load.
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG, peerHex: peerA)))
+    await store.send(.attachmentLoadStarted(peerHex: peerA))
+    await clock.advance(by: .milliseconds(1))
+    store.exhaustivity = .on
+    await store.finish()
+    await store.send(.replyCancelled)   // probe: no late attachmentPrepared
+    store.exhaustivity = .off
+    #expect(store.state.attachmentPreparing)
+    #expect(store.state.pendingAttachment == nil)
+}
+
+/// I-3: a view-sent failure (a picker read failed) stops an earlier pick still encoding, so its
+/// late result cannot replace the error.
+@MainActor @Test func attachSendFailureFromTheViewCancelsAPendingPreparation() async {
+    let clock = TestClock()
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in s.openPeerHex = peerA }
+    await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG, peerHex: peerA)))
+    await store.send(.attachmentFailed("y"))
+    await clock.advance(by: .milliseconds(1))
+    store.exhaustivity = .on
+    await store.finish()
+    await store.send(.replyCancelled)   // probe: no attachmentPrepared
+    store.exhaustivity = .off
+    #expect(store.state.attachmentError == "y")
+    #expect(store.state.pendingAttachment == nil)
+}
+
+/// FR-9: opening or starting another conversation cancels a preparation still in flight. The
+/// only action allowed to arrive is the new thread's load.
+@MainActor @Test func attachSendOpenAndStartConversationCancelAPendingPreparation() async {
+    for leave: AppFeature.Action in [.openConversation(peerB), .startConversation(peerB)] {
+        let clock = TestClock()
+        let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock) { s in s.openPeerHex = peerA }
+        await store.send(.attachmentPicked(PickedItem(kind: AttachmentKind.image, name: "", data: attachPNG, peerHex: peerA)))
+        await store.send(leave)
+        store.exhaustivity = .on
+        // The new thread's load is the one action allowed (the preparation's sleep has not been
+        // advanced yet, so nothing else can have arrived before it).
+        await store.receive(.threadLoaded([], reactions: [], attachments: []))
+        await clock.advance(by: .milliseconds(1))
+        await store.finish()                // an uncancelled preparation's result fails here
+        await store.send(.replyCancelled)   // probe: no attachmentPrepared
+        store.exhaustivity = .off
+        #expect(store.state.pendingAttachment == nil)
+    }
+}
+
 // MARK: - Attachments: transfer state (spec 2026-09-28 §3–§4)
 
 private let linkL = Data(repeating: 0x4C, count: 16)
@@ -3407,21 +3553,71 @@ private func inbound(_ link: Data, _ fraction: Double, source: Data? = nil) -> A
     let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in s.openPeerHex = peerA }
     await store.send(inbound(linkL, 0.3))
     #expect(store.state.inboundTransfers[linkL] == AppFeature.InboundTransfer(sourceHash: nil, fraction: 0.3, updatedAt: infoT0))
-    await store.send(inbound(linkL, 0.7))
+    // Report times set apart (the frozen \.date would make them all equal) so the ORDER the UI
+    // gets is pinned: oldest report first, then link ID hex for a tie. Neither matches the order
+    // the reports were sent in, and a dictionary's own order is arbitrary.
+    func at(_ seconds: TimeInterval) { store.dependencies.date = .constant(infoT0.addingTimeInterval(seconds)) }
+    at(2); await store.send(inbound(linkL, 0.7))
     #expect(store.state.inboundTransfers[linkL]?.fraction == 0.7)
-    await store.send(inbound(linkM, 0.1, source: peerHash))
-    await store.send(inbound(Data(repeating: 0x4E, count: 16), 0.2, source: hashData(peerB)))
-    // The open thread shows the unattributed one and the one attributed to its peer, not peerB's.
-    #expect(store.state.inboundTransfersForOpenThread.map(\.fraction).sorted() == [0.1, 0.7])
-    #expect(store.state.unattributedInboundTransfers.map(\.fraction) == [0.7])
+    at(1); await store.send(inbound(linkM, 0.1, source: peerHash))
+    at(0); await store.send(inbound(Data(repeating: 0x4E, count: 16), 0.2, source: hashData(peerB)))
+    at(3); await store.send(inbound(Data(repeating: 0x4A, count: 16), 0.5, source: peerHash))
+    at(1); await store.send(inbound(Data(repeating: 0x4B, count: 16), 0.9))   // ties linkM, sorts first
+    // The open thread shows the unattributed ones and those attributed to its peer, not peerB's.
+    #expect(store.state.inboundTransfersForOpenThread.map(\.fraction) == [0.9, 0.1, 0.7, 0.5])
+    #expect(store.state.unattributedInboundTransfers.map(\.fraction) == [0.9, 0.7])
     // Done: the entry goes away.
     await store.send(inbound(linkL, 1.0))
     #expect(store.state.inboundTransfers[linkL] == nil)
-    #expect(store.state.inboundTransfers.count == 2)
+    #expect(store.state.inboundTransfers.count == 4)
     // A closed link clears its entry too.
     await store.send(.node(.client(.endpoint(.delegate(.linkClosed(linkID: linkM, reason: .timedOut))))))
     #expect(store.state.inboundTransfers[linkM] == nil)
-    #expect(store.state.inboundTransfers.count == 1)
+    #expect(store.state.inboundTransfers.count == 3)
+}
+
+/// T8-m3: the stored fraction is clamped like `deliveryProgress` (NaN reads as 0), and a report at
+/// or past 1 still ends the transfer.
+@MainActor @Test func attachTransferInboundFractionIsClamped() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    await store.send(inbound(linkL, -0.5))
+    #expect(store.state.inboundTransfers[linkL]?.fraction == 0)
+    await store.send(inbound(linkL, 0.4))
+    await store.send(inbound(linkL, .nan))
+    #expect(store.state.inboundTransfers[linkL]?.fraction == 0)
+    await store.send(inbound(linkL, 1.7))
+    #expect(store.state.inboundTransfers[linkL] == nil)
+}
+
+/// FR-1: the user's cancel is terminal: a failure or rejection reported afterwards for the same
+/// message changes neither its status nor its reason.
+@MainActor @Test func attachTransferCancelledIsTerminalAgainstLaterFailures() async {
+    let db = try! AppDatabase.makeInMemory()
+    let h = String(repeating: "8b", count: 16)
+    try! await seed(db, [msg(1, peerA, "big", 1000, status: MessageStatus.sending, hash: h)])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryCancelled(messageHash: hashData(h))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(h))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryRejected(messageHash: hashData(h))))))
+    await store.skipReceivedActions(strict: false)
+    let row = await rowsByHashAndDirection(db)["\(h)/out"]
+    #expect(row?.status == MessageStatus.cancelled)
+    #expect(row?.failureReason == FailureReason.cancelled)
+}
+
+/// FR-1: a delivery proof that follows a failure report wins, and the failure's reason goes with it.
+@MainActor @Test func attachTransferDeliveryConfirmedClearsAStaleReason() async {
+    let db = try! AppDatabase.makeInMemory()
+    let h = String(repeating: "8c", count: 16)
+    try! await seed(db, [msg(1, peerA, "big", 1000, status: MessageStatus.sending, hash: h)])
+    let store = makeStore(db, identity: Identity())
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryRejected(messageHash: hashData(h))))))
+    #expect(await rowsByHashAndDirection(db)["\(h)/out"]?.failureReason == FailureReason.rejected)
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(h))))))
+    await store.skipReceivedActions(strict: false)
+    let row = await rowsByHashAndDirection(db)["\(h)/out"]
+    #expect(row?.status == MessageStatus.delivered)
+    #expect(row?.failureReason == nil)
 }
 
 /// Review Focus 7: a transfer that stops reporting disappears after 60 s of silence; a report

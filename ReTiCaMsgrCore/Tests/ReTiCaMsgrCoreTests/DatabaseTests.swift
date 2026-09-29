@@ -4,11 +4,6 @@ import GRDB
 import SQLiteData
 @testable import ReTiCaMsgrCore
 
-/// `Testing` exports its own `Attachment`; this file means the model.
-/// Note: The syntax `private typealias Attachment = ReTiCaMsgrCore.Attachment` from the brief
-/// doesn't compile because ReTiCaMsgrCore is both the module and an enum. The type is unambiguous
-/// in context, so the tests work correctly without explicit disambiguation.
-
 @Test func messageInsertAndFetchByPeer() throws {
     let db = try AppDatabase.makeInMemory()
     let peer = "aa" + String(repeating: "00", count: 15)

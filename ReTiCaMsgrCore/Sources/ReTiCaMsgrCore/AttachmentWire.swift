@@ -116,12 +116,13 @@ public enum AttachmentWire {
         }
     }
 
-    /// Review Focus 2: separators, colons and NUL become `_`, leading dots are stripped (no hidden
-    /// or `..` names), the result is cut to `maxNameBytes` on a Character boundary, and an empty
-    /// result is `fallbackFileName`. The store never uses this name in a path anyway.
+    /// Review Focus 2: separators, colons, NUL and every control or format character (`Cc`, `Cf`:
+    /// bidi overrides such as U+202E, zero-width spaces) become `_`, leading dots are stripped (no
+    /// hidden or `..` names), the result is cut to `maxNameBytes` on a Character boundary, and an
+    /// empty result is `fallbackFileName`. The store never uses this name in a path anyway.
     public static func sanitizedFileName(_ raw: String) -> String {
         var name = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).map { ch -> Character in
-            (ch == "/" || ch == "\\" || ch == ":" || ch == "\u{0}" || ch.isNewline) ? "_" : ch
+            (ch == "/" || ch == "\\" || ch == ":" || ch == "\u{0}" || ch.isNewline || isControlOrFormat(ch)) ? "_" : ch
         })
         while name.hasPrefix(".") { name.removeFirst() }
         if name.utf8.count > maxNameBytes {
@@ -130,6 +131,17 @@ public enum AttachmentWire {
             name = String(kept)
         }
         return name.isEmpty ? fallbackFileName : name
+    }
+
+    /// Judged by the Character's FIRST scalar: bidi controls and U+200B are grapheme-break
+    /// `Control`, so each is a Character of its own, while a ZWJ inside an emoji sequence only
+    /// extends the emoji before it and must not break it apart.
+    static func isControlOrFormat(_ ch: Character) -> Bool {
+        guard let first = ch.unicodeScalars.first else { return false }
+        switch first.properties.generalCategory {
+        case .control, .format: return true
+        default: return false
+        }
     }
 
     /// The sanitised extension after the last dot, `""` when there is none or the dot leads.

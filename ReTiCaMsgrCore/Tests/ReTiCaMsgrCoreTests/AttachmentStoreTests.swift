@@ -127,7 +127,9 @@ private let hash64 = String(repeating: "ab", count: 32)
     let store = tempStore()
     let path = try store.store(Data([1, 2]), messageHash: hash64, outgoing: false, ext: "pdf")
 
-    let escapingNames = ["../../escaped.txt", "sub/evil.txt", "..", "."]
+    // `""` passes the name guard and is caught only by the post-construction check: appending an
+    // empty component yields the uuid directory itself.
+    let escapingNames = ["../../escaped.txt", "sub/evil.txt", "..", ".", ""]
     for escapingName in escapingNames {
         let a = Attachment(id: UUID(), messageId: UUID(), kind: AttachmentKind.file, name: escapingName,
                           format: "pdf", size: 2, width: nil, height: nil, path: path)

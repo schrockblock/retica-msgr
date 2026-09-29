@@ -118,6 +118,9 @@ private func fileField(_ entries: [MsgPackValue]) -> [MsgPackValue.IntPair] {
     #expect(AttachmentWire.sanitizedFileName("   ") == "file")
     #expect(AttachmentWire.sanitizedFileName("") == "file")
     #expect(AttachmentWire.sanitizedFileName("nul\u{0}byte.txt") == "nul_byte.txt")
+    // Bidi and zero-width format characters cannot disguise a name (U+202E, U+200B).
+    #expect(AttachmentWire.sanitizedFileName("invoice\u{202E}fdp.exe") == "invoice_fdp.exe")
+    #expect(AttachmentWire.sanitizedFileName("zero\u{200B}width.txt") == "zero_width.txt")
     let long = String(repeating: "a", count: 300) + ".pdf"
     let cut = AttachmentWire.sanitizedFileName(long)
     #expect(cut.utf8.count == 255)

@@ -6,11 +6,15 @@ public struct PickedItem: Equatable, Sendable {
     public var kind: String       // AttachmentKind.*
     public var name: String       // "" for a photo (the name is generated)
     public var data: Data
+    /// The conversation open when the pick started. The picker's reads outlive the chat view, so
+    /// a slow read from one conversation must not land in another's composer.
+    public var peerHex: String
 
-    public init(kind: String, name: String, data: Data) {
+    public init(kind: String, name: String, data: Data, peerHex: String) {
         self.kind = kind
         self.name = name
         self.data = data
+        self.peerHex = peerHex
     }
 }
 

@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ImageIO
 @testable import ReTiCaMsgrCore
 
 private func isRed(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.r ?? 0) > 200 && (p?.b ?? 255) < 60 }
@@ -78,6 +79,11 @@ private func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.b ?? 0) 
 /// Review Focus 8: GPS never leaves the phone, in either preset.
 @Test func imageEncoderStripsMetadata() throws {
     let source = TestImages.jpeg(width: 800, height: 600, orientation: 3, withGPS: true)
+    // The source really carries GPS (not merely the orientation that also satisfies the helper),
+    // so the strip below is tested against a location it had to remove.
+    let sourceProps = try #require(CGImageSourceCreateWithData(source as CFData, nil)
+        .flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] })
+    #expect(sourceProps[kCGImagePropertyGPSDictionary] != nil)
     #expect(ImageEncoder.hasLocationOrOrientationMetadata(source))
     let standard = try ImageEncoder.encodeJPEG(source, preset: .standard)
     let original = try ImageEncoder.encodeJPEG(source, preset: .original)

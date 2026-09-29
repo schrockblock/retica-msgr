@@ -61,8 +61,11 @@ struct ConversationListView: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Circle().fill(connectionColor).frame(width: 10, height: 10)
                 }
-                ToolbarItem(placement: .navigationBarLeading) {
-                    ReceivingCapsule(transfers: store.unattributedInboundTransfers)
+                // No transfers, no toolbar item (an empty one still takes a slot).
+                if !store.unattributedInboundTransfers.isEmpty {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        ReceivingCapsule(transfers: store.unattributedInboundTransfers)
+                    }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { store.send(.syncTapped) } label: { Image(systemName: "arrow.clockwise") }
