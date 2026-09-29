@@ -225,6 +225,36 @@ unit-tested (as elsewhere); the Xcode app-target build must succeed.
 **Manual:** a photo to a Sideband peer renders there; a Sideband WebP renders here; a PDF over
 BLE shows progress and can be cancelled.
 
+## Amendments at planning time (2026-09-28)
+
+A pre-flight scan of the implementation plan against the code surfaced these corrections. They
+override the text above where they conflict.
+
+1. **File protection is "until first user authentication", not "complete".** The app receives
+   over BLE in the background; with complete protection a message arriving while the phone is
+   locked could not be written and would always land as "attachment could not be saved". The
+   SQLite file uses the same class.
+2. **A reply to a photo that is still in the thread quotes `📷 Photo`.** `ReplyPreview.resolve`
+   takes the thread's attachments so the quote block does not read "Original message not
+   available" for an image-only original.
+3. **Sharing and QuickLook use the real file name.** `AttachmentStore.exportURL(for:)` copies the
+   bytes to a temporary directory under `attachment.name` before presenting them; the stored file
+   keeps its hash-based name.
+4. **A send-side store failure shows in the attachment bar and restores the caption** (no alert):
+   `attachmentSendFailed(draft:)` puts the typed text back so nothing is lost.
+5. **The viewer dismisses on a downward drag** (over 120 pt at zoom 1) as well as with Done.
+6. **File rows distinguish "could not be saved" (never written) from "unavailable" (written,
+   then removed).**
+7. **Dropped `0x05` entries are counted** (`Decoded.droppedFileCount`) and logged, never silently
+   discarded.
+8. **`ImageEncoder` lives in the core package** (ImageIO only) so `swift test` covers it on
+   macOS; §5's "app target" placement no longer applies.
+9. **`AttachmentStore`'s API** is `store(_:messageHash:outgoing:ext:) -> String`,
+   `url(forRelativePath:)`, `url(for:) -> URL?`, `exists(_:)`, `delete(_:)`, `exportURL(for:)`.
+10. **Test files alias the model:** Swift Testing exports its own `Attachment` type, so every test
+    file declares `private typealias Attachment = ReTiCaMsgrCore.Attachment`. The model keeps its
+    name.
+
 ## Out of scope
 
 Multiple attachments per message; camera capture; audio (`FIELD_AUDIO`); retrying a failed or
