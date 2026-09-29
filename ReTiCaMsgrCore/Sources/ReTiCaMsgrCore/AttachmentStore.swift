@@ -46,6 +46,7 @@ public struct AttachmentStore: Sendable {
         return name
     }
 
+    /// The full URL for a relative path within the base directory.
     public func url(forRelativePath path: String) -> URL {
         baseDirectory.appending(path: path)
     }
@@ -55,20 +56,23 @@ public struct AttachmentStore: Sendable {
         attachment.hasBytes ? url(forRelativePath: attachment.path) : nil
     }
 
+    /// Checks if a file exists at the given relative path.
     public func exists(_ relativePath: String) -> Bool {
-        FileManager.default.fileExists(atPath: url(forRelativePath: relativePath).path())
+        fileExists(url(forRelativePath: relativePath))
     }
 
     /// Removes the file; a missing file is not an error.
     public func delete(_ relativePath: String) throws {
         let url = url(forRelativePath: relativePath)
-        guard FileManager.default.fileExists(atPath: url.path()) else { return }
+        guard fileExists(url) else { return }
         try FileManager.default.removeItem(at: url)
     }
 
     public enum ExportError: Error, Equatable {
         /// The row has no bytes (`path == ""`).
         case noBytes
+        /// The attachment name attempts to escape the export directory.
+        case invalidName
     }
 
     /// Where shareable copies go. The system purges the temporary directory on its own.
@@ -83,20 +87,36 @@ public struct AttachmentStore: Sendable {
     /// name before a row exists. An earlier copy is replaced.
     public func exportURL(for attachment: Attachment) throws -> URL {
         guard let source = url(for: attachment) else { throw ExportError.noBytes }
+        // Validate that the name cannot escape the export directory.
+        guard !attachment.name.contains("/"), !attachment.name.contains("\\"),
+              attachment.name != ".", attachment.name != ".."
+        else { throw ExportError.invalidName }
         let directory = exportDirectory.appending(path: attachment.id.uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appending(path: attachment.name)
-        try? FileManager.default.removeItem(at: destination)
+        // Verify the destination is still within the uuid subdirectory.
+        guard destination.standardizedFileURL.deletingLastPathComponent() == directory.standardizedFileURL
+        else { throw ExportError.invalidName }
+        // Remove any earlier copy before replacing it.
+        if fileExists(destination) {
+            try FileManager.default.removeItem(at: destination)
+        }
         try FileManager.default.copyItem(at: source, to: destination)
         return destination
     }
 
+    /// Checks file existence using the undecoded path property (not percent-encoded).
+    /// `FileManager.fileExists(atPath:)` expects a literal path, not a percent-encoded one.
+    private func fileExists(_ url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: url.path)
+    }
+
     private func ensureDirectory() throws {
         var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: baseDirectory.path(), isDirectory: &isDir), isDir.boolValue {
-            return
+        if !FileManager.default.fileExists(atPath: baseDirectory.path, isDirectory: &isDir) || !isDir.boolValue {
+            try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
         }
-        try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
+        // Always mark as excluded from backup; the flag is not set when an existing directory is used.
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         var dir = baseDirectory

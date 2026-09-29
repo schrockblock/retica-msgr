@@ -121,3 +121,58 @@ private let hash64 = String(repeating: "ab", count: 32)
         try store.exportURL(for: without)
     }
 }
+
+/// Attachment names that attempt path escape are rejected.
+@Test func attachStoreExportRefusesAPathEscapingName() throws {
+    let store = tempStore()
+    let path = try store.store(Data([1, 2]), messageHash: hash64, outgoing: false, ext: "pdf")
+
+    let escapingNames = ["../../escaped.txt", "sub/evil.txt", "..", "."]
+    for escapingName in escapingNames {
+        let a = Attachment(id: UUID(), messageId: UUID(), kind: AttachmentKind.file, name: escapingName,
+                          format: "pdf", size: 2, width: nil, height: nil, path: path)
+        #expect(throws: AttachmentStore.ExportError.invalidName) {
+            try store.exportURL(for: a)
+        }
+    }
+}
+
+/// Files with names containing special characters like spaces work correctly.
+@Test func attachStoreDeleteAndExistsHandleNamesNeedingPercentEncoding() throws {
+    let store = tempStore()
+    // Create the directory first with a normal store call
+    _ = try store.store(Data([1]), messageHash: hash64, outgoing: true, ext: "bin")
+
+    // Write a file directly with a space in the name
+    let fileURL = store.url(forRelativePath: "with space.bin")
+    try Data([9, 8, 7]).write(to: fileURL)
+
+    // Verify it exists
+    #expect(store.exists("with space.bin"))
+
+    // Delete it
+    try store.delete("with space.bin")
+
+    // Verify it's gone
+    #expect(!store.exists("with space.bin"))
+    #expect(!FileManager.default.fileExists(atPath: fileURL.path))
+}
+
+/// Backup exclusion is set even for pre-existing directories.
+@Test func attachStoreSetsBackupExclusionOnAnExistingDirectory() throws {
+    let dirURL = FileManager.default.temporaryDirectory
+        .appending(path: "attachStorePreExisting-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+
+    // Verify the directory exists but isExcludedFromBackup is not yet set
+    var values = try dirURL.resourceValues(forKeys: [.isExcludedFromBackupKey])
+    #expect(values.isExcludedFromBackup == false)
+
+    // Create a store using the pre-existing directory
+    let store = AttachmentStore(baseDirectory: dirURL)
+    _ = try store.store(Data([5]), messageHash: hash64, outgoing: false, ext: "bin")
+
+    // Now verify the flag is set
+    values = try dirURL.resourceValues(forKeys: [.isExcludedFromBackupKey])
+    #expect(values.isExcludedFromBackup == true)
+}
