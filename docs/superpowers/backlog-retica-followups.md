@@ -60,3 +60,37 @@ files/images feature may want to revisit:
   Likewise a hash that already succeeded on one copy and was then cancelled must not be re-sent:
   the cancel is silent, the copy's last progress value stays as a monotonic floor, and the re-send
   gets no terminal because the router still remembers the success. Build a new message instead.
+
+## Left from the attachments work (2026-09-29)
+
+Set aside by the final review as policy calls or pre-existing behaviour; each is a small, contained
+change if wanted.
+
+- **No memory ceiling for huge files.** The spec says "no hard cap"; a picked file is held in memory
+  several times over (picker bytes, the pending attachment, the LXMF payload, its signature copies).
+  A 100 MB+ document can be killed by iOS for memory. A warn-or-refuse threshold is a policy call.
+- **A JPEG picked via Document keeps its EXIF/GPS.** Only photos from the Photo Library are
+  re-encoded (and stripped); a file is sent byte-for-byte by design. A one-line hint in the composer
+  bar would tell a privacy-minded user.
+- **Received photos are all named `image.<format>`** (LXMF `FIELD_IMAGE` carries no name), so saving
+  several to Files auto-renames. `IMG_<first 8 hex of the hash>.<format>` would be friendlier — a
+  spec amendment.
+- **`threadLoaded` has no peer check** (pre-existing, likelier now that a large attachment send
+  writes to disk before reloading): switching conversations during a slow send can land the previous
+  thread's rows in the new one for a moment. Fix: carry `peerHex` in `threadLoaded` and drop
+  mismatches; `attachmentSendFailed(draft:)` has the same shape.
+- **A picker failure carries no conversation.** `attachmentFailed` sent by the view has no peer
+  guard, so a failed read started in conversation A can show its error in B and cancel B's
+  preparation; a view-side `attachmentLoadFailed(peerHex:reason:)` guarded like
+  `attachmentLoadStarted` closes it.
+- **`propagationAccepted` never clears `outgoingProgress`** (by design — the direct copy decides);
+  if the direct copy then ends with no delegate the entry leaks for the session (hidden by the
+  status gate).
+- **Public surface:** `ImageEncoder.containerType`/`hasLocationOrOrientationMetadata`/`isDecodable`,
+  `AttachmentStore.fileName`/`sanitizedExtension`/`exists`/`delete`, all of `AttachmentWire` and
+  `AttachmentPreparation` are `public` but used only inside the package — could be `internal`.
+- **Bubbles show the raw status string** ("cancelled", like "failed"/"sending") — a capitalised
+  label would be a style change across all statuses.
+- **Sideband voice messages (`FIELD_AUDIO 0x07`) render as empty bubbles** (pre-existing, out of
+  scope); **propagation-node sync downloads show no "Receiving…" capsule** (attributed to the node's
+  hash).
