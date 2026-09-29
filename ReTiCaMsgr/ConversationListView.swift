@@ -93,6 +93,7 @@ struct ComposeSheet: View {
     @Bindable var store: StoreOf<AppFeature>
     @Binding var isPresented: Bool
     @State private var address: String = ""
+    @State private var showingScanner = false
 
     // Uses the public `isValidPeerAddress` helper added in Step 2 (add that
     // helper first — `Data(hexString:)` is internal to the package and NOT
@@ -107,6 +108,11 @@ struct ComposeSheet: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .font(.system(.body, design: .monospaced))
+                    Button {
+                        showingScanner = true
+                    } label: {
+                        Label("Scan QR code", systemImage: "qrcode.viewfinder")
+                    }
                 }
                 Button("Start conversation") {
                     store.send(.startConversation(address))
@@ -118,6 +124,14 @@ struct ComposeSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { isPresented = false }
+                }
+            }
+            .sheet(isPresented: $showingScanner) {
+                QRScannerView { hex in
+                    address = hex
+                    showingScanner = false
+                    store.send(.startConversation(address))
+                    isPresented = false
                 }
             }
         }
