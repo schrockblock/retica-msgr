@@ -127,7 +127,7 @@ struct ComposeSheet: View {
                 }
             }
             .sheet(isPresented: $showingScanner) {
-                QRScannerView { hex in
+                QRScannerView(ownAddress: store.myAddressHex) { hex in
                     address = hex
                     showingScanner = false
                     store.send(.startConversation(address))

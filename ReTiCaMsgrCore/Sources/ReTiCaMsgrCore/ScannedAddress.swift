@@ -12,9 +12,9 @@ public enum ScannedAddress {
                 break
             }
         }
-        // Reuse the package's existing 16-byte hex validation (see Conversation.swift's
-        // isValidPeerAddress) rather than duplicating hex-digit / length logic here.
-        guard let data = Data(hexString: body), data.count == 16 else { return nil }
+        // Reuse the package's existing 16-byte hex validation rather than duplicating
+        // hex-digit / length logic here.
+        guard isValidPeerAddress(body) else { return nil }
         return body.lowercased()
     }
 }

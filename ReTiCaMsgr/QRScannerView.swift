@@ -14,9 +14,11 @@ import ReTiCaMsgrCore
 /// makes scanning impossible.
 struct QRScannerView: View {
     @Environment(\.dismiss) private var dismiss
+    let ownAddress: String
     let onScanned: (String) -> Void
 
     @State private var errorCaption: String?
+    @State private var startFailed = false
 
     private var scanningAvailable: Bool {
         DataScannerViewController.isSupported && DataScannerViewController.isAvailable
@@ -25,10 +27,16 @@ struct QRScannerView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if scanningAvailable {
+                if scanningAvailable && !startFailed {
                     scannerContent
+                } else if startFailed {
+                    unavailableContent(
+                        message: "The camera couldn't start. Check ReTiCaMsgr's camera permission in Settings."
+                    )
                 } else {
-                    unavailableContent
+                    unavailableContent(
+                        message: "Scanning isn't available on this device. Ask for the address as text instead."
+                    )
                 }
             }
             .navigationTitle("Scan QR Code")
@@ -43,8 +51,11 @@ struct QRScannerView: View {
 
     private var scannerContent: some View {
         ZStack(alignment: .bottom) {
-            DataScannerRepresentable(onPayload: handlePayload)
-                .ignoresSafeArea(edges: .bottom)
+            DataScannerRepresentable(
+                onPayload: handlePayload,
+                onStartFailure: { startFailed = true }
+            )
+            .ignoresSafeArea(edges: .bottom)
 
             if let errorCaption {
                 Text(errorCaption)
@@ -57,9 +68,9 @@ struct QRScannerView: View {
         }
     }
 
-    private var unavailableContent: some View {
+    private func unavailableContent(message: String) -> some View {
         VStack(spacing: 16) {
-            Text("Scanning isn't available on this device. Ask for the address as text instead.")
+            Text(message)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 32)
@@ -68,10 +79,16 @@ struct QRScannerView: View {
         }
     }
 
-    /// Returns true when the payload parsed as an LXMF address and scanning should stop.
+    /// Returns true when the payload parsed as someone else's LXMF address and
+    /// scanning should stop. A payload that parses but matches this device's own
+    /// address is treated like an unparseable one: keep scanning, show a caption.
     private func handlePayload(_ payload: String) -> Bool {
         guard let hex = ScannedAddress.parse(payload) else {
             errorCaption = "That code isn't an LXMF address."
+            return false
+        }
+        guard hex != ownAddress.lowercased() else {
+            errorCaption = "That's your own address."
             return false
         }
         errorCaption = nil
@@ -83,6 +100,7 @@ struct QRScannerView: View {
 /// Thin UIViewControllerRepresentable wrapper around VisionKit's live QR scanner.
 private struct DataScannerRepresentable: UIViewControllerRepresentable {
     let onPayload: (String) -> Bool
+    let onStartFailure: () -> Void
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
         let controller = DataScannerViewController(
@@ -100,7 +118,18 @@ private struct DataScannerRepresentable: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: DataScannerViewController, context: Context) {
         guard !context.coordinator.hasStopped, !controller.isScanning else { return }
-        try? controller.startScanning()
+        do {
+            try controller.startScanning()
+        } catch {
+            onStartFailure()
+        }
+    }
+
+    /// Stops the capture session on every teardown path that isn't a successful
+    /// scan (Cancel, swipe-to-dismiss, the parent sheet closing, etc.) — the
+    /// success path already stops it explicitly in the delegate callback below.
+    static func dismantleUIViewController(_ controller: DataScannerViewController, coordinator: Coordinator) {
+        controller.stopScanning()
     }
 
     func makeCoordinator() -> Coordinator {
