@@ -78,6 +78,11 @@ final class AppRuntime {
             AppFeature()
         } withDependencies: {
             $0.defaultDatabase = database
+            // Explicit, not the ambient default: a hosted XCTest process makes swift-dependencies
+            // require every dependency to be overridden (it treats the process as "testing" and
+            // `\.date`'s default test value fails on use). This is still the real wall clock in
+            // every configuration — live app, hosted tests and UI-test launches alike.
+            $0.date = DateGenerator { Date() }
             // Answer peers' /publicKey requests with our own 64-byte public key. The link the
             // request arrives on is already authenticated, and the key is public (every announce
             // carries it), so answering unconditionally is safe.
