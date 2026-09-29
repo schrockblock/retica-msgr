@@ -23,6 +23,7 @@ let package = Package(
             name: "ReTiCaMsgrCore",
             dependencies: [
                 .product(name: "ReTiCANode", package: "ReTiCA"),
+                .product(name: "ReTiCAKeychain", package: "ReTiCA"),
                 .product(name: "SQLiteData", package: "sqlite-data"),
             ],
             resources: [.process("Resources")]
