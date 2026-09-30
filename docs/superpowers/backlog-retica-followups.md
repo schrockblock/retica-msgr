@@ -94,3 +94,19 @@ change if wanted.
 - **Sideband voice messages (`FIELD_AUDIO 0x07`) render as empty bubbles** (pre-existing, out of
   scope); **propagation-node sync downloads show no "Receiving…" capsule** (attributed to the node's
   hash).
+
+## Left from the send-gate fix (2026-09-29)
+
+The app now sends a path request when a direct message arrives from a peer it has no path to, and
+again when that conversation is opened or started; the reply unlocks Send through `pathLearned`.
+Two edges remain:
+
+- **A stale path is never replaced by an equal-time reply.** If the stored path points at a dead
+  interface, a path reply carrying the same announce time and hop count is not adopted
+  (`Transport.shouldReplace`), so `pathLearned` never fires and Send stays disabled until the peer
+  re-announces. Needs a ReTiCA change: prefer a reply that arrives on a live interface when the
+  stored one is dead, or expire paths whose interface went away.
+- **No throttling of path requests.** One request goes out per received message from a peer outside
+  the gate, and ReTiCA's `Transport` (around lines 1065–1081) does not coalesce repeats for the same
+  destination. Harmless at chat volumes; a "request pending for this hash" guard in the app, or
+  coalescing in ReTiCA, would close it.
