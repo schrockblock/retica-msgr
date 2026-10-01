@@ -445,3 +445,87 @@ global rule. All Swift Testing; TestStore with `exhaustivity = .off` unless a te
 Server implementation and APNs credentials. Decrypting or summarising content in the extension.
 Proving link requests or IFAC-masked packets from the extension. Badge counts. A "via push" marker
 on message info. Anything on the sender side. Android or the reference client.
+
+## Amendments (2026-10-01, after the package's first implementation)
+
+These override the text above where they conflict.
+
+### A1. Registration happens over Reticulum, not HTTP
+
+The user replaced the server contract: the hub has no HTTP surface. It owns a long-lived identity
+and announces `RNS.Destination(hub_identity, IN, SINGLE, "rnspush", "registration")` every 30
+minutes. A client registers by opening a link to that destination, identifying on it with its own
+identity, and sending a link request (standard RNS request/response, msgpack bodies):
+
+| path | request | success response |
+|---|---|---|
+| `/register` | `{"v": 1, "token": <bin>, "environment": <str>, "bundle_id": <str>}` | `{"ok": true, "destination_hash": <bin 16>, "expires_at": <int>}` |
+| `/unregister` | `{"v": 1}` | `{"ok": true}` |
+
+Failure: `{"ok": false, "error": <str>}` with `error` ∈ `not_identified`, `bad_request`,
+`bundle_not_allowed`, `not_direct`, `rate_limited`. The client tears the link down after the
+response or on timeout. The hub authenticates by link identification alone (no body signature, no
+timestamp). Clients re-register at least daily while enabled. The authoritative text is the user's
+contract, copied verbatim into `ReTiCAPush/docs/server-contract.md` by the package.
+
+Consequences:
+
+- Removed from §1 and the package: `PushRegistration`, `SignedRegistration`, `RegistrationClient`,
+  the `registrationClient` dependency, the signing layout, the registration URL.
+- The user setting is a **push hub destination** (32 hex characters, the hub's
+  `rnspush.registration` hash), persisted as `@Shared(.appStorage("pushHubHex"))`, entered in
+  Settings like the propagation node hash. Auto-adopting a hops-1 announce is out of scope.
+- The hub's TCP host and port remain what the app already dials; the extension's proof socket is
+  unchanged.
+
+### A2. Package pieces replacing the HTTP ones
+
+- `RegistrationWire` (Core, pure): `registerRequest(token:environment:bundleID:) -> Data`,
+  `unregisterRequest() -> Data` (msgpack maps with str keys, `v` = 1, token as bin), and
+  `decodeResponse(_:) -> RegistrationResponse` with cases `.registered(destinationHash: Data,
+  expiresAt: Int64)`, `.unregistered`, `.refused(code: String)`, `.malformed`. Paths are
+  `RegistrationWire.registerPath = "/register"` and `unregisterPath = "/unregister"`.
+- `RegistrationLinkFlow` (Core, pure state machine, no TCA, no node): drives one registration
+  attempt. Inputs (`Event`): `start(hub:path:data:hubKnown:)`, `pathLearned(Data)`,
+  `linkEstablished(linkID:destinationHash:)`, `linkFailed(destinationHash:)`,
+  `linkClosed(linkID:)`, `responseReceived(linkID:data:)`, `requestFailed(linkID:)`, `timedOut`,
+  `cancel`. Outputs (`Command`): `requestPath(Data)`, `openLink(Data)`, `identify(linkID: Data)`,
+  `sendRequest(linkID:path:data:)`, `closeLink(linkID: Data)`, `finished(Result<Data, Failure>)`.
+  Rules: unknown hub → `requestPath`, then `openLink` on `pathLearned`; known hub → `openLink`;
+  on `linkEstablished` for the hub → `identify` then `sendRequest` (in that order); on
+  `responseReceived` for the flow's link → `closeLink` + `finished(.success(data))`; `linkFailed`,
+  `requestFailed`, `linkClosed` before a response, or `timedOut` → `closeLink` (if a link exists) +
+  `finished(.failure(...))` with `Failure` ∈ `.hubUnreachable`, `.linkFailed`, `.requestFailed`,
+  `.timedOut`, `.cancelled`; events for other links or destinations are ignored; a second `start`
+  cancels the first (`closeLink` + `finished(.failure(.cancelled))`) and begins anew.
+- `PushFeature` (TCA): `hubHex` replaces `registrationURL`. `deviceTokenReceived` validates the
+  hub hash (16 bytes) else `.failed("Invalid push hub address")`, sets `.registering`, and emits
+  `delegate(.sendRegistration(hub: Data, path: String, data: Data))`. `registrationResponse(Result<Data,
+  RegistrationFailure>)` decodes with `RegistrationWire`: `.registered` → `.registered(now)` plus
+  the record (and a mismatch between the returned `destination_hash` and
+  `identity.lxmfDeliveryHash` is `.failed("Hub registered the wrong destination")`); `.refused(code)`
+  → `.failed("Hub refused: <code>")`; `.malformed` → `.failed("Hub sent an invalid response")`;
+  `.failure(f)` → `.failed(f.message)`. `setEnabled(false)` emits
+  `delegate(.sendRegistration(hub, "/unregister", data))` best-effort; its response is ignored
+  except that a failure is logged into `status` only when the feature is still disabled and idle
+  (it must never flip the toggle). The 24-hour re-registration rule, the `enabled` guards and the
+  permission flow are unchanged.
+- The app owns one `RegistrationLinkFlow` in `AppFeature.State` (`pushRegistrationFlow`), maps
+  the push delegate to `flow.handle(.start(...))` with `hubKnown = endpoint.learned[hub] != nil`,
+  maps endpoint delegates (`pathLearned`, `linkEstablished`, `linkFailed`, `linkClosed`,
+  `responseReceived`, `requestFailed`) to flow events, runs a 20 s clock effect for `timedOut`
+  (cancelled on finish), and turns commands into `endpoint` actions (`requestPath`, `openLink`,
+  `identifyOverLink(linkID:identity:)`, `sendRequestOverLink`, `closeLink`) and `finished` into
+  `.push(.registrationResponse(...))`.
+- Settings: "Push hub destination" text field (hex, 32 characters) instead of the URL field; the
+  caption says the hub's announce must have been heard on this device (it is, over the hub's own
+  TCP connection).
+
+### A3. Testing changes
+
+Package: `RegistrationWire` round-trips and rejects malformed/`ok:false` bodies; the flow state
+machine is tested event by event (known hub, unknown hub, each failure, response for a foreign link
+ignored, cancel on restart, timeout); `PushFeature` tests replace URL cases with hub-hex cases and
+response-decoding cases. App: a TestStore test drives the full flow through the endpoint delegates
+(`openLink` → `linkEstablished` → `identifyOverLink` + `sendRequestOverLink` → `responseReceived`
+→ `closeLink` and `.push(.registrationResponse(.success))`), plus timeout and link-failure cases.

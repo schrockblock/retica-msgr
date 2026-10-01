@@ -3243,3 +3243,945 @@ Expected: empty. If `.swiftpm/` or `.build/` show up, they are ignored by Task 1
 - [ ] **Step 4: Report**
 
 Report the final test count, the iOS build result, and the commit list (`git -C /Users/ell/development/ios/pods/ReTiCAPush log --oneline`). The app plan (`2026-10-01-push-app.md`) starts from here.
+
+---
+
+## Amendment tasks (spec amendments A1–A3, 2026-10-01)
+
+Registration moved from HTTP to a Reticulum link request. Tasks 14–16 replace the HTTP pieces. They run after Task 13 and the final-review fix wave. Prefix table for these tasks:
+
+| Task | Prefix | New tests |
+|---|---|---|
+| 14 | `registrationWire` / `registrationFlow` | 6 + 11 |
+| 15 | `pushFeatureToken` (rewritten) / `pushFeatureLifecycle` (adjusted) | 9 + 1 |
+
+Removed by Task 15: the 8 `pushRegistration*` and 5 `registrationClient*` tests. The totals therefore move from the fix-wave count by +17 (Task 14) and then −13 +2 (Task 15, net of the rewritten token file).
+
+### Task 14: `RegistrationWire` and `RegistrationLinkFlow`
+
+**Files:**
+- Create: `Sources/ReTiCAPushCore/RegistrationWire.swift`
+- Create: `Sources/ReTiCAPushCore/RegistrationLinkFlow.swift`
+- Create: `Tests/ReTiCAPushCoreTests/RegistrationWireTests.swift`
+- Create: `Tests/ReTiCAPushCoreTests/RegistrationLinkFlowTests.swift`
+
+**Interfaces:**
+- Consumes: `ReTiCA.MsgPack.encode(_:)`, `MsgPack.decodeValue(_:)`, `MsgPackValue` (`.map([Pair])`, `.uint`, `.bin`, `.string`, `.bool`, `.int`), `MsgPackValue.Pair(_:_:)`.
+- Produces: `PushEnvironment`, `RegistrationWire` (`registerPath`, `unregisterPath`, `registerRequest(token:environment:bundleID:)`, `unregisterRequest()`, `decodeResponse(_:) -> Response`), `RegistrationLinkFlow` (`Event`, `Command`, `Failure`, `handle(_:) -> [Command]`, `isActive`). Task 15 and the app plan consume all of these.
+
+- [ ] **Step 1: Write the failing tests**
+
+`Tests/ReTiCAPushCoreTests/RegistrationWireTests.swift`:
+```swift
+import Testing
+import Foundation
+import ReTiCA
+@testable import ReTiCAPushCore
+
+private let token = Data([0xAA, 0xBB, 0xCC, 0xDD])
+private let hash16 = Data(repeating: 0x5A, count: 16)
+
+private func encoded(_ pairs: [MsgPackValue.Pair]) -> Data { MsgPack.encode(.map(pairs)) }
+
+@Test func registrationWireRegisterRequestEncodesTheContractMap() {
+    let data = RegistrationWire.registerRequest(token: token, environment: .sandbox, bundleID: "co.example.app")
+    #expect(MsgPack.decodeValue(data) == .map([
+        .init("v", .uint(1)),
+        .init("token", .bin(token)),
+        .init("environment", .string("sandbox")),
+        .init("bundle_id", .string("co.example.app")),
+    ]))
+}
+
+@Test func registrationWireUnregisterRequestIsVersionOnly() {
+    #expect(MsgPack.decodeValue(RegistrationWire.unregisterRequest()) == .map([.init("v", .uint(1))]))
+}
+
+@Test func registrationWireDecodesARegisteredResponse() {
+    let data = encoded([.init("ok", .bool(true)), .init("destination_hash", .bin(hash16)), .init("expires_at", .uint(1_702_592_000))])
+    #expect(RegistrationWire.decodeResponse(data) == .registered(destinationHash: hash16, expiresAt: 1_702_592_000))
+}
+
+@Test func registrationWireDecodesAnUnregisteredResponse() {
+    #expect(RegistrationWire.decodeResponse(encoded([.init("ok", .bool(true))])) == .unregistered)
+}
+
+@Test func registrationWireDecodesARefusal() {
+    let data = encoded([.init("ok", .bool(false)), .init("error", .string("rate_limited"))])
+    #expect(RegistrationWire.decodeResponse(data) == .refused(code: "rate_limited"))
+}
+
+@Test func registrationWireRejectsMalformed() {
+    #expect(RegistrationWire.decodeResponse(Data([0x01, 0x02, 0x03])) == .malformed)
+    let shortHash = encoded([.init("ok", .bool(true)), .init("destination_hash", .bin(Data(repeating: 1, count: 5))), .init("expires_at", .uint(1))])
+    #expect(RegistrationWire.decodeResponse(shortHash) == .malformed)
+    #expect(RegistrationWire.decodeResponse(encoded([.init("ok", .bool(false))])) == .malformed)
+}
+```
+
+`Tests/ReTiCAPushCoreTests/RegistrationLinkFlowTests.swift`:
+```swift
+import Testing
+import Foundation
+@testable import ReTiCAPushCore
+
+private let hub = Data(repeating: 0xA1, count: 16)
+private let otherHub = Data(repeating: 0xA2, count: 16)
+private let link = Data(repeating: 0xB1, count: 16)
+private let otherLink = Data(repeating: 0xB2, count: 16)
+private let request = Data("req".utf8)
+private let response = Data("resp".utf8)
+
+private func awaitingLink() -> RegistrationLinkFlow {
+    var flow = RegistrationLinkFlow()
+    _ = flow.handle(.start(hub: hub, path: "/register", data: request, hubKnown: true))
+    return flow
+}
+
+private func awaitingResponse() -> RegistrationLinkFlow {
+    var flow = awaitingLink()
+    _ = flow.handle(.linkEstablished(linkID: link, destinationHash: hub))
+    return flow
+}
+
+@Test func registrationFlowKnownHubOpensALink() {
+    var flow = RegistrationLinkFlow()
+    #expect(flow.handle(.start(hub: hub, path: "/register", data: request, hubKnown: true)) == [.openLink(hub)])
+    #expect(flow.isActive)
+}
+
+@Test func registrationFlowUnknownHubRequestsPathThenOpens() {
+    var flow = RegistrationLinkFlow()
+    #expect(flow.handle(.start(hub: hub, path: "/register", data: request, hubKnown: false)) == [.requestPath(hub)])
+    #expect(flow.handle(.pathLearned(otherHub)) == [])
+    #expect(flow.handle(.pathLearned(hub)) == [.openLink(hub)])
+}
+
+@Test func registrationFlowEstablishedLinkIdentifiesThenRequests() {
+    var flow = awaitingLink()
+    #expect(flow.handle(.linkEstablished(linkID: link, destinationHash: hub)) == [
+        .identify(linkID: link),
+        .sendRequest(linkID: link, path: "/register", data: request),
+    ])
+}
+
+@Test func registrationFlowResponseClosesAndFinishes() {
+    var flow = awaitingResponse()
+    #expect(flow.handle(.responseReceived(linkID: link, data: response)) == [
+        .closeLink(linkID: link),
+        .finished(.success(response)),
+    ])
+    #expect(!flow.isActive)
+}
+
+@Test func registrationFlowIgnoresForeignLinksAndDestinations() {
+    var flow = awaitingLink()
+    #expect(flow.handle(.linkEstablished(linkID: otherLink, destinationHash: otherHub)) == [])
+    _ = flow.handle(.linkEstablished(linkID: link, destinationHash: hub))
+    #expect(flow.handle(.responseReceived(linkID: otherLink, data: response)) == [])
+    #expect(flow.isActive)
+}
+
+@Test func registrationFlowLinkFailureFinishesWithFailure() {
+    var flow = awaitingLink()
+    #expect(flow.handle(.linkFailed(destinationHash: hub)) == [.finished(.failure(.linkFailed))])
+    #expect(!flow.isActive)
+}
+
+@Test func registrationFlowRequestFailureClosesTheLink() {
+    var flow = awaitingResponse()
+    #expect(flow.handle(.requestFailed(linkID: link)) == [.closeLink(linkID: link), .finished(.failure(.requestFailed))])
+}
+
+@Test func registrationFlowLinkClosedBeforeResponseFails() {
+    var flow = awaitingResponse()
+    #expect(flow.handle(.linkClosed(linkID: link)) == [.finished(.failure(.linkFailed))])
+}
+
+@Test func registrationFlowTimeoutFailsByPhase() {
+    var unknown = RegistrationLinkFlow()
+    _ = unknown.handle(.start(hub: hub, path: "/register", data: request, hubKnown: false))
+    #expect(unknown.handle(.timedOut) == [.finished(.failure(.hubUnreachable))])
+    var awaiting = awaitingResponse()
+    #expect(awaiting.handle(.timedOut) == [.closeLink(linkID: link), .finished(.failure(.timedOut))])
+}
+
+@Test func registrationFlowRestartCancelsThePreviousAttempt() {
+    var flow = awaitingResponse()
+    #expect(flow.handle(.start(hub: otherHub, path: "/unregister", data: request, hubKnown: true)) == [
+        .closeLink(linkID: link),
+        .finished(.failure(.cancelled)),
+        .openLink(otherHub),
+    ])
+}
+
+@Test func registrationFlowEventsWhenIdleDoNothing() {
+    var flow = RegistrationLinkFlow()
+    #expect(flow.handle(.timedOut) == [])
+    #expect(flow.handle(.cancel) == [])
+    #expect(flow.handle(.pathLearned(hub)) == [])
+    #expect(!flow.isActive)
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `swift test --package-path /Users/ell/development/ios/pods/ReTiCAPush --filter "registrationWire|registrationFlow"`
+Expected: compile error.
+
+- [ ] **Step 3: Write `Sources/ReTiCAPushCore/RegistrationWire.swift`**
+
+```swift
+import Foundation
+import ReTiCA
+
+/// The APNs environment a registration names (docs/server-contract.md §1.2).
+public enum PushEnvironment: String, Sendable, Codable, Equatable {
+    case production
+    case sandbox
+}
+
+/// msgpack bodies of the hub's `/register` and `/unregister` link requests and their responses
+/// (docs/server-contract.md §1.2). Pure.
+public enum RegistrationWire {
+    public static let version: UInt64 = 1
+    public static let registerPath = "/register"
+    public static let unregisterPath = "/unregister"
+
+    public enum Response: Equatable, Sendable {
+        case registered(destinationHash: Data, expiresAt: Int64)
+        case unregistered
+        case refused(code: String)
+        case malformed
+    }
+
+    public static func registerRequest(token: Data, environment: PushEnvironment, bundleID: String) -> Data {
+        MsgPack.encode(.map([
+            .init("v", .uint(version)),
+            .init("token", .bin(token)),
+            .init("environment", .string(environment.rawValue)),
+            .init("bundle_id", .string(bundleID)),
+        ]))
+    }
+
+    public static func unregisterRequest() -> Data {
+        MsgPack.encode(.map([.init("v", .uint(version))]))
+    }
+
+    /// `{"ok": true, "destination_hash", "expires_at"}` → registered; `{"ok": true}` → unregistered;
+    /// `{"ok": false, "error"}` → refused; anything else → malformed.
+    public static func decodeResponse(_ data: Data) -> Response {
+        guard case let .map(pairs)? = MsgPack.decodeValue(data) else { return .malformed }
+        var fields: [String: MsgPackValue] = [:]
+        for pair in pairs where fields[pair.key] == nil { fields[pair.key] = pair.value }
+        guard case let .bool(ok)? = fields["ok"] else { return .malformed }
+        if !ok {
+            guard case let .string(code)? = fields["error"] else { return .malformed }
+            return .refused(code: code)
+        }
+        switch (fields["destination_hash"], fields["expires_at"]) {
+        case let (.bin(hash)?, expires?):
+            guard hash.count == 16, let expiresAt = int64(expires) else { return .malformed }
+            return .registered(destinationHash: hash, expiresAt: expiresAt)
+        case (nil, nil):
+            return .unregistered
+        default:
+            return .malformed
+        }
+    }
+
+    private static func int64(_ value: MsgPackValue) -> Int64? {
+        switch value {
+        case let .uint(u): Int64(exactly: u)
+        case let .int(i): i
+        default: nil
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Write `Sources/ReTiCAPushCore/RegistrationLinkFlow.swift`**
+
+```swift
+import Foundation
+
+/// One registration attempt over a Reticulum link, as a pure state machine (spec amendment A2).
+/// The host app feeds it endpoint events and executes the commands it returns; nothing here
+/// knows about TCA or the node, so the whole protocol is testable event by event.
+public struct RegistrationLinkFlow: Equatable, Sendable {
+    public enum Failure: Error, Equatable, Sendable {
+        case hubUnreachable
+        case linkFailed
+        case requestFailed
+        case timedOut
+        case cancelled
+    }
+
+    public enum Event: Equatable, Sendable {
+        /// Begin an attempt. `hubKnown` is whether the transport already has a path to `hub`.
+        case start(hub: Data, path: String, data: Data, hubKnown: Bool)
+        case pathLearned(Data)
+        case linkEstablished(linkID: Data, destinationHash: Data)
+        case linkFailed(destinationHash: Data)
+        case linkClosed(linkID: Data)
+        case responseReceived(linkID: Data, data: Data)
+        case requestFailed(linkID: Data)
+        case timedOut
+        case cancel
+    }
+
+    public enum Command: Equatable, Sendable {
+        case requestPath(Data)
+        case openLink(Data)
+        case identify(linkID: Data)
+        case sendRequest(linkID: Data, path: String, data: Data)
+        case closeLink(linkID: Data)
+        case finished(Result<Data, Failure>)
+    }
+
+    enum Phase: Equatable, Sendable {
+        case idle
+        case awaitingPath
+        case awaitingLink
+        case awaitingResponse(linkID: Data)
+    }
+
+    var phase: Phase = .idle
+    var hub = Data()
+    var path = ""
+    var data = Data()
+
+    public init() {}
+
+    public var isActive: Bool { phase != .idle }
+
+    public mutating func handle(_ event: Event) -> [Command] {
+        switch event {
+        case let .start(newHub, newPath, newData, hubKnown):
+            var commands = abandon(.cancelled)
+            hub = newHub
+            path = newPath
+            data = newData
+            if hubKnown {
+                phase = .awaitingLink
+                commands.append(.openLink(newHub))
+            } else {
+                phase = .awaitingPath
+                commands.append(.requestPath(newHub))
+            }
+            return commands
+
+        case let .pathLearned(destination):
+            guard phase == .awaitingPath, destination == hub else { return [] }
+            phase = .awaitingLink
+            return [.openLink(hub)]
+
+        case let .linkEstablished(linkID, destination):
+            guard phase == .awaitingLink, destination == hub else { return [] }
+            phase = .awaitingResponse(linkID: linkID)
+            return [.identify(linkID: linkID), .sendRequest(linkID: linkID, path: path, data: data)]
+
+        case let .linkFailed(destination):
+            guard phase == .awaitingLink, destination == hub else { return [] }
+            return abandon(.linkFailed)
+
+        case let .linkClosed(linkID):
+            guard case let .awaitingResponse(active) = phase, active == linkID else { return [] }
+            // The link is already gone: nothing to close.
+            phase = .idle
+            return [.finished(.failure(.linkFailed))]
+
+        case let .responseReceived(linkID, response):
+            guard case let .awaitingResponse(active) = phase, active == linkID else { return [] }
+            phase = .idle
+            return [.closeLink(linkID: linkID), .finished(.success(response))]
+
+        case let .requestFailed(linkID):
+            guard case let .awaitingResponse(active) = phase, active == linkID else { return [] }
+            return abandon(.requestFailed)
+
+        case .timedOut:
+            guard phase != .idle else { return [] }
+            return abandon(phase == .awaitingPath ? .hubUnreachable : .timedOut)
+
+        case .cancel:
+            guard phase != .idle else { return [] }
+            return abandon(.cancelled)
+        }
+    }
+
+    /// Close any open link and report `failure`, then go idle. No commands when already idle.
+    private mutating func abandon(_ failure: Failure) -> [Command] {
+        var commands: [Command] = []
+        if case let .awaitingResponse(linkID) = phase {
+            commands.append(.closeLink(linkID: linkID))
+        }
+        if phase != .idle {
+            commands.append(.finished(.failure(failure)))
+        }
+        phase = .idle
+        return commands
+    }
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `swift test --package-path /Users/ell/development/ios/pods/ReTiCAPush --filter "registrationWire|registrationFlow"`
+Expected: 17 pass.
+
+- [ ] **Step 6: Mutation check**
+
+Two sub-batches (one per file), each applied as one batch.
+
+Wire (`RegistrationWire.swift`):
+| Test | Mutation |
+|---|---|
+| `registrationWireRegisterRequestEncodesTheContractMap` | `"bundle_id"` → `"bundleId"` |
+| `registrationWireUnregisterRequestIsVersionOnly` | `unregisterRequest` adds `.init("token", .bin(Data()))` |
+| `registrationWireDecodesARegisteredResponse` | `.registered(destinationHash: hash, expiresAt: expiresAt)` → `expiresAt: expiresAt + 1` |
+| `registrationWireDecodesAnUnregisteredResponse` | `case (nil, nil): return .unregistered` → `return .malformed` |
+| `registrationWireDecodesARefusal` | `return .refused(code: code)` → `return .refused(code: "")` |
+| `registrationWireRejectsMalformed` | `hash.count == 16` → `hash.count >= 1` |
+
+Flow (`RegistrationLinkFlow.swift`):
+| Test | Mutation |
+|---|---|
+| `registrationFlowKnownHubOpensALink` | in `.start`, the `hubKnown` branch appends `.requestPath(newHub)` instead of `.openLink(newHub)` |
+| `registrationFlowUnknownHubRequestsPathThenOpens` | in `.pathLearned`, delete `, destination == hub` |
+| `registrationFlowEstablishedLinkIdentifiesThenRequests` | swap the two commands returned by `.linkEstablished` |
+| `registrationFlowResponseClosesAndFinishes` | in `.responseReceived`, drop `.closeLink(linkID: linkID)` |
+| `registrationFlowIgnoresForeignLinksAndDestinations` | in `.linkEstablished`, delete `, destination == hub` |
+| `registrationFlowLinkFailureFinishesWithFailure` | `.linkFailed` → `abandon(.timedOut)` |
+| `registrationFlowRequestFailureClosesTheLink` | `.requestFailed` → `{ phase = .idle; return [.finished(.failure(.requestFailed))] }` |
+| `registrationFlowLinkClosedBeforeResponseFails` | `.linkClosed` → `return [.closeLink(linkID: linkID), .finished(.failure(.linkFailed))]` |
+| `registrationFlowTimeoutFailsByPhase` | `.timedOut` → `abandon(.timedOut)` unconditionally |
+| `registrationFlowRestartCancelsThePreviousAttempt` | in `.start`, `var commands = abandon(.cancelled)` → `var commands: [Command] = []` then `phase = .idle` is not run (the flow's phase is overwritten anyway, so the old link is simply not closed) |
+| `registrationFlowEventsWhenIdleDoNothing` | in `.cancel`, delete the `guard phase != .idle else { return [] }` line (then `abandon` returns `[]` anyway) — INSTEAD use: `.cancel` → `return [.finished(.failure(.cancelled))]` unconditionally |
+
+Apply, run the filter, all 17 red (6 + 11). Revert by hand, 17 green. Show raw red and green output per sub-batch.
+
+- [ ] **Step 7: Commit**
+
+Message file `/tmp/ReTiCAPush/msg-task-14.txt`, subject `feat: msgpack registration wire and the link-registration state machine`, explicit paths (the four files), trailers as usual.
+
+### Task 15: Registration over the hub link, HTTP removal, contract and README
+
+**Files:**
+- Delete: `Sources/ReTiCAPushCore/PushRegistration.swift`, `Sources/ReTiCAPushCore/RegistrationClient.swift`, `Tests/ReTiCAPushCoreTests/PushRegistrationTests.swift`, `Tests/ReTiCAPushCoreTests/RegistrationClientTests.swift`
+- Modify: `Sources/ReTiCAPushCore/Data+Hex.swift` (add `public init?(pushHex:)`)
+- Modify: `Sources/ReTiCAPush/Dependencies.swift` (remove the `RegistrationClient` conformance and accessor)
+- Modify: `Sources/ReTiCAPush/PushFeature.swift`
+- Modify: `Tests/ReTiCAPushTests/PushFeatureTestSupport.swift` (remove `RegistrationSpy`; `makePushStore(identity:platform:storage:configure:)`)
+- Rewrite: `Tests/ReTiCAPushTests/PushFeatureTokenTests.swift`
+- Modify: `Tests/ReTiCAPushTests/PushFeatureLifecycleTests.swift`
+- Replace: `docs/server-contract.md` with the user's contract, verbatim (text below)
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: Task 14.
+- Produces (the app plan consumes these): `PushFeature.State.hubHex` (`@Shared(.appStorage("pushHubHex"))`), `State.environment: PushEnvironment`, `State.init(identity:bundleID:environment:storage:keychainService:keychainAccessGroup:)` unchanged otherwise; `Action.registrationResponse(Result<Data, RegistrationFailure>)`; `Action.Delegate.sendRegistration(hub: Data, path: String, data: Data)`; `PushFeature.invalidHubText = "Invalid push hub address"`.
+
+- [ ] **Step 1: Delete the HTTP files and fix `Dependencies.swift`**
+
+Remove the four files. In `Dependencies.swift` delete the `extension RegistrationClient: DependencyKey { … }` block and the `registrationClient` accessor in `DependencyValues`. In `Data+Hex.swift` add:
+```swift
+public extension Data {
+    /// Public spelling of `init?(hexString:)` for the other targets of this package.
+    init?(pushHex: String) { self.init(hexString: pushHex) }
+}
+```
+
+- [ ] **Step 2: Rewrite `PushFeatureTokenTests.swift`** (9 tests) and adjust the lifecycle tests, then run the filters to see them fail to compile (RED)
+
+`Tests/ReTiCAPushTests/PushFeatureTestSupport.swift`: delete `RegistrationSpy` and the `registration:` parameter and the `$0.registrationClient` override; everything else stays (including `$0.defaultAppStorage` from the fix wave).
+
+`Tests/ReTiCAPushTests/PushFeatureTokenTests.swift`:
+```swift
+import Testing
+import Foundation
+import ComposableArchitecture
+import ReTiCA
+@testable import ReTiCAPush
+
+private let token = Data([0x01, 0x02, 0x03, 0x04])
+private let hours: TimeInterval = 60 * 60
+private let hubHex = String(repeating: "ab", count: 16)
+private let hub = Data(repeating: 0xAB, count: 16)
+
+private func registered(_ hash: Data) -> Data {
+    MsgPack.encode(.map([.init("ok", .bool(true)), .init("destination_hash", .bin(hash)), .init("expires_at", .uint(1_702_592_000))]))
+}
+
+@Test @MainActor func pushFeatureTokenRegistersThroughTheHubLink() async throws {
+    let me = Identity()
+    let storage = PushStorage.temporary()
+    let store = makePushStore(identity: me, storage: storage) { state in
+        state.$enabled.withLock { $0 = true }
+        state.$hubHex.withLock { $0 = hubHex }
+        state.status = .awaitingToken
+    }
+    await store.send(.deviceTokenReceived(token)) {
+        $0.deviceToken = token
+        $0.status = .registering
+    }
+    let expectedRequest = RegistrationWire.registerRequest(token: token, environment: .sandbox, bundleID: "co.example.app")
+    await store.receive(.delegate(.sendRegistration(hub: hub, path: "/register", data: expectedRequest)))
+    await store.send(.registrationResponse(.success(registered(me.lxmfDeliveryHash)))) {
+        $0.status = .registered(testNow)
+        $0.lastRegistration = RegistrationRecord(tokenHex: "01020304", registeredAt: testNow)
+    }
+    await store.finish()
+    #expect(storage.settings.load().lastRegistration == RegistrationRecord(tokenHex: "01020304", registeredAt: testNow))
+}
+
+@Test @MainActor func pushFeatureTokenSkipsWhenSameTokenRegisteredWithin24h() async {
+    let earlier = testNow.addingTimeInterval(-1 * hours)
+    let store = makePushStore { state in
+        state.$enabled.withLock { $0 = true }
+        state.$hubHex.withLock { $0 = hubHex }
+        state.lastRegistration = RegistrationRecord(tokenHex: "01020304", registeredAt: earlier)
+    }
+    store.exhaustivity = .on
+    await store.send(.deviceTokenReceived(token)) {
+        $0.deviceToken = token
+        $0.status = .registered(earlier)
+    }
+    await store.finish()
+}
+
+@Test @MainActor func pushFeatureTokenReregistersAfter24h() async {
+    let store = makePushStore { state in
+        state.$enabled.withLock { $0 = true }
+        state.$hubHex.withLock { $0 = hubHex }
+        state.lastRegistration = RegistrationRecord(tokenHex: "01020304", registeredAt: testNow.addingTimeInterval(-25 * hours))
+    }
+    await store.send(.deviceTokenReceived(token)) {
+        $0.deviceToken = token
+        $0.status = .registering
+    }
+    await store.receive { if case .delegate(.sendRegistration(hub: hub, path: "/register", _)) = $0 { return true }; return false }
+}
+
+@Test @MainActor func pushFeatureTokenReregistersWhenTokenChanges() async {
+    let store = makePushStore { state in
+        state.$enabled.withLock { $0 = true }
+        state.$hubHex.withLock { $0 = hubHex }
+        state.lastRegistration = RegistrationRecord(tokenHex: "ffffffff", registeredAt: testNow.addingTimeInterval(-1 * hours))
+    }
+    await store.send(.deviceTokenReceived(token)) {
+        $0.deviceToken = token
+        $0.status = .registering
+    }
+    await store.receive { if case .delegate(.sendRegistration) = $0 { return true }; return false }
+}
+
+@Test @MainActor func pushFeatureTokenRefusalKeepsOldRecord() async {
+    let old = RegistrationRecord(tokenHex: "ffffffff", registeredAt: testNow.addingTimeInterval(-1 * hours))
+    let store = makePushStore { state in
+        state.$enabled.withLock { $0 = true }
+        state.$hubHex.withLock { $0 = hubHex }
+        state.deviceToken = token
+        state.status = .registering
+        state.lastRegistration = old
+    }
+    let refusal = MsgPack.encode(.map([.init("ok", .bool(false)), .init("error", .string("rate_limited"))]))
+    await store.send(.registrationResponse(.success(refusal))) {
+        $0.status = .failed("Hub refused: rate_limited")
+    }
+    #expect(store.state.lastRegistration == old)
+}
+
+@Test @MainActor func pushFeatureTokenInvalidHubFailsWithoutRegistering() async {
+    let store = makePushStore { state in
+        state.$enabled.withLock { $0 = true }
+        state.$hubHex.withLock { $0 = "zz" }
+    }
+    store.exhaustivity = .on
+    await store.send(.deviceTokenReceived(token)) {
+        $0.deviceToken = token
+        $0.status = .failed("Invalid push hub address")
+    }
+    await store.finish()
+}
+
+@Test @MainActor func pushFeatureTokenFailureSurfacesTheSystemReason() async {
+    let store = makePushStore { state in
+        state.$enabled.withLock { $0 = true }
+        state.status = .awaitingToken
+    }
+    await store.send(.deviceTokenFailed("no valid aps-environment entitlement")) {
+        $0.status = .failed("no valid aps-environment entitlement")
+    }
+}
+
+@Test @MainActor func pushFeatureTokenWrongDestinationIsRejected() async {
+    let store = makePushStore { state in
+        state.$enabled.withLock { $0 = true }
+        state.deviceToken = token
+        state.status = .registering
+    }
+    await store.send(.registrationResponse(.success(registered(Data(repeating: 0x11, count: 16))))) {
+        $0.status = .failed("Hub registered the wrong destination")
+    }
+    #expect(store.state.lastRegistration == nil)
+}
+
+@Test @MainActor func pushFeatureTokenTransportFailureSurfaces() async {
+    let store = makePushStore { state in
+        state.$enabled.withLock { $0 = true }
+        state.deviceToken = token
+        state.status = .registering
+    }
+    await store.send(.registrationResponse(.failure(RegistrationFailure("Push hub unreachable")))) {
+        $0.status = .failed("Push hub unreachable")
+    }
+}
+```
+
+`PushFeatureLifecycleTests.swift` changes:
+- `pushFeatureLifecycleDisableUnregistersAndClears`: configure also `state.$hubHex.withLock { $0 = hubHex }` (add the two `hubHex`/`hub` constants to this file); drop the `RegistrationSpy` and its assertions; after the send, `await store.receive(.delegate(.sendRegistration(hub: hub, path: "/unregister", data: RegistrationWire.unregisterRequest())))` then `await store.receive(.unregisterFinished)`; keep `platform.unregisters.value == 1` and the settings record check.
+- `pushFeatureLifecycleLateRegistrationAfterDisableIsIgnored`: send `.registrationResponse(.success(Data()))` instead of `.registrationFinished(.success(testNow))`.
+- Add:
+```swift
+@Test @MainActor func pushFeatureLifecycleHubChangeClearsTheRecordWhileEnabled() async {
+    let storage = PushStorage.temporary()
+    let record = RegistrationRecord(tokenHex: "01020304", registeredAt: testNow)
+    storage.settings.save(SharedPushSettings(lastRegistration: record))
+    let store = makePushStore(storage: storage) { state in
+        state.$enabled.withLock { $0 = true }
+        state.lastRegistration = record
+    }
+    await store.send(.binding(.set(\.hubHex, hubHex))) {
+        $0.$hubHex.withLock { $0 = hubHex }
+        $0.lastRegistration = nil
+    }
+    await store.finish()
+    #expect(storage.settings.load().lastRegistration == nil)
+}
+```
+- Every remaining `makePushStore(registration:)` call site loses that argument.
+
+Run: `swift test --package-path /Users/ell/development/ios/pods/ReTiCAPush --filter "pushFeatureToken|pushFeatureLifecycle"` → compile errors (RED).
+
+- [ ] **Step 3: Rewire `PushFeature.swift`**
+
+- Remove `@Dependency(\.registrationClient)`, `invalidURLText`, `registrationURL(from:)` and `failure(for:)`.
+- State: `@Shared(.appStorage("pushHubHex")) public var hubHex: String = ""` replaces `registrationURL`; `environment: PushEnvironment`.
+- Add `public static let invalidHubText = "Invalid push hub address"`, `wrongDestinationText = "Hub registered the wrong destination"`, `invalidResponseText = "Hub sent an invalid response"`.
+- Actions: delete `registrationFinished`; add `case registrationResponse(Result<Data, RegistrationFailure>)`; in `Delegate` add `case sendRegistration(hub: Data, path: String, data: Data)`.
+- `.deviceTokenReceived`, after the 24 h check:
+```swift
+                guard let hub = Data(pushHex: state.hubHex), hub.count == 16 else {
+                    state.status = .failed(Self.invalidHubText)
+                    return .none
+                }
+                state.status = .registering
+                let request = RegistrationWire.registerRequest(token: token, environment: state.environment,
+                                                               bundleID: state.bundleID)
+                return .send(.delegate(.sendRegistration(hub: hub, path: RegistrationWire.registerPath, data: request)))
+```
+- Replace both `registrationFinished` arms with:
+```swift
+            case let .registrationResponse(.success(data)):
+                guard state.enabled else { return .none }
+                switch RegistrationWire.decodeResponse(data) {
+                case let .registered(destinationHash, _):
+                    guard destinationHash == state.identity.lxmfDeliveryHash else {
+                        state.status = .failed(Self.wrongDestinationText)
+                        return .none
+                    }
+                    state.status = .registered(date.now)
+                    if let token = state.deviceToken {
+                        state.lastRegistration = RegistrationRecord(tokenHex: token.pushHex, registeredAt: date.now)
+                    }
+                    let settings = state.sharedSettings
+                    let store = state.storage.settings
+                    return .run { _ in store.save(settings) }
+                case let .refused(code):
+                    state.status = .failed("Hub refused: \(code)")
+                    return .none
+                case .unregistered, .malformed:
+                    state.status = .failed(Self.invalidResponseText)
+                    return .none
+                }
+
+            case let .registrationResponse(.failure(failure)):
+                guard state.enabled else { return .none }
+                state.status = .failed(failure.message)
+                return .none
+```
+- `.setEnabled(false)`: drop `tokenForUnregister`, the `PushRegistration`, `signed`, `url` and the DELETE; the effect becomes:
+```swift
+                let hub = Data(pushHex: state.hubHex).flatMap { $0.count == 16 ? $0 : nil }
+                var effects: [Effect<Action>] = [
+                    .run { [platform] _ in
+                        store.save(settings)
+                        await platform.unregisterForRemoteNotifications()
+                    },
+                ]
+                if let hub {
+                    // Best effort: the hub also expires registrations on its own.
+                    effects.append(.send(.delegate(.sendRegistration(hub: hub, path: RegistrationWire.unregisterPath,
+                                                                     data: RegistrationWire.unregisterRequest()))))
+                }
+                effects.append(.send(.unregisterFinished))
+                return .merge(effects)
+```
+- `.binding`: before `case .delegate, .binding: return .none`, add
+```swift
+            case .binding(\.hubHex):
+                // A different hub knows nothing about this device: forget the old registration so
+                // the next launch registers again. No network here, the field changes per keystroke.
+                guard state.enabled else { return .none }
+                state.lastRegistration = nil
+                let settings = state.sharedSettings
+                let store = state.storage.settings
+                return .run { _ in store.save(settings) }
+```
+If that key-path pattern does not compile, use `case .binding(let action) where action.keyPath == \State.hubHex:` and note it.
+
+- [ ] **Step 4: Run the filters, then the full suite**
+
+`--filter "pushFeatureToken|pushFeatureLifecycle"` → 9 + (8 + 1 + the three fix-wave guard tests + launch-denied) green. Full suite green, zero warnings, zero known issues. Record the count.
+
+- [ ] **Step 5: Mutation check**
+
+Sub-batch A (token tests except the two interval rows, plus the lifecycle hub-change test):
+| Test | Mutation |
+|---|---|
+| `pushFeatureTokenRegistersThroughTheHubLink` | `path: RegistrationWire.registerPath` → `path: RegistrationWire.unregisterPath` in `.deviceTokenReceived` |
+| `pushFeatureTokenReregistersWhenTokenChanges` | delete `record.tokenHex == tokenHex,` |
+| `pushFeatureTokenRefusalKeepsOldRecord` | in `.refused`, add `state.lastRegistration = nil` |
+| `pushFeatureTokenInvalidHubFailsWithoutRegistering` | the hub guard's `else { … return .none }` → `else { state.status = .registering; return .none }` (status wrong, no delegate; the exhaustive test is red on status) |
+| `pushFeatureTokenFailureSurfacesTheSystemReason` | `.deviceTokenFailed`: `.failed(reason)` → `.failed("Token registration failed")` |
+| `pushFeatureTokenWrongDestinationIsRejected` | delete the `destinationHash == state.identity.lxmfDeliveryHash` guard |
+| `pushFeatureTokenTransportFailureSurfaces` | `.failure(failure)`: `.failed(failure.message)` → `.failed("Registration failed")` |
+| `pushFeatureLifecycleHubChangeClearsTheRecordWhileEnabled` | in `.binding(\.hubHex)`, delete `state.lastRegistration = nil` |
+| `pushFeatureLifecycleDisableUnregistersAndClears` | in `.setEnabled(false)`, `path: RegistrationWire.unregisterPath` → `path: RegistrationWire.registerPath` |
+Sub-batch B: `reregistrationInterval` → `0` → `pushFeatureTokenSkipsWhenSameTokenRegisteredWithin24h` red. Sub-batch C: `reregistrationInterval` → `48 * 60 * 60` → `pushFeatureTokenReregistersAfter24h` red. Show raw output for each, revert by hand between batches.
+
+- [ ] **Step 6: Replace `docs/server-contract.md` with the user's contract, verbatim**
+
+Overwrite the file with exactly this content (the user's text; do not edit it):
+
+````markdown
+# ReTiCA push hub — server contract (v1)
+
+A push hub is a Reticulum transport node that can wake an iOS client with an Apple push when
+the client's socket is down. The client (`ReTiCAPush`) never uploads messages: the hub already
+sits on every path to the client, so it pushes the very bytes it would have written to the
+client's socket. The client proves them back over a fresh socket, and the hub routes the proof
+to the sender.
+
+Everything here is normative for a hub a `ReTiCAPush` client can talk to. Registration happens
+over Reticulum itself; the hub has no HTTP surface.
+
+## 1. Registration
+
+### 1.1 The hub's registration destination
+
+The hub owns a long-lived Reticulum identity (separate from its transport identity) and a
+destination:
+
+```
+RNS.Destination(hub_identity, IN, SINGLE, "rnspush", "registration")
+```
+
+- The hub announces it at startup and every 30 minutes. `app_data` is msgpack `{"v": 1}`.
+- The client learns the destination hash from user configuration ("Push hub destination",
+  32 hex characters, the way a propagation node is configured). A client may also adopt an
+  `rnspush.registration` announce that arrives over its hub interface with `hops == 1`.
+- The hub only accepts registrations over its own TCP server's spawned client connections (§1.4).
+
+### 1.2 Flow
+
+1. The client opens a Link to the registration destination.
+2. Once the link is active, the client calls `identify` on it with its own identity (the
+   identity whose `lxmf.delivery` destination is to be woken).
+3. The client sends a link request (standard RNS request/response, request data and response
+   are msgpack) to one of two paths:
+
+| path | request data | success response |
+|---|---|---|
+| `/register` | `{"v": 1, "token": <bin>, "environment": <str>, "bundle_id": <str>}` | `{"ok": true, "destination_hash": <bin 16>, "expires_at": <int unix seconds>}` |
+| `/unregister` | `{"v": 1}` | `{"ok": true}` |
+
+- `token`: the APNs device token bytes (msgpack bin, not hex).
+- `environment`: `"production"` or `"sandbox"`.
+- `bundle_id`: the registering app's bundle identifier.
+- Map keys are msgpack str.
+
+4. The client tears the link down after the response (or on request timeout).
+
+Failure response: `{"ok": false, "error": <str>}`, with `error` one of:
+
+| error | meaning |
+|---|---|
+| `not_identified` | the link was not identified before the request |
+| `bad_request` | data is not a map, `v` is not 1, a field is missing, the wrong type, or `environment` is not one of the two values |
+| `bundle_not_allowed` | `bundle_id` is not in the hub's allow-list |
+| `not_direct` | the link did not arrive over one of this hub's spawned client connections |
+| `rate_limited` | more than 10 requests from this identity in the past hour |
+
+A client treats any failure as "not registered" and surfaces the code.
+
+### 1.3 Identity and destination
+
+The hub authenticates the client by link identification only: the identity the link was
+identified with is the identity being registered. There is no body signature and no timestamp;
+the link's encryption and identification cover authenticity and replay.
+
+The hub derives the destination to wake itself:
+`RNS.Destination.hash(remote_identity, "lxmf", "delivery")`, i.e.
+`identity_hash = SHA-256(public_key)[:16]`,
+`destination_hash = SHA-256(SHA-256("lxmf.delivery")[:10] ‖ identity_hash)[:16]`.
+It is returned in the `/register` response so the client can sanity-check it.
+
+### 1.4 Server rules
+
+- `/register` stores `destination_hash → (identity public key, token, environment, bundle_id,
+  registered_at)`, replacing any existing entry for that hash (this is also how a token change
+  is handled), and binds the connection the link arrived on (§2). A registration expires 30
+  days after the last successful `/register`. Clients re-register at least daily while enabled.
+- `/unregister` removes the entry and retires the client's dormant interface (§2). An unknown
+  identity also answers `{"ok": true}`.
+- An APNs `410 Unregistered`, `BadDeviceToken` or `DeviceTokenNotForTopic` response drops the
+  entry and retires its dormant interface.
+- The hub never needs the client's private key, its messages, or its socket address.
+
+## 2. Transport behaviour
+
+The hub runs a Reticulum transport node. Its TCP server interface is the hub the client dials
+(the same host and port the client has configured as its node connection).
+
+- **Binding.** A spawned client connection is bound to a registration when (a) a `/register`
+  request succeeds on a link that arrived over it, or (b) a validated announce for a registered
+  `destination_hash` arrives over it. Binding a registration to a new connection retires the
+  previously bound one, dormant or not. So after a reconnect, the client's ordinary
+  `lxmf.delivery` announce is enough to re-bind; it need not re-register.
+- **Dormancy.** When a bound connection's socket closes, its interface stays attached to the
+  transport, so the path table, the reverse table and the link table entries that reference it
+  remain valid, and it becomes dormant. An unbound spawned interface behaves as stock: detached
+  on close.
+- **Pushing.** For every outgoing buffer the transport hands a dormant interface: if the
+  packet's destination hash equals the bound `destination_hash` (this covers DATA and
+  LINKREQUEST packets to the client's delivery destination), push the bytes **exactly as they
+  would have hit the socket, before HDLC framing**. Drop any other buffer (announces, path
+  requests, link packets addressed by link id, packets for other destinations), as the dead
+  socket would have. Push hub interfaces do not use IFAC.
+- **Proof return.** The client returns proofs on a fresh TCP connection that may never
+  announce. Stock RNS does **not** route these: it forwards a proof only when it arrives on the
+  interface the original packet was sent out on (the reverse-table entry's outbound interface),
+  which here is the dormant interface, not the fresh connection. The hub must therefore accept a
+  proof on any spawned connection and, when its reverse-table entry's outbound interface is a
+  dormant push interface, process it as if it had arrived on that dormant interface.
+- **Retries.** A sender retries a single-packet message every 10 s up to five times, each with a
+  distinct packet hash, and its receipt for each attempt lives only 6 s plus 6 s per hop. Push
+  every attempt. Use `apns-collapse-id` (§3) so the user sees one banner. A per-destination rate
+  limit (suggested: 20 pushes per minute) protects the APNs quota.
+- **Lifetime.** A dormant interface lives as long as its registration, subject to these known
+  limits: dormancy does not survive a hub restart, and the client's path expires at the hub
+  after a week without a fresh announce. In both cases pushing resumes the next time the app
+  connects and announces.
+
+## 3. Push shape
+
+Headers: `apns-push-type: alert`, `apns-priority: 10`, `apns-topic: <bundle_id>`,
+`apns-collapse-id: <destination_hash hex>`. Send to the APNs environment the registration named.
+
+```json
+{
+  "aps": {
+    "alert": { "title": "New message" },
+    "mutable-content": 1,
+    "content-available": 1
+  },
+  "rns": {
+    "v": 1,
+    "packets": ["<base64 raw packet>", "..."]
+  }
+}
+```
+
+- `aps.alert.title` is fixed by the server and never carries sender or content information.
+  The client's service extension never changes it.
+- Each entry of `packets` is one raw Reticulum packet (at most 500 bytes), base64 without line
+  breaks.
+- Packets to one destination that arrive within 500 ms may be batched into one push: at most 8
+  packets and 3500 bytes of base64 in total (the APNs payload limit is 4 KB).
+- Pushes for different registrations are never batched.
+- `mutable-content: 1` runs the client's service extension, which stashes the packets and
+  proves them. `content-available: 1` additionally asks iOS for a best-effort background wake of
+  the app, which ingests the packets sooner. Both are required.
+
+## 4. What the client does
+
+For the hub author's mental model, not something the hub depends on:
+
+1. While push is enabled, the app registers (§1.2) whenever it gets a device token that differs
+   from the last registered one or the last registration is more than 24 hours old, and
+   unregisters when the user turns push off.
+2. On a push, the service extension decodes `rns.packets`, writes each packet to a shared
+   inbox, signs an implicit proof (`Ed25519(packet_hash)` addressed to `packet_hash[:16]`) for
+   every DATA packet addressed to the client's delivery hash, opens one TCP connection to the
+   hub, writes the HDLC-framed proofs, closes. It never decrypts anything and never changes the
+   notification.
+3. The app, when it next runs (background wake, tap or launch), reconnects to the hub, announces,
+   and feeds the inbox packets into its transport as if the socket had delivered them. That path
+   decrypts, dedups and may send a second proof, which the sender ignores.
+
+## 5. Reference implementation
+
+The Python hub is `rns-push`: a pip package plus a one-line interface shim in the Reticulum
+config's `interfaces/` directory. It provides `PushTCPServerInterface`, a `TCPServerInterface`
+whose spawned interfaces implement binding, dormancy and proof return, the `rnspush.registration`
+destination and its request handlers, and a token-based APNs client over HTTP/2. It runs on
+stock RNS.
+````
+
+- [ ] **Step 7: README**
+
+Replace the bullet list and add an "Integrating" section:
+```markdown
+# ReTiCAPush
+
+Opt-in push wake-ups for a ReTiCA-based iOS messenger, against a push-capable Reticulum hub.
+
+- `ReTiCAPushCore`: push payload decoding, the shared inbox, the proof builder, the msgpack
+  registration wire (`RegistrationWire`) and the pure link-registration state machine
+  (`RegistrationLinkFlow`), shared settings and storage locations.
+- `ReTiCAPush`: the TCA `PushFeature` a host app scopes in. It emits
+  `delegate(.sendRegistration(hub:path:data:))`; the app runs the link (see below) and answers
+  with `registrationResponse`.
+- `ReTiCAPushExtension`: `PushServiceHandler` for a Notification Service Extension.
+- `docs/server-contract.md`: what a hub must do (registration over a Reticulum link, dormant
+  interfaces, the push shape).
+
+Design: the host app repo's `docs/superpowers/specs/2026-10-01-push-relay-design.md`.
+
+## Integrating
+
+- Build `PushStorage.appGroup("<group id>")` in both the app and the extension; pass it to
+  `PushFeature.State` and to `PushServiceHandler.live(storage:)`.
+- Override `pushPlatform` with the UIKit implementation when building the store; the package's
+  `liveValue` only reports an issue.
+- On `delegate(.sendRegistration)`, drive a `RegistrationLinkFlow`: feed it your endpoint's
+  `pathLearned`, `linkEstablished`, `linkFailed`, `linkClosed`, `responseReceived` and
+  `requestFailed` events plus a timeout, execute its commands (`requestPath`, `openLink`,
+  `identify`, `sendRequest`, `closeLink`), and send `finished` back as `registrationResponse`.
+- The extension calls `handle(userInfo:)` and ALWAYS hands back the original content, also from
+  `serviceExtensionTimeWillExpire`.
+- `appLaunched` prepares the inbox directory and re-checks notification permission. A changed
+  push hub takes effect on the next launch.
+
+Tests: `swift test --package-path .`
+```
+
+- [ ] **Step 8: Commit**
+
+Two commits: code (deleted files, Core, Feature, tests) with subject `feat: register over the hub's Reticulum link instead of HTTP`; docs with subject `docs: contract v1 over Reticulum, README integration notes`. Message files `/tmp/ReTiCAPush/msg-task-15-code.txt` and `-docs.txt`, trailers as usual.
+
+### Task 16: Verification of the amendment
+
+As Task 13: full suite (record the count), iOS simulator build, `git status --short` empty, commit list. No commits expected.
