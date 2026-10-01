@@ -523,7 +523,9 @@ Consequences:
   `.push(.registrationResponse(...))`.
 - Settings: "Push hub destination" text field (hex, 32 characters) instead of the URL field; the
   caption says the hub's announce must have been heard on this device (it is, over the hub's own
-  TCP connection).
+  TCP connection). The field sends an explicit `setHubHex(String)` action (a SwiftUI binding to a
+  `@Shared` field writes the value directly and never reaches the reducer); while enabled, a hub
+  change forgets the last registration so the next launch registers with the new hub.
 
 ### A3. Testing changes
 
