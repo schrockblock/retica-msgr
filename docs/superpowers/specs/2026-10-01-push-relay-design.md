@@ -497,7 +497,11 @@ Consequences:
   `requestFailed`, `linkClosed` before a response, or `timedOut` → `closeLink` (if a link exists) +
   `finished(.failure(...))` with `Failure` ∈ `.hubUnreachable`, `.linkFailed`, `.requestFailed`,
   `.timedOut`, `.cancelled`; events for other links or destinations are ignored; a second `start`
-  cancels the first (`closeLink` + `finished(.failure(.cancelled))`) and begins anew.
+  cancels the first (`closeLink` + `finished(.failure(.cancelled))`) and begins anew. An attempt
+  abandoned while its link was still opening (`start` to a different hub, `cancel`, `timedOut`
+  during `awaitingLink`) remembers that hub as stale: a `linkEstablished` that later arrives for a
+  stale hub is answered with `closeLink` and forgotten, and a `linkFailed` for it is forgotten, so
+  no link leaks at the host.
 - `PushFeature` (TCA): `hubHex` replaces `registrationURL`. `deviceTokenReceived` validates the
   hub hash (16 bytes) else `.failed("Invalid push hub address")`, sets `.registering`, and emits
   `delegate(.sendRegistration(hub: Data, path: String, data: Data))`. `registrationResponse(Result<Data,
