@@ -7,6 +7,9 @@ import ReTiCA
 import ReTiCAKeychain
 import ReTiCANode
 import ReTiCaMsgrCore
+import ReTiCAPush
+import ReTiCAPushCore
+import ReTiCaMsgrPushService
 
 /// Owns the database, resolves the identity, and builds the store ONLY in `.ready` (spec §5.4).
 /// The identity enters the app by building the store and never changes afterwards.
@@ -17,13 +20,20 @@ final class AppRuntime {
         var identityStore: IdentityStore
         var anchor: IdentityAnchor
         var now: () -> Date = Date.init
+        /// Inbox and shared settings for push (spec 2026-10-01 §3). The app group when entitled,
+        /// a throwaway location otherwise (and always under test).
+        var pushStorage: PushStorage = .temporary()
+        /// How long `pushWake` holds the process after sending `.pushWake`, so the re-dial and
+        /// drain get a chance before the fetch handler completes. Zero under test.
+        var wakeHold: Duration = .seconds(20)
 
         static func live() -> Environment {
             let dbPath = URL.documentsDirectory.appending(path: "reticamsgr.sqlite").path()
             return Environment(
                 database: try! AppDatabase.makeOnDisk(path: dbPath),
                 identityStore: .liveValue,
-                anchor: IdentityAnchor(defaults: .standard))
+                anchor: IdentityAnchor(defaults: .standard),
+                pushStorage: ReTiCaMsgrPush.storage() ?? .temporary())
         }
 
         /// Hosted XCTest runs and UI-test launches never touch the real Keychain, database or
@@ -39,7 +49,8 @@ final class AppRuntime {
             return Environment(
                 database: try! AppDatabase.makeInMemory(),
                 identityStore: .live(ops: keychain.ops),
-                anchor: IdentityAnchor(defaults: defaults))
+                anchor: IdentityAnchor(defaults: defaults),
+                wakeHold: .zero)
         }
 
         static var isTestHost: Bool {
@@ -74,7 +85,8 @@ final class AppRuntime {
         state = resolved.state
         guard let identity = resolved.identity else { return }
         let database = environment.database
-        let store = Store(initialState: AppFeature.State(identity: identity)) {
+        let pushStorage = environment.pushStorage
+        let store = Store(initialState: AppFeature.State(identity: identity, pushStorage: pushStorage)) {
             AppFeature()
         } withDependencies: {
             $0.defaultDatabase = database
@@ -90,6 +102,8 @@ final class AppRuntime {
                 guard path == AppFeature.publicKeyRequestPath else { return nil }
                 return identity.publicKey
             }
+            // The package's liveValue only reports an issue: the app owns UIKit.
+            $0.pushPlatform = .uiKit
         }
         self.store = store
         store.send(.onLaunch)
@@ -148,4 +162,33 @@ final class AppRuntime {
     func foregrounded() {
         store?.send(.foregrounded)
     }
+
+    /// A background push or a notification tap. Builds the store if the scene never rendered
+    /// (`build()` is view-independent), sends `.pushWake`, holds for `wakeHold` so the re-dial
+    /// and drain can run, and reports whether a store exists. False means the identity is
+    /// unavailable (locked before first unlock, or missing); the inbox then waits for the next
+    /// launch.
+    func pushWake() async -> Bool {
+        build()
+        guard let store else { return false }
+        store.send(.pushWake)
+        if environment.wakeHold > .zero {
+            try? await Task.sleep(for: environment.wakeHold)
+        }
+        return true
+    }
+
+    func pushDeviceToken(_ token: Data) {
+        store?.send(.pushDeviceToken(token))
+    }
+
+    func pushDeviceTokenFailed(_ reason: String) {
+        store?.send(.pushDeviceTokenFailed(reason))
+    }
+
+    func drainPushInbox() {
+        store?.send(.push(.drainInbox))
+    }
+
+    var pushStorage: PushStorage { environment.pushStorage }
 }
