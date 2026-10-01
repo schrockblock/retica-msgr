@@ -498,10 +498,15 @@ Consequences:
   `finished(.failure(...))` with `Failure` ∈ `.hubUnreachable`, `.linkFailed`, `.requestFailed`,
   `.timedOut`, `.cancelled`; events for other links or destinations are ignored; a second `start`
   cancels the first (`closeLink` + `finished(.failure(.cancelled))`) and begins anew. An attempt
-  abandoned while its link was still opening (`start` to a different hub, `cancel`, `timedOut`
-  during `awaitingLink`) remembers that hub as stale: a `linkEstablished` that later arrives for a
-  stale hub is answered with `closeLink` and forgotten, and a `linkFailed` for it is forgotten, so
-  no link leaks at the host.
+  abandoned while its link was still opening (any `start`, `cancel` or `timedOut` during
+  `awaitingLink`, including a restart to the same hub, since every `openLink` is a new link)
+  remembers that hub as stale: the next `linkEstablished` for a stale hub is answered with
+  `closeLink` and the hub forgotten (a later one serves the new attempt), and a `linkFailed` for it
+  is forgotten, so no link leaks at the host. The host never forwards `finished(.failure(.cancelled))`
+  as a response (the newer attempt reports its own result), executes each command list in order,
+  and owns the attempt timeout. `RegistrationFailure.init(_: RegistrationLinkFlow.Failure)` fixes
+  the Settings wording. `setHubHex` while an attempt is in flight or registered sets
+  `.failed("Push hub changed; registers on next launch")`, so the in-flight result is dropped.
 - `PushFeature` (TCA): `hubHex` replaces `registrationURL`. `deviceTokenReceived` validates the
   hub hash (16 bytes) else `.failed("Invalid push hub address")`, sets `.registering`, and emits
   `delegate(.sendRegistration(hub: Data, path: String, data: Data))`. `registrationResponse(Result<Data,
