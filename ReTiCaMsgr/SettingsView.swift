@@ -9,6 +9,7 @@ import SwiftUI
 import UIKit
 import ComposableArchitecture
 import ReTiCaMsgrCore
+import ReTiCAPush
 
 struct SettingsView: View {
     @Bindable var store: StoreOf<AppFeature>
@@ -16,6 +17,11 @@ struct SettingsView: View {
     @State private var nameInput: String = ""
     @State private var showingAddress = false
     @Environment(\.openURL) private var openURL
+
+    private var pushStatusIsFailure: Bool {
+        if case .failed = store.push.status { return true }
+        return false
+    }
 
     private var connectionColor: Color {
         switch store.connection {
@@ -128,6 +134,30 @@ struct SettingsView: View {
                     Text("Carries other users' messages through this device so the mesh reaches "
                          + "further — it forwards transit traffic and answers path requests for "
                          + "peers it hasn't met. Off by default. Uses more battery and data.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Push Notifications") {
+                    Toggle("Wake me with push", isOn: Binding(
+                        get: { store.push.enabled },
+                        set: { store.send(.push(.setEnabled($0))) }
+                    ))
+                    TextField("Push hub destination (32 hex)", text: Binding(
+                        get: { store.push.hubHex },
+                        set: { store.send(.push(.setHubHex($0))) }
+                    ))
+                        .keyboardType(.asciiCapable)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.body, design: .monospaced))
+                    Text(store.push.status.displayText)
+                        .font(.caption)
+                        .foregroundStyle(pushStatusIsFailure ? .red : .secondary)
+                    Text("Your hub must support ReTiCA push and must have announced its registration "
+                         + "destination to this device. Notifications only ever say \"New message\"; nothing "
+                         + "about the sender or the content leaves the device unencrypted. A changed hub "
+                         + "takes effect on the next launch.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
