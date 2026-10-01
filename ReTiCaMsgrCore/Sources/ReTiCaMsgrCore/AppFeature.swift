@@ -8,6 +8,8 @@ import ReTiCA
 import ReTiCAInterfaces
 import ReTiCANode
 import ReTiCATransport
+import ReTiCAPush
+import ReTiCAPushCore
 
 @Reducer
 public struct AppFeature {
@@ -69,6 +71,12 @@ public struct AppFeature {
         public var node: LXMFServiceNode.State
         public var identity: Identity
         public var myAddressHex: String
+        /// Opt-in push wake-ups (spec 2026-10-01 §3). The feature owns the toggle, the APNs token and
+        /// registration; this reducer turns its `delegate(.inject)` into `transport.received`.
+        public var push: PushFeature.State
+        /// One registration attempt over the hub's link (spec amendment A2): the pure state machine
+        /// the registration reducer below feeds with endpoint events.
+        public var pushRegistrationFlow = RegistrationLinkFlow()
         @Shared(.appStorage("host")) public var host: String = "127.0.0.1"
         @Shared(.appStorage("port")) public var port: Int = 4242
         public var connection: Connection = .disconnected
@@ -171,7 +179,10 @@ public struct AppFeature {
         /// inject.
         @Shared(.appStorage("bleEnabled")) public var bleEnabled: Bool = false
 
-        public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242) {
+        public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242,
+                    pushStorage: PushStorage = .temporary(),
+                    bundleID: String = Bundle.main.bundleIdentifier ?? "",
+                    pushEnvironment: PushEnvironment = AppFeature.defaultPushEnvironment) {
             self.identity = identity
             self.myAddressHex = lxmfAddressHex(identity)
             // Use the LXMF library default — one constant that is both advertised in the
@@ -181,6 +192,10 @@ public struct AppFeature {
                 endpoint: TCPEndpoint.State(host: host, port: UInt16(port), reconnectOnDrop: true),
                 minStampCost: LXMFPropagation.defaultPropagationStampCost
             )
+            self.push = PushFeature.State(
+                identity: identity, bundleID: bundleID, environment: pushEnvironment, storage: pushStorage,
+                keychainService: SharedIdentityLocation.service,
+                keychainAccessGroup: SharedIdentityLocation.accessGroup)
             _host = Shared(wrappedValue: host, .appStorage("host"))
             _port = Shared(wrappedValue: port, .appStorage("port"))
         }
@@ -225,6 +240,15 @@ public struct AppFeature {
         /// The app entered the background (UIApplication.didEnterBackgroundNotification). Used to
         /// flush the debounced learned-destination write before the process may be killed by the OS.
         case backgrounded
+        /// A background push woke the process (AppDelegate). Re-dials like `foregrounded`, then
+        /// drains the push inbox.
+        case pushWake
+        /// APNs issued or refreshed the device token (AppDelegate).
+        case pushDeviceToken(Data)
+        case pushDeviceTokenFailed(String)
+        /// The 20 s registration timer fired. Internal.
+        case pushRegistrationTimedOut
+        case push(PushFeature.Action)
         case connectTapped
         case disconnectTapped
         case openConversation(String)
@@ -296,6 +320,8 @@ public struct AppFeature {
         case attachmentPreparation
         /// The silence timer of one inbound transfer, keyed by link ID.
         case inboundTransfer(Data)
+        /// The 20 s timeout of the in-flight push-registration attempt (spec amendment A2).
+        case pushRegistration
     }
 
     @Dependency(\.defaultDatabase) var database
@@ -318,6 +344,21 @@ public struct AppFeature {
     /// an authenticated link, i.e. the peer demonstrably holds the matching private key.
     public static let publicKeyRequestPath = "/publicKey"
 
+    /// APNs environment follows the build configuration, as Xcode's `aps-environment` does.
+    public static var defaultPushEnvironment: PushEnvironment {
+        #if DEBUG
+        .sandbox
+        #else
+        .production
+        #endif
+    }
+
+    /// Where pushed packets are injected when the endpoint has no TCP client slot.
+    static let pushFallbackInterface = InterfaceID("push")
+
+    /// How long one registration attempt may take, path request to response.
+    static let pushRegistrationTimeout: Duration = .seconds(20)
+
     /// Diagnostic channel for inbound-message shape. Filter in Console.app or with
     /// `log stream --predicate 'subsystem == "com.reticamsgr"'`.
     static let inbound = Logger(subsystem: "com.reticamsgr", category: "inbound")
@@ -327,13 +368,17 @@ public struct AppFeature {
     public var body: some ReducerOf<Self> {
         BindingReducer()
         Scope(state: \.node, action: \.node) { LXMFServiceNode() }
+        Scope(state: \.push, action: \.push) { PushFeature() }
         Reduce { state, action in
             switch action {
             case .onLaunch:
                 state.connection = .connecting
                 syncEndpointHostPort(&state)
+                let hub = (host: state.host, port: state.port)
                 return .merge(
                     .send(.node(.client(.endpoint(.start)))),
+                    .send(.push(.hubChanged(host: hub.host, port: hub.port))),
+                    .send(.push(.appLaunched)),
                     .run { [database] send in try await reloadConversations(database, send) },
                     .run { [database] send in
                         // ORDER BY storedAt so eviction during rehydration is deterministic across
@@ -428,11 +473,31 @@ public struct AppFeature {
                 // re-dial whenever any BLE peer held the app "connected", leaving the dead socket
                 // unrebuilt (A4). A HEALTHY tcp interface still short-circuits, because re-dialling
                 // it would tear down its live links on every app switch.
-                let tcpID = state.node.client.endpoint.tcpClient?.interfaceID
-                if let tcpID, state.connectedInterfaces.contains(tcpID) { return .none }
-                state.connection = .connecting
-                syncEndpointHostPort(&state)
-                return .send(.node(.client(.endpoint(.start))))
+                // Either way, drain the push inbox: packets may have been stashed while suspended.
+                return .merge(redialIfTCPDown(&state), .send(.push(.drainInbox)))
+
+            case .pushWake:
+                return .merge(redialIfTCPDown(&state), .send(.push(.drainInbox)))
+
+            case let .pushDeviceToken(token):
+                return .send(.push(.deviceTokenReceived(token)))
+
+            case let .pushDeviceTokenFailed(reason):
+                return .send(.push(.deviceTokenFailed(reason)))
+
+            case let .push(.delegate(.inject(packets))):
+                // Feed each pushed packet to Transport as if the TCP driver had read it from the
+                // socket: it unmasks (plain), dedups on packet hash, decrypts for our delivery
+                // destination, and LXMFNode proves (a no-op when the interface is down) and routes.
+                // A second proof for a packet the extension already proved is dropped by the
+                // sender's transport because the receipt is gone.
+                let interfaceID = state.node.client.endpoint.tcpClient?.interfaceID ?? AppFeature.pushFallbackInterface
+                return .merge(packets.map { raw in
+                    .send(.node(.client(.endpoint(.transport(.received(interfaceID, raw))))))
+                })
+
+            case .push:
+                return .none
 
             case .backgrounded:
                 // Flush the learned-destination table immediately instead of waiting out the
@@ -460,7 +525,11 @@ public struct AppFeature {
             case .connectTapped:
                 state.connection = .connecting
                 syncEndpointHostPort(&state)
-                return .send(.node(.client(.endpoint(.start))))
+                let hub = (host: state.host, port: state.port)
+                return .merge(
+                    .send(.node(.client(.endpoint(.start)))),
+                    .send(.push(.hubChanged(host: hub.host, port: hub.port)))
+                )
 
             case .disconnectTapped:
                 state.connection = .disconnected
@@ -1278,9 +1347,80 @@ public struct AppFeature {
                 state.inboundTransfers[linkID] = nil
                 return .none
 
-            case .node, .binding:
+            case .node, .binding, .pushRegistrationTimedOut:
                 return .none
             }
+        }
+
+        Reduce { state, action in
+            // Push registration over the hub's link (spec amendment A2). Translate the actions the
+            // flow cares about into its events, run it, and turn its commands into endpoint actions.
+            let event: RegistrationLinkFlow.Event?
+            switch action {
+            case let .push(.delegate(.sendRegistration(hub, path, data))):
+                let known = state.node.client.endpoint.learned[hub] != nil
+                event = .start(hub: hub, path: path, data: data, hubKnown: known)
+            case let .node(.client(.endpoint(.delegate(.pathLearned(hash, _))))):
+                event = .pathLearned(hash)
+            case let .node(.client(.endpoint(.delegate(.linkEstablished(linkID, hash))))):
+                event = .linkEstablished(linkID: linkID, destinationHash: hash)
+            case let .node(.client(.endpoint(.delegate(.linkFailed(hash, _))))):
+                event = .linkFailed(destinationHash: hash)
+            case let .node(.client(.endpoint(.delegate(.linkClosed(linkID, _))))):
+                event = .linkClosed(linkID: linkID)
+            case let .node(.client(.endpoint(.delegate(.responseReceived(linkID, _, data))))):
+                event = .responseReceived(linkID: linkID, data: data)
+            case let .node(.client(.endpoint(.delegate(.requestFailed(linkID, _))))):
+                event = .requestFailed(linkID: linkID)
+            case .pushRegistrationTimedOut:
+                event = .timedOut
+            default:
+                event = nil
+            }
+            guard let event else { return .none }
+            let commands = state.pushRegistrationFlow.handle(event)
+            var effects: [Effect<Action>] = []
+            if case .start = event {
+                effects.append(
+                    .run { [clock] send in
+                        try await clock.sleep(for: AppFeature.pushRegistrationTimeout)
+                        await send(.pushRegistrationTimedOut)
+                    }
+                    .cancellable(id: CancelID.pushRegistration, cancelInFlight: true)
+                )
+            }
+            let identity = state.identity
+            // Commands run IN ORDER (`identify` must precede `sendRequest`, or the hub answers
+            // `not_identified`): concatenate the sends, and merge only the timer alongside.
+            var ordered: [Effect<Action>] = []
+            for command in commands {
+                switch command {
+                case let .requestPath(hub):
+                    ordered.append(.send(.node(.client(.endpoint(.requestPath(destinationHash: hub))))))
+                case let .openLink(hub):
+                    ordered.append(.send(.node(.client(.endpoint(.openLink(destinationHash: hub))))))
+                case let .identify(linkID):
+                    ordered.append(.send(.node(.client(.endpoint(.identifyOverLink(linkID: linkID, identity: identity))))))
+                case let .sendRequest(linkID, path, data):
+                    ordered.append(.send(.node(.client(.endpoint(.sendRequestOverLink(linkID: linkID, path: path, data: data))))))
+                case let .closeLink(linkID):
+                    ordered.append(.send(.node(.client(.endpoint(.closeLink(linkID: linkID))))))
+                case let .finished(result):
+                    ordered.append(.cancel(id: CancelID.pushRegistration))
+                    switch result {
+                    case let .success(data):
+                        ordered.append(.send(.push(.registrationResponse(.success(data)))))
+                    case .failure(.cancelled):
+                        // A cancellation is caused by a newer attempt (or by disabling). The newer
+                        // attempt reports its own result; forwarding this one would land on it.
+                        break
+                    case let .failure(failure):
+                        ordered.append(.send(.push(.registrationResponse(.failure(RegistrationFailure(failure))))))
+                    }
+                }
+            }
+            if !ordered.isEmpty { effects.append(.concatenate(ordered)) }
+            return effects.isEmpty ? .none : .merge(effects)
         }
     }
 
@@ -1400,6 +1540,20 @@ public struct AppFeature {
 // slot is present, and it is decided at connect time here (not at State.init) because the endpoint
 // is constructed before the persisted Settings are read in. Toggling the setting takes effect on
 // the next connect (onLaunch / connectTapped / foregrounded), matching how host/port already work.
+/// The `.foregrounded` re-dial: nothing when the TCP interface is up, otherwise sync the hub
+/// settings and start the endpoint. Returns the effects to merge (the hub forward rides along).
+private func redialIfTCPDown(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
+    let tcpID = state.node.client.endpoint.tcpClient?.interfaceID
+    if let tcpID, state.connectedInterfaces.contains(tcpID) { return .none }
+    state.connection = .connecting
+    syncEndpointHostPort(&state)
+    let hub = (host: state.host, port: state.port)
+    return .merge(
+        .send(.node(.client(.endpoint(.start)))),
+        .send(.push(.hubChanged(host: hub.host, port: hub.port)))
+    )
+}
+
 private func syncEndpointHostPort(_ state: inout AppFeature.State) {
     guard state.node.client.endpoint.tcpClient != nil else { return }
     // Read the @Shared Settings into locals first: mutating `state.node…` while reading

@@ -47,6 +47,7 @@ let package = Package(
                 .product(name: "ReTiCAInterfaces", package: "ReTiCA"),
                 .product(name: "ReTiCATransport", package: "ReTiCA"),
                 .product(name: "ReTiCAKeychain", package: "ReTiCA"),
+                .product(name: "ReTiCAPush", package: "ReTiCAPush"),
                 .product(name: "ReTiCAPushCore", package: "ReTiCAPush"),
             ]
         ),
