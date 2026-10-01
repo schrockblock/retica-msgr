@@ -6,9 +6,12 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "ReTiCaMsgrCore", targets: ["ReTiCaMsgrCore"]),
+        // What the Notification Service Extension links: no TCA, no SQLite.
+        .library(name: "ReTiCaMsgrPushService", targets: ["ReTiCaMsgrPushService"]),
     ],
     dependencies: [
         .package(path: "../../../pods/ReTiCA"),
+        .package(path: "../../../pods/ReTiCAPush"),
         // sharing-grdb was deprecated and replaced by sqlite-data (1.x+).
         // sharing-grdb 0.8.0 (latest) is incompatible with Swift 6.3 due to a
         // ScalarDatabaseFunction.invoke API break in swift-structured-queries 0.22:
@@ -22,11 +25,20 @@ let package = Package(
         .target(
             name: "ReTiCaMsgrCore",
             dependencies: [
+                "ReTiCaMsgrPushService",
                 .product(name: "ReTiCANode", package: "ReTiCA"),
                 .product(name: "ReTiCAKeychain", package: "ReTiCA"),
+                .product(name: "ReTiCAPush", package: "ReTiCAPush"),
+                .product(name: "ReTiCAPushCore", package: "ReTiCAPush"),
                 .product(name: "SQLiteData", package: "sqlite-data"),
             ],
             resources: [.process("Resources")]
+        ),
+        .target(
+            name: "ReTiCaMsgrPushService",
+            dependencies: [
+                .product(name: "ReTiCAPushExtension", package: "ReTiCAPush"),
+            ]
         ),
         .testTarget(
             name: "ReTiCaMsgrCoreTests",
@@ -35,6 +47,7 @@ let package = Package(
                 .product(name: "ReTiCAInterfaces", package: "ReTiCA"),
                 .product(name: "ReTiCATransport", package: "ReTiCA"),
                 .product(name: "ReTiCAKeychain", package: "ReTiCA"),
+                .product(name: "ReTiCAPushCore", package: "ReTiCAPush"),
             ]
         ),
     ]
