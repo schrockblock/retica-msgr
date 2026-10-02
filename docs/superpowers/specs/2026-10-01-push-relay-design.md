@@ -532,6 +532,30 @@ Consequences:
   `@Shared` field writes the value directly and never reaches the reducer); while enabled, a hub
   change forgets the last registration so the next launch registers with the new hub.
 
+### A4. Everything that touches the transport waits for the hub connection (from the final app review)
+
+- **Injection waits for the delivery destination.** ReTiCA's transport records a packet hash
+  before it looks for a local destination, so a packet injected before `registerDelivery` is
+  dropped and can never be re-ingested. The app injects only when the node's
+  `deliveryDestinationHash` is set; otherwise it puts the drained packets back into the inbox
+  (idempotent). `interfaceConnected` drains the inbox again right after `registerDelivery`, which
+  is also what lets the app prove packets the extension could not (the interface is registered by
+  then). Launch and foreground drains therefore only matter for a warm process.
+- **Registration waits for the hub connection.** A `sendRegistration` that arrives while the TCP
+  interface is not connected is held in `AppFeature.State.pendingPushRegistration` and started
+  from `interfaceConnected` after `registerDelivery`, so the delivery announce precedes the
+  registration link (which is what the hub's binding rule wants). `hubKnown` means the hub is
+  reachable (a learned path on a registered interface), not merely learned.
+- **A superseded attempt never cancels the new attempt's timer.** The timer effect uses
+  `cancelInFlight`, which retires the old timer; the reducer sends no explicit cancel for a
+  cancelled attempt.
+- **A valid hub typed after enabling registers at once.** When `setHubHex` leaves a 16-byte hub
+  while push is enabled and a device token is in hand, the app re-dispatches
+  `deviceTokenReceived`; the record the child just cleared makes the 24-hour rule register.
+- **Background wake on a cold process** builds the store, whose `onLaunch` already dials and
+  drains; `pushWake` is sent only when the store already existed. A notification tap does not
+  hold the process (hold zero).
+
 ### A3. Testing changes
 
 Package: `RegistrationWire` round-trips and rejects malformed/`ok:false` bodies; the flow state
