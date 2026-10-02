@@ -117,9 +117,18 @@ Shipped app-side with no ReTiCA changes. Known limits, all documented in the spe
 `ReTiCAPush/docs/server-contract.md`:
 
 - The service extension proves only single-packet DATA copies and skips IFAC-flagged packets;
-  registration happens over the hub's Reticulum link (not HTTP); the Simulator cannot exercise the
-  service extension end to end, so the device run against a real hub is the outstanding manual
-  check.
+  registration happens over the hub's Reticulum link (not HTTP). **Verified 2026-10-01**: extension
+  not observed on the Simulator; device run outstanding. Built and installed on the booted iPhone 17
+  Simulator (confirmed `UIBackgroundModes` includes `remote-notification` and the embedded
+  `ReTiCaMsgrNotificationService.appex`'s `NSExtensionPointIdentifier` is
+  `com.apple.usernotifications.service`), enabled the push toggle, backgrounded the app, and sent
+  `xcrun simctl push` with the spec's `rns.packets: ["AAABAgM="]` payload. `usernotificationsd`
+  processed and queued the notification (full `NotificationsPipeline` trace ending "Request:
+  Completed"/"success"), but the app group's `ReTiCAPush/inbox/` stayed empty and `log show`
+  around the push shows zero `PlugInKit`/`pkd:` activity for
+  `co.lithobyte.ReTiCaMsgr.NotificationService` (only at install time) — this Simulator does not
+  invoke the Notification Service Extension for a `simctl push`-simulated remote notification, so
+  the device run against a real hub remains the outstanding manual check.
 - Delivery confirmation depends on the push, wake and proof fitting inside the sender's receipt
   window (6 s + 6 s/hop per attempt, five attempts 10 s apart). A longer receipt lifetime for
   push-registered peers would be a ReTiCA change.
