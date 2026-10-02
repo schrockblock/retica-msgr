@@ -477,6 +477,11 @@ Consequences:
   Settings like the propagation node hash. Auto-adopting a hops-1 announce is out of scope.
 - The hub's TCP host and port remain what the app already dials; the extension's proof socket is
   unchanged.
+- The hub refuses a registration whose link did not arrive directly over one of its own spawned
+  client connections (`not_direct`). Two consequences for the client: the registration link must
+  be opened over the hub's TCP interface (not a path learned through another interface), and a
+  client must never enable anything equivalent to RNS's `local_hops_delta` (it would make every
+  link look relayed). ReTiCA has no such option; this is a constraint on future transport work.
 
 ### A2. Package pieces replacing the HTTP ones
 
