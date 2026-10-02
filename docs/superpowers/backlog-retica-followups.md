@@ -110,3 +110,17 @@ Two edges remain:
   the gate, and ReTiCA's `Transport` (around lines 1065–1081) does not coalesce repeats for the same
   destination. Harmless at chat volumes; a "request pending for this hash" guard in the app, or
   coalescing in ReTiCA, would close it.
+
+## Push wake-ups (spec 2026-10-01)
+
+Shipped app-side with no ReTiCA changes. Known limits, all documented in the spec and in
+`ReTiCAPush/docs/server-contract.md`:
+
+- The service extension proves only single-packet DATA copies and skips IFAC-flagged packets;
+  registration happens over the hub's Reticulum link (not HTTP); the Simulator cannot exercise the
+  service extension end to end, so the device run against a real hub is the outstanding manual
+  check.
+- Delivery confirmation depends on the push, wake and proof fitting inside the sender's receipt
+  window (6 s + 6 s/hop per attempt, five attempts 10 s apart). A longer receipt lifetime for
+  push-registered peers would be a ReTiCA change.
+- Server and APNs are out of scope; the contract is the deliverable.
