@@ -11,6 +11,21 @@ import ReTiCATransport
 import ReTiCAPush
 import ReTiCAPushCore
 
+/// A registration the push feature asked for before the hub socket was up (spec amendment,
+/// final-review I1). Buffered from the registration `Reduce`'s `sendRegistration` case and
+/// resumed from `interfaceConnected`, after `registerDelivery`, so the announce precedes it.
+public struct PendingPushRegistration: Equatable, Sendable {
+    public var hub: Data
+    public var path: String
+    public var data: Data
+
+    public init(hub: Data, path: String, data: Data) {
+        self.hub = hub
+        self.path = path
+        self.data = data
+    }
+}
+
 @Reducer
 public struct AppFeature {
     public enum Connection: Equatable { case disconnected, connecting, connected }
@@ -77,6 +92,9 @@ public struct AppFeature {
         /// One registration attempt over the hub's link (spec amendment A2): the pure state machine
         /// the registration reducer below feeds with endpoint events.
         public var pushRegistrationFlow = RegistrationLinkFlow()
+        /// A registration the push feature asked for before the hub socket was up. Started from
+        /// `interfaceConnected`, after `registerDelivery`, so the announce precedes it.
+        public var pendingPushRegistration: PendingPushRegistration? = nil
         @Shared(.appStorage("host")) public var host: String = "127.0.0.1"
         @Shared(.appStorage("port")) public var port: Int = 4242
         public var connection: Connection = .disconnected
@@ -486,6 +504,16 @@ public struct AppFeature {
                 return .send(.push(.deviceTokenFailed(reason)))
 
             case let .push(.delegate(.inject(packets))):
+                // Transport records a packet hash before it looks for a local destination, so a
+                // packet injected before `registerDelivery` would be dropped AND never re-ingested.
+                // Until the delivery destination exists (interfaceConnected registers it and then
+                // drains again), put the packets back in the inbox.
+                guard state.node.client.deliveryDestinationHash != nil else {
+                    let inbox = state.push.storage.inbox
+                    return .run { _ in
+                        for raw in packets { _ = try? inbox.append(raw) }
+                    }
+                }
                 // Feed each pushed packet to Transport as if the TCP driver had read it from the
                 // socket: it unmasks (plain), dedups on packet hash, decrypts for our delivery
                 // destination, and LXMFNode proves (a no-op when the interface is down) and routes.
@@ -495,6 +523,15 @@ public struct AppFeature {
                 return .merge(packets.map { raw in
                     .send(.node(.client(.endpoint(.transport(.received(interfaceID, raw))))))
                 })
+
+            case .push(.setHubHex):
+                // I3: the child has already reduced `setHubHex` (new hub text, old record forgotten).
+                // Enabling first and typing the hub second is the natural order: once the field
+                // holds a valid hub and a token is already in hand, register now instead of on the
+                // next launch. The child cleared the old record, so the 24-hour rule does not skip it.
+                guard state.push.enabled, let token = state.push.deviceToken,
+                      let hub = Data(pushHex: state.push.hubHex), hub.count == 16 else { return .none }
+                return .send(.push(.deviceTokenReceived(token)))
 
             case .push:
                 return .none
@@ -563,11 +600,26 @@ public struct AppFeature {
                 var effects: [Effect<Action>] = [
                     .send(.node(.client(.setDisplayName(launchName.isEmpty ? nil : launchName, stampCost: nil)))),
                     .send(.node(.client(.registerDelivery))),
+                    // C1: Transport records a packet hash before it looks for a local destination,
+                    // so any packet the inject arm had to stash (no delivery destination yet) must
+                    // be re-drained now that registerDelivery (just above) has set one. Idempotent —
+                    // the inbox is usually already empty.
+                    .send(.push(.drainInbox)),
                     // Answer peers' /publicKey requests (the app's requestResponder dependency
                     // supplies the key). Idempotent — re-registering on reconnect is harmless.
                     .send(.node(.client(.endpoint(
                         .registerRequestHandler(path: AppFeature.publicKeyRequestPath, policy: .all))))),
                 ]
+                // I1: a registration the push feature asked for before the hub socket was up is
+                // resumed now — only for the TCP interface (the hub always sits behind it), and
+                // only after registerDelivery/the announce above, so the hub sees the registration
+                // once this device is actually reachable.
+                if interfaceID == state.node.client.endpoint.tcpClient?.interfaceID,
+                   let pending = state.pendingPushRegistration {
+                    state.pendingPushRegistration = nil
+                    effects.append(.send(.push(.delegate(.sendRegistration(
+                        hub: pending.hub, path: pending.path, data: pending.data)))))
+                }
                 if let pn = Data(hexString: state.propagationNodeHex), pn.count == 16 {
                     effects.append(.send(.node(.client(.setPropagationNode(destinationHash: pn)))))
                     effects.append(.send(.node(.client(.syncFromPropagationNode))))
@@ -1358,7 +1410,18 @@ public struct AppFeature {
             let event: RegistrationLinkFlow.Event?
             switch action {
             case let .push(.delegate(.sendRegistration(hub, path, data))):
-                let known = state.node.client.endpoint.learned[hub] != nil
+                // I1: `sendRegistration` fired at launch races the socket — `learned[hub]` can
+                // exist (rehydrated from the previous session) while the interface itself is not
+                // up yet, so `openLink` would fail `.pathStale` at once; an unknown hub would send
+                // a path request nothing can answer. Buffer until the TCP interface actually
+                // connects, then `interfaceConnected` resumes this with the real check below.
+                let tcpID = state.node.client.endpoint.tcpClient?.interfaceID
+                guard let tcpID, state.connectedInterfaces.contains(tcpID) else {
+                    state.pendingPushRegistration = PendingPushRegistration(hub: hub, path: path, data: data)
+                    event = nil
+                    break
+                }
+                let known = state.node.client.endpoint.transport.reachableLearned(hub) != nil
                 event = .start(hub: hub, path: path, data: data, hubKnown: known)
             case let .node(.client(.endpoint(.delegate(.pathLearned(hash, _))))):
                 event = .pathLearned(hash)
@@ -1406,15 +1469,21 @@ public struct AppFeature {
                 case let .closeLink(linkID):
                     ordered.append(.send(.node(.client(.endpoint(.closeLink(linkID: linkID))))))
                 case let .finished(result):
-                    ordered.append(.cancel(id: CancelID.pushRegistration))
                     switch result {
                     case let .success(data):
+                        ordered.append(.cancel(id: CancelID.pushRegistration))
                         ordered.append(.send(.push(.registrationResponse(.success(data)))))
                     case .failure(.cancelled):
-                        // A cancellation is caused by a newer attempt (or by disabling). The newer
-                        // attempt reports its own result; forwarding this one would land on it.
+                        // I2: a cancellation is caused by a newer attempt's `.start`, whose own
+                        // timer was just armed with `cancellable(id:, cancelInFlight: true)` —
+                        // that already retired the old timer. Cancelling here too would hit the
+                        // SAME CancelID and retire the NEW attempt's timer instead (a stray cancel
+                        // on an otherwise-idle flow is a no-op, so this is not merely redundant,
+                        // it is actively wrong). The newer attempt reports its own result;
+                        // forwarding this one would land on it.
                         break
                     case let .failure(failure):
+                        ordered.append(.cancel(id: CancelID.pushRegistration))
                         ordered.append(.send(.push(.registrationResponse(.failure(RegistrationFailure(failure))))))
                     }
                 }

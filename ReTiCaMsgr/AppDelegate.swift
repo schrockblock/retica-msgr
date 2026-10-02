@@ -26,11 +26,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     // MARK: Background wake (content-available)
 
-    func application(_ application: UIApplication,
+    // M3: `nonisolated` so the msgpack decode (possibly several packets) runs off the main actor;
+    // only the inbox write and the wake itself touch actor-isolated state, so just those hop over.
+    nonisolated func application(_ application: UIApplication,
                      didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
         // The extension already stashed the packets. Stash again anyway (idempotent) in case it
         // was killed before writing, then wake the store.
-        stash(userInfo)
+        let packets = (try? PushPayload.decode(userInfo)) ?? []
+        await MainActor.run { self.stash(packets) }
         return await runtime.pushWake() ? .newData : .noData
     }
 
@@ -40,7 +43,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         // Foreground: the message is about to appear in the UI, so no banner. Drain instead.
         if UIApplication.shared.applicationState == .active {
-            stash(notification.request.content.userInfo)
+            let packets = (try? PushPayload.decode(notification.request.content.userInfo)) ?? []
+            stash(packets)
             runtime.drainPushInbox()
             return []
         }
@@ -49,16 +53,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
-        stash(response.notification.request.content.userInfo)
-        _ = await runtime.pushWake()
+        let packets = (try? PushPayload.decode(response.notification.request.content.userInfo)) ?? []
+        stash(packets)
+        // M2: a tap means the user is already looking at the app — nothing to hold for.
+        _ = await runtime.pushWake(hold: .zero)
     }
 
-    /// Append the payload's packets to the inbox. A no-op for packets the extension already wrote.
-    private func stash(_ userInfo: [AnyHashable: Any]) {
-        guard let packets = try? PushPayload.decode(userInfo) else { return }
+    /// Append the decoded packets to the inbox. A no-op for packets the extension already wrote.
+    private func stash(_ packets: [Data]) {
         let inbox = runtime.pushStorage.inbox
         for raw in packets {
-            try? inbox.append(raw)
+            _ = try? inbox.append(raw)
         }
     }
 }

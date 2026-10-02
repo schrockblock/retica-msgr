@@ -16,8 +16,9 @@ import ReTiCAPushCore
 @MainActor
 private func makePushStore(_ db: any DatabaseWriter, identity: Identity,
                            clock: TestClock<Duration>? = nil,
+                           storage: PushStorage = .temporary(),
                            configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
-    var initial = AppFeature.State(identity: identity, pushStorage: .temporary(),
+    var initial = AppFeature.State(identity: identity, pushStorage: storage,
                                    bundleID: "co.example.app", pushEnvironment: .sandbox)
     configure?(&initial)
     let store = TestStore(initialState: initial) {
@@ -78,6 +79,9 @@ private let tcpID = InterfaceID("tcp")
     let db = try AppDatabase.makeInMemory()
     let me = Identity()
     let store = makePushStore(db, identity: me)
+    // C1: inject now holds packets back until the delivery destination exists.
+    await store.send(.node(.client(.registerDelivery)))
+    await store.skipReceivedActions(strict: false)
     let (raw, _) = pushedPacket(from: Identity(), to: me, text: "x")
     await store.send(.push(.delegate(.inject(packets: [raw]))))
     await store.receive { action in
@@ -92,6 +96,9 @@ private let tcpID = InterfaceID("tcp")
     let db = try AppDatabase.makeInMemory()
     let me = Identity()
     let store = makePushStore(db, identity: me)
+    // C1: inject now holds packets back until the delivery destination exists.
+    await store.send(.node(.client(.registerDelivery)))
+    await store.skipReceivedActions(strict: false)
     let (a, _) = pushedPacket(from: Identity(), to: me, text: "a")
     let (b, _) = pushedPacket(from: Identity(), to: me, text: "b")
     await store.send(.push(.delegate(.inject(packets: [a, b]))))
@@ -119,6 +126,26 @@ private let tcpID = InterfaceID("tcp")
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     let rows = try await db.read { try Message.all.fetchAll($0) }
     #expect(rows.map(\.body) == ["offline"])
+}
+
+@MainActor @Test func pushAppDrainBeforeConnectKeepsPacketsForLater() async throws {
+    // Cold launch: the drain runs before the delivery destination exists. The packet must survive
+    // until interfaceConnected registers the destination and drains again.
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let storage = PushStorage.temporary()
+    let (raw, _) = pushedPacket(from: Identity(), to: me, text: "cold")
+    try storage.inbox.append(raw)
+    let store = makePushStore(db, identity: me, storage: storage)
+    await store.send(.push(.drainInbox))
+    await store.receive { if case .push(.delegate(.inject)) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    #expect(try storage.inbox.count() == 1)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(tcpID, .tcp))))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    #expect(try await db.read { try Message.all.fetchAll($0) }.map(\.body) == ["cold"])
+    #expect(try storage.inbox.count() == 0)
 }
 
 @MainActor @Test func pushAppWakeReDialsAndDrains() async throws {
@@ -173,6 +200,9 @@ private let pushResponse = Data("register-response".utf8)
     let db = try AppDatabase.makeInMemory()
     let me = Identity()
     let store = makePushStore(db, identity: me)
+    // I1: registration now waits for the TCP interface to be connected, so connect it first.
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(tcpID, .tcp))))))
+    await store.skipReceivedActions(strict: false)
     // The hub is not in the learned table: the flow asks for a path first.
     await store.send(.push(.delegate(.sendRegistration(hub: pushHub, path: "/register", data: pushRequest))))
     await store.receive { if case .node(.client(.endpoint(.requestPath(destinationHash: pushHub)))) = $0 { return true }; return false }
@@ -182,11 +212,9 @@ private let pushResponse = Data("register-response".utf8)
     // notification would leave `transport.learned` empty, and the real `TransportEndpoint.openLink`
     // enforces a stale-path gate (TransportEndpoint.swift:170-175) that auto-fails with `.noPath`
     // when the destination isn't learned. So this seeds the real state via the real actions that
-    // populate it (`interfaceConnected` / `rehydrateLearnedDestinations`) before sending the bare
-    // notification, matching that invariant — a TestStore `send` trailing closure only ASSERTS an
-    // expected mutation the reducer itself must perform; it cannot inject state the production
-    // code never touches.
-    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(tcpID, .tcp))))))
+    // populate it (`rehydrateLearnedDestinations`) before sending the bare notification, matching
+    // that invariant — a TestStore `send` trailing closure only ASSERTS an expected mutation the
+    // reducer itself must perform; it cannot inject state the production code never touches.
     await store.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations([
         pushHub: LearnedDestination(identity: Identity(), appData: nil, ratchet: nil, interfaceID: tcpID,
                                     hops: 1, nextHop: nil, announceEmitted: 0,
@@ -211,6 +239,9 @@ private let pushResponse = Data("register-response".utf8)
     let db = try AppDatabase.makeInMemory()
     let clock = TestClock()
     let store = makePushStore(db, identity: Identity(), clock: clock)
+    // I1: registration now waits for the TCP interface to be connected, so connect it first.
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(tcpID, .tcp))))))
+    await store.skipReceivedActions(strict: false)
     await store.send(.push(.delegate(.sendRegistration(hub: pushHub, path: "/register", data: pushRequest))))
     await store.skipReceivedActions(strict: false)
     await clock.advance(by: .seconds(20))
@@ -222,11 +253,12 @@ private let pushResponse = Data("register-response".utf8)
 @MainActor @Test func pushAppRegistrationLinkFailureIsReported() async throws {
     let db = try AppDatabase.makeInMemory()
     let store = makePushStore(db, identity: Identity())
-    await store.send(.push(.delegate(.sendRegistration(hub: pushHub, path: "/register", data: pushRequest))))
-    // Seed `transport.learned`/`interfaces` via the real actions that populate them (see the
-    // comment in pushAppRegistrationRunsTheLinkFlow): otherwise the real `openLink` gate auto-fails
-    // with `.noPath` before this test's own simulated `.linkFailed` ever has a chance to run.
+    // I1: registration now waits for the TCP interface to be connected, so connect it first. Seed
+    // `transport.learned`/`interfaces` via the real actions that populate them (see the comment in
+    // pushAppRegistrationRunsTheLinkFlow): otherwise the real `openLink` gate auto-fails with
+    // `.noPath` before this test's own simulated `.linkFailed` ever has a chance to run.
     await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(tcpID, .tcp))))))
+    await store.send(.push(.delegate(.sendRegistration(hub: pushHub, path: "/register", data: pushRequest))))
     await store.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations([
         pushHub: LearnedDestination(identity: Identity(), appData: nil, ratchet: nil, interfaceID: tcpID,
                                     hops: 1, nextHop: nil, announceEmitted: 0,
@@ -248,12 +280,13 @@ private let pushResponse = Data("register-response".utf8)
         state.push.$enabled.withLock { $0 = true }
         state.push.status = .registering
     }
-    await store.send(.push(.delegate(.sendRegistration(hub: pushHub, path: "/register", data: pushRequest))))
-    // Seed `transport.learned`/`interfaces` via the real actions that populate them (see the
-    // comment in pushAppRegistrationRunsTheLinkFlow): otherwise the real `openLink` gate auto-fails
-    // with `.noPath`, which would also mean the SECOND `sendRegistration` below sees `hubKnown:
+    // I1: registration now waits for the TCP interface to be connected, so connect it first. Seed
+    // `transport.learned`/`interfaces` via the real actions that populate them (see the comment in
+    // pushAppRegistrationRunsTheLinkFlow): otherwise the real `openLink` gate auto-fails with
+    // `.noPath`, which would also mean the SECOND `sendRegistration` below sees `hubKnown:
     // false` and requests a path again instead of reaching `openLink` directly as this test expects.
     await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(tcpID, .tcp))))))
+    await store.send(.push(.delegate(.sendRegistration(hub: pushHub, path: "/register", data: pushRequest))))
     await store.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations([
         pushHub: LearnedDestination(identity: Identity(), appData: nil, ratchet: nil, interfaceID: tcpID,
                                     hops: 1, nextHop: nil, announceEmitted: 0,
@@ -265,5 +298,47 @@ private let pushResponse = Data("register-response".utf8)
     await store.send(.push(.delegate(.sendRegistration(hub: pushHub, path: "/register", data: pushRequest))))
     await store.receive { if case .node(.client(.endpoint(.openLink(destinationHash: pushHub)))) = $0 { return true }; return false }
     await store.skipReceivedActions(strict: false)
+    #expect(store.state.push.status == .registering)
+}
+
+@MainActor @Test func pushAppRegistrationWaitsForTheHubConnection() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makePushStore(db, identity: Identity())
+    await store.send(.push(.delegate(.sendRegistration(hub: pushHub, path: "/register", data: pushRequest)))) {
+        $0.pendingPushRegistration = PendingPushRegistration(hub: pushHub, path: "/register", data: pushRequest)
+    }
+    await store.finish()
+    #expect(!store.state.pushRegistrationFlow.isActive)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(tcpID, .tcp)))))) {
+        $0.pendingPushRegistration = nil
+    }
+    await store.receive { if case .push(.delegate(.sendRegistration(hub: pushHub, _, _))) = $0 { return true }; return false }
+    await store.receive { if case .node(.client(.endpoint(.requestPath(destinationHash: pushHub)))) = $0 { return true }; return false }
+}
+
+@MainActor @Test func pushAppRegistrationRestartStillTimesOut() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let clock = TestClock()
+    let store = makePushStore(db, identity: Identity(), clock: clock)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(tcpID, .tcp))))))
+    await store.skipReceivedActions(strict: false)
+    await store.send(.push(.delegate(.sendRegistration(hub: pushHub, path: "/register", data: pushRequest))))
+    await store.send(.push(.delegate(.sendRegistration(hub: pushHub, path: "/register", data: pushRequest))))
+    await store.skipReceivedActions(strict: false)
+    await clock.advance(by: .seconds(20))
+    await store.receive(.pushRegistrationTimedOut)
+    await store.receive(.push(.registrationResponse(.failure(RegistrationFailure("Push hub not reachable")))))
+}
+
+@MainActor @Test func pushAppValidHubEntryRegistersImmediately() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let token = Data([1, 2, 3, 4])
+    let store = makePushStore(db, identity: Identity()) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.deviceToken = token
+        state.push.status = .failed("Invalid push hub address")
+    }
+    await store.send(.push(.setHubHex(String(repeating: "c1", count: 16))))
+    await store.receive(.push(.deviceTokenReceived(token)))
     #expect(store.state.push.status == .registering)
 }

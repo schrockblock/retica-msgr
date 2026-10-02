@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 import ComposableArchitecture
 import SQLiteData
 import GRDB
@@ -29,11 +30,21 @@ final class AppRuntime {
 
         static func live() -> Environment {
             let dbPath = URL.documentsDirectory.appending(path: "reticamsgr.sqlite").path()
+            // M6: nil here means the app-group entitlement is missing or misconfigured — pushed
+            // packets would silently never reach the inbox the extension writes into. Surface it
+            // loudly in debug builds (assertionFailure is a no-op in release) and always log it,
+            // since a release build has no other way to notice before a user reports missing pushes.
+            let pushStorage = ReTiCaMsgrPush.storage()
+            if pushStorage == nil {
+                assertionFailure("app group container missing: check the entitlement")
+                Logger(subsystem: "com.reticamsgr", category: "push")
+                    .error("app group container missing: check the entitlement")
+            }
             return Environment(
                 database: try! AppDatabase.makeOnDisk(path: dbPath),
                 identityStore: .liveValue,
                 anchor: IdentityAnchor(defaults: .standard),
-                pushStorage: ReTiCaMsgrPush.storage() ?? .temporary())
+                pushStorage: pushStorage ?? .temporary())
         }
 
         /// Hosted XCTest runs and UI-test launches never touch the real Keychain, database or
@@ -164,16 +175,29 @@ final class AppRuntime {
     }
 
     /// A background push or a notification tap. Builds the store if the scene never rendered
-    /// (`build()` is view-independent), sends `.pushWake`, holds for `wakeHold` so the re-dial
-    /// and drain can run, and reports whether a store exists. False means the identity is
-    /// unavailable (locked before first unlock, or missing); the inbox then waits for the next
-    /// launch.
-    func pushWake() async -> Bool {
+    /// (`build()` is view-independent), sends `.pushWake`, holds for `hold` (or `wakeHold` when
+    /// nil) so the re-dial and drain can run, and reports whether a store exists. False means the
+    /// identity is unavailable (locked before first unlock, or missing); the inbox then waits for
+    /// the next launch.
+    ///
+    /// M1: when `build()` is what just created the store, `.pushWake` is NOT also sent — `onLaunch`
+    /// (which `build()` triggers) already starts the endpoint and sends `.push(.appLaunched)`,
+    /// which itself drains. Sending `.pushWake` too would just be a redundant, harmless re-dial —
+    /// but on a cold launch there is no connection to re-dial yet, so the hold would be wasted
+    /// waiting on nothing.
+    ///
+    /// M2: `hold` defaults to `environment.wakeHold`; a notification TAP passes `.zero` — the user
+    /// is already looking at the app by the time the tap handler runs, so nothing needs holding.
+    func pushWake(hold: Duration? = nil) async -> Bool {
+        let hadStore = store != nil
         build()
         guard let store else { return false }
-        store.send(.pushWake)
-        if environment.wakeHold > .zero {
-            try? await Task.sleep(for: environment.wakeHold)
+        if hadStore {
+            store.send(.pushWake)
+        }
+        let wait = hold ?? environment.wakeHold
+        if wait > .zero {
+            try? await Task.sleep(for: wait)
         }
         return true
     }

@@ -8,6 +8,12 @@ final class NotificationService: UNNotificationServiceExtension {
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var originalContent: UNNotificationContent?
     private var work: Task<Void, Never>?
+    // M5: `finish()` can be called from the normal path (the Task, hopped to the main actor) and
+    // from `serviceExtensionTimeWillExpire()` (a system callback with no isolation guarantee
+    // relative to that Task) at the same time. Without a lock both can observe `contentHandler` as
+    // non-nil and both call it — UNNotificationServiceExtension asserts/terminates the extension
+    // if its content handler is invoked twice.
+    private let finishLock = NSLock()
 
     override func didReceive(_ request: UNNotificationRequest,
                              withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
@@ -30,6 +36,8 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     private func finish() {
+        finishLock.lock()
+        defer { finishLock.unlock() }
         guard let contentHandler, let originalContent else { return }
         self.contentHandler = nil
         contentHandler(originalContent)
