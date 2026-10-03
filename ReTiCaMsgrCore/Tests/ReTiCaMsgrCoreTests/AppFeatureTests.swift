@@ -1719,6 +1719,34 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.skipReceivedActions(strict: false)
 }
 
+/// Backgrounding closes the hub socket. A suspended app's socket stays open from the hub's side,
+/// so the push hub keeps writing into it and never goes dormant (no pushes) until the socket dies
+/// on its own — minutes, on cellular. A deliberate close while the process still runs makes the
+/// hub dormant at once.
+///
+/// Mutation: remove `closeHubSocket` from the `.backgrounded` case → `.tcpClient(.disconnect)` is
+/// never received → the `receive` below times out and the test fails.
+@MainActor @Test func backgroundedClosesTheHubSocket() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { state in
+        state.$host.withLock { $0 = "node.example" }
+        state.$port.withLock { $0 = 4243 }
+    }
+    // Dial first so the TCP slot exists, exactly as a real foreground does.
+    await store.send(.foregrounded) { $0.connection = .connecting }
+    await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.tcpClient != nil)
+
+    await store.send(.backgrounded)
+    await store.receive { action in
+        if case .node(.client(.endpoint(.tcpClient(.disconnect)))) = action { return true }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
 /// Expired rows are pruned at launch before the read, so destinations older than 7 days are
 /// never rehydrated. Without this prune a destination heard once, 8+ days ago, would be re-read
 /// and re-skipped at every launch forever — disk grows while the in-memory table stays bounded.

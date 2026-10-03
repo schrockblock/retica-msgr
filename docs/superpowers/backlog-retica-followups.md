@@ -133,3 +133,36 @@ Shipped app-side with no ReTiCA changes. Known limits, all documented in the spe
   window (6 s + 6 s/hop per attempt, five attempts 10 s apart). A longer receipt lifetime for
   push-registered peers would be a ReTiCA change.
 - Server and APNs are out of scope; the contract is the deliverable.
+
+**Device findings 2026-10-02** (hub inspected live over ssh; see the memory note "push hub
+debugging" for the recipes):
+
+- The hub side (binding on announce, dormancy, retirement, pathing) behaved exactly as the contract
+  says. Pushes did fire; what they carried was a LINKREQUEST, because **Retichat, Sideband and
+  NomadNet all deliver over Links (LXMF DIRECT)**. The extension cannot answer a handshake and the
+  app cannot answer it late, so "banner, tap, no message, sender shows failure" is the documented
+  limit, not a drain bug. Push wake-ups deliver the message itself only for single-packet
+  (OPPORTUNISTIC) senders such as another ReTiCaMsgr.
+- **Fix shipped:** the scene's `.background` phase now sends `.backgrounded`, which closes the hub
+  socket (`.endpoint(.tcpClient(.disconnect))`). A suspended app's socket otherwise stays alive to
+  the hub for 2–15 minutes on cellular (the kernel keeps answering keepalives), the hub writes into
+  it, and nothing is pushed in that window. ReTiCA's endpoint now deregisters the interface on an
+  explicit disconnect (it previously only did so for a dropped socket), so the foreground re-dial
+  still fires.
+- **Open:** a registration link in flight when the app backgrounds dies with the socket and the
+  attempt reports a failure; it is retried only on the next launch or token change. Rare, but a
+  retry on the next `.foregrounded` would close it.
+- **Open:** after a content-available background wake the re-dialled socket is left open when the
+  hold ends and iOS suspends the process again, reopening the no-push window. Closing it when the
+  hold ends and the app is still in the background would need an `applicationState` probe in
+  `AppRuntime.pushWake`.
+- **Open (product):** link-based senders need a propagation node to reach a suspended ReTiCaMsgr.
+  The app already syncs from its configured propagation node on every reconnect, including the
+  one a push wake triggers, so the push from a failed link request can be the wake that fetches
+  the message from the PN. Documenting this for users (and considering a PN on the hub) is the
+  remaining work.
+- Two apps on one phone (ReTiCaMsgr and Retichat both on Atli) can never complete a Link through
+  the hub: the foreground app suspends the other. Only propagation bridges that case.
+- `rnpath`/`rnprobe` against the hub report "not found"/"timed out" even when the path exists,
+  because the shared instance answers local path requests only from its announce cache, which
+  misses. `rnpath -t` (full table) is the authoritative check.
