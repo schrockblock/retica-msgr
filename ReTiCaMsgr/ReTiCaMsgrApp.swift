@@ -15,9 +15,17 @@ struct ReTiCaMsgrApp: App {
         // else re-dials: `.task` runs once per view lifetime, and the interface's reconnect backoff
         // cannot run while the process is suspended. Without this the only way back was to kill the
         // app, which is exactly what "stuck on Disconnected" looked like on device.
+        //
+        // Going to the background closes the socket deliberately (see `.backgrounded`): a socket
+        // left open from a suspended app looks alive to the push hub, which then writes into it
+        // instead of pushing. `.inactive` (app switcher, Control Center, an incoming call) is not
+        // the background and does nothing.
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            delegate.runtime.foregrounded()
+            switch phase {
+            case .active: delegate.runtime.foregrounded()
+            case .background: delegate.runtime.backgrounded()
+            default: break
+            }
         }
     }
 }

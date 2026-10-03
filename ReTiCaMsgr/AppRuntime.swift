@@ -174,6 +174,12 @@ final class AppRuntime {
         store?.send(.foregrounded)
     }
 
+    /// The scene entered the background: flush learned paths and close the hub socket so the push
+    /// hub sees a FIN and goes dormant instead of writing into a frozen socket.
+    func backgrounded() {
+        store?.send(.backgrounded)
+    }
+
     /// A background push or a notification tap. Builds the store if the scene never rendered
     /// (`build()` is view-independent), sends `.pushWake`, holds for `hold` (or `wakeHold` when
     /// nil) so the re-dial and drain can run, and reports whether a store exists. False means the

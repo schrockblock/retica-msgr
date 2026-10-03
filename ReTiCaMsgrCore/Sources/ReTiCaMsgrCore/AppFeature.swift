@@ -543,8 +543,19 @@ public struct AppFeature {
                 // so without this flush up to ~30 s of path learning is lost on every background
                 // cycle. Cancel the pending debounce so it doesn't fire redundantly on resume.
                 let learnedToFlush = state.node.client.endpoint.learned
+                // Close the hub socket NOW, while the process still runs. A suspended app's socket
+                // stays open from the hub's side (the kernel keeps answering keepalives and ACKing
+                // writes), so the push hub keeps writing packets into a socket nobody reads and
+                // never goes dormant — no pushes for as long as the socket survives, which on
+                // cellular was 2–15 minutes (2026-10-02 hub investigation). A clean FIN makes the
+                // hub's interface dormant at once, and `.foregrounded` re-dials on return.
+                // Only the TCP client: BLE peers keep running in the background on their own terms.
+                let closeHubSocket: Effect<Action> = state.node.client.endpoint.tcpClient != nil
+                    ? .send(.node(.client(.endpoint(.tcpClient(.disconnect)))))
+                    : .none
                 return .merge(
                     .cancel(id: CancelID.learnedDebounce),
+                    closeHubSocket,
                     .run { [database] _ in
                         try await writeLearnedDestinations(learnedToFlush, to: database)
                     }
