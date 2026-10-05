@@ -3439,8 +3439,10 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
         await store.send(leave)
         store.exhaustivity = .on
         // The new thread's load is the one action allowed (the preparation's sleep has not been
-        // advanced yet, so nothing else can have arrived before it).
+        // advanced yet, so nothing else can have arrived before it). `reloadThread` now also
+        // carries the (absent) conversation timer alongside the thread's messages.
         await store.receive(.threadLoaded([], reactions: [], attachments: []))
+        await store.receive(.conversationExpiryLoaded(peerHex: peerB, seconds: nil))
         await clock.advance(by: .milliseconds(1))
         await store.finish()                // an uncancelled preparation's result fails here
         await store.send(.replyCancelled)   // probe: no attachmentPrepared
@@ -3677,4 +3679,163 @@ private func inbound(_ link: Data, _ fraction: Double, source: Data? = nil) -> A
     await clock.advance(by: .seconds(120))
     await store.send(.replyCancelled)   // probe
     store.exhaustivity = .off
+}
+
+// MARK: - Disappearing messages: setting the timer and sending (spec 2026-10-05 §3)
+
+/// Send the current draft from a store whose conversation timer is `expiry`, returning the
+/// LXMessage handed to the node and the stored row.
+@MainActor
+private func expirySendAndFetch(_ db: any DatabaseWriter, draft: String, expiry: Int?,
+                                attachmentStore: AttachmentStore? = nil,
+                                configure: ((inout AppFeature.State) -> Void)? = nil)
+    async -> (sent: LXMessage?, row: Message?, store: TestStoreOf<AppFeature>) {
+    let store = makeStore(db, identity: Identity(), attachmentStore: attachmentStore) { s in
+        s.openPeerHex = peerA
+        s.draft = draft
+        s.openConversationExpiry = expiry
+        configure?(&s)
+    }
+    await store.send(.sendTapped)
+    var sent: LXMessage?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action { sent = msg; return true }
+        return false
+    }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    let row = try! await db.read { try Message.where { $0.peerHex.eq(peerA) && !$0.isTimerChange }.fetchAll($0) }.first
+    return (sent, row, store)
+}
+
+@MainActor @Test func expirySendSelectingTimerWritesSettingAnnouncementAndSendsChange() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { $0.openPeerHex = peerA }
+    await store.send(.expirySelected(seconds: 86_400))
+    #expect(store.state.openConversationExpiry == 86_400)
+    var sent: LXMessage?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action { sent = msg; return true }
+        return false
+    }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    let wire = try #require(sent)
+    #expect(wire.content == Data("Disappearing messages set to 1 day".utf8))
+    #expect(ExpiryWire.decode(wire.fields) == ExpiryWire.Decoded(seconds: 86_400, isChange: true))
+    #expect(try await db.read { try ConversationSetting.expiry(for: peerA, $0) } == 86_400)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    let row = try #require(rows.first)
+    #expect(row.isTimerChange == true)
+    #expect(row.isOutgoing == true)
+    #expect(row.body == "Disappearing messages set to 1 day")
+    #expect(row.expirySeconds == nil)
+    #expect(row.expiresAt == nil)
+    #expect(row.messageHash == wire.hash.hexString)
+    #expect(row.status == MessageStatus.sending)
+    #expect(store.state.conversations.first?.lastBody == "Disappearing messages set to 1 day")
+}
+
+@MainActor @Test func expirySendTurningOffStoresNullAndAnnounces() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try await db.write { try ConversationSetting.set(peerA, seconds: 3_600, at: infoT0, $0) }
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.openConversationExpiry = 3_600
+    }
+    await store.send(.expirySelected(seconds: 0))
+    #expect(store.state.openConversationExpiry == nil)
+    var sent: LXMessage?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action { sent = msg; return true }
+        return false
+    }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    let wire = try #require(sent)
+    #expect(wire.content == Data("Disappearing messages turned off".utf8))
+    #expect(ExpiryWire.decode(wire.fields) == ExpiryWire.Decoded(seconds: 0, isChange: true))
+    let settings = try await db.read { try ConversationSetting.all.fetchAll($0) }
+    #expect(settings.count == 1)
+    #expect(settings.first?.expirySeconds == nil)
+}
+
+@MainActor @Test func expirySendSelectedIgnoredWithoutOpenConversation() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    store.exhaustivity = .on
+    await store.send(.expirySelected(seconds: 60))
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    #expect(try await db.read { try ConversationSetting.all.fetchAll($0) }.isEmpty)
+}
+
+/// Spec §3 "Sending": the field goes on the wire and the sender's copy is stamped at send.
+@MainActor @Test func expirySendMessageCarriesFieldAndStampsSenderCopy() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let (sent, row, store) = await expirySendAndFetch(db, draft: "hi", expiry: 300)
+    let wire = try #require(sent)
+    #expect(wire.fields.map(\.key) == [0xFD])
+    #expect(ExpiryWire.decode(wire.fields) == ExpiryWire.Decoded(seconds: 300, isChange: false))
+    let stored = try #require(row)
+    #expect(stored.expirySeconds == 300)
+    #expect(stored.expiresAt == infoT0.addingTimeInterval(300))
+    #expect(stored.isTimerChange == false)
+    #expect(stored.fieldKeys == "0xfd")
+    // The send armed the sleeper for this row.
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(300) }
+        return false
+    }
+}
+
+@MainActor @Test func expirySendWithoutTimerCarriesNoFieldAndNoStamp() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let (sent, row, _) = await expirySendAndFetch(db, draft: "plain", expiry: nil)
+    let wire = try #require(sent)
+    #expect(wire.fields.isEmpty)
+    let stored = try #require(row)
+    #expect(stored.expirySeconds == nil)
+    #expect(stored.expiresAt == nil)
+}
+
+/// Review Focus 4: the attachment field comes first, then the reply fields, then 0xFD.
+@MainActor @Test func expirySendAttachmentCarriesFieldAfterAttachmentAndReply() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let files = attachTempStore()
+    let jpeg = TestImages.jpeg(width: 40, height: 30)
+    let (sent, row, _) = await expirySendAndFetch(db, draft: "cap", expiry: 3_600, attachmentStore: files) { s in
+        s.pendingAttachment = pendingImage(jpeg)
+        s.replyTarget = AppFeature.ReplyTarget(messageHash: replyTargetHash, body: "orig", isOutgoing: false)
+    }
+    let wire = try #require(sent)
+    #expect(wire.fields.map(\.key) == [0x06, 0x30, 0x31, 0xFD])
+    #expect(ExpiryWire.decode(wire.fields) == ExpiryWire.Decoded(seconds: 3_600, isChange: false))
+    let stored = try #require(row)
+    #expect(stored.expirySeconds == 3_600)
+    #expect(stored.expiresAt == infoT0.addingTimeInterval(3_600))
+    #expect(stored.fieldKeys == "0x06,0x30,0x31,0xfd")
+}
+
+@MainActor @Test func expirySendCloseConversationClearsOpenExpiry() async {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.openConversationExpiry = 60
+    }
+    await store.send(.closeConversation)
+    #expect(store.state.openConversationExpiry == nil)
+}
+
+/// `reloadThread` carries the conversation's stored timer into state, and only for the open peer.
+@MainActor @Test func expirySendThreadLoadCarriesConversationSetting() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try await db.write { try ConversationSetting.set(peerA, seconds: 600, at: infoT0, $0) }
+    try! await seed(db, [msg(1, peerA, "a1", 1000)])
+    let store = makeStore(db, identity: Identity())
+    await store.send(.openConversation(peerA))
+    await store.receive { if case let .conversationExpiryLoaded(peerHex, seconds) = $0 { return peerHex == peerA && seconds == 600 }; return false }
+    #expect(store.state.openConversationExpiry == 600)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    // A late load for a conversation that is no longer open changes nothing.
+    await store.send(.closeConversation)
+    await store.send(.conversationExpiryLoaded(peerHex: peerA, seconds: 600))
+    #expect(store.state.openConversationExpiry == nil)
 }

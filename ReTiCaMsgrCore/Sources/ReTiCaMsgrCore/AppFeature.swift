@@ -163,6 +163,13 @@ public struct AppFeature {
         public var threadReactions: [String: [ReactionSummary.Item]] = [:]
         /// The open thread's attachments by message id, loaded with the thread. Session-only.
         public var attachmentsByMessageId: [UUID: Attachment] = [:]
+        /// The open conversation's disappearing-messages timer in seconds, nil when off. Loaded with
+        /// the thread (`conversationExpiryLoaded`), set by `expirySelected`. Session-only.
+        public var openConversationExpiry: Int? = nil
+        /// Whether the scene is active (amendment A5). A message arriving into the open thread is
+        /// "viewed" only while this is true. Starts true: a launch is a foreground launch unless
+        /// `.backgrounded` says otherwise, and a push-wake launch has no open thread anyway.
+        public var isForeground = true
         // The Send gate: peers a send would route to right now (live learned path; from pathLearned
         // and seedReachablePeers). A peer outside it gets a path request on receipt / open
         // (`pathRequestIfUnreachable`); the answer lands here via pathLearned. Session-only.
@@ -283,6 +290,14 @@ public struct AppFeature {
         case sendTapped
         case conversationsLoaded([Conversation])
         case threadLoaded([Message], reactions: [Reaction] = [], attachments: [Attachment] = [])
+        /// The user picked a disappearing-messages duration (0 = off) from the chat toolbar menu.
+        case expirySelected(seconds: Int)
+        /// The open conversation's stored timer, sent by `reloadThread` beside `threadLoaded`.
+        case conversationExpiryLoaded(peerHex: String, seconds: Int?)
+        /// A purge finished: reload if it deleted anything, and arm the sleeper for `nextDue`. Internal.
+        case expiryPurgeCompleted(purged: Int, nextDue: Date?)
+        /// The expiry sleeper fired. Internal.
+        case expiryDue
         case reactionSelected(messageHash: String, emoji: String)
         /// Long-press → Reply. Ignored for a hashless message or one no longer in the thread.
         case replyTapped(Message.ID)
@@ -340,6 +355,9 @@ public struct AppFeature {
         case inboundTransfer(Data)
         /// The 20 s timeout of the in-flight push-registration attempt (spec amendment A2).
         case pushRegistration
+        /// The one sleeper waiting for the earliest `expiresAt` (spec §3). Re-armed with
+        /// `cancelInFlight` after every purge, so it always waits for the current earliest row.
+        case expiry
     }
 
     @Dependency(\.defaultDatabase) var database
@@ -699,6 +717,7 @@ public struct AppFeature {
                 state.threadMessages = []
                 state.setThreadReactionRows([])
                 state.attachmentsByMessageId = [:]
+                state.openConversationExpiry = nil
                 state.draft = ""
                 state.replyTarget = nil
                 state.pendingAttachment = nil
@@ -745,6 +764,10 @@ public struct AppFeature {
                     // nil, matching the wire, which now omits 0x31 for an empty quote too.
                     replyQuote = quote.isEmpty ? nil : quote
                 }
+                // Disappearing messages (spec §3 "Sending"): the field rides last, and the sender's
+                // copy is stamped at send. The receiving side stamps on first view instead.
+                let expiry = state.openConversationExpiry
+                let expiryFields = expiry.map { ExpiryWire.encode(seconds: $0) } ?? []
                 let identity = state.identity
                 let now = date.now
                 let alsoViaPropagation = !state.propagationNodeHex.isEmpty
@@ -757,15 +780,20 @@ public struct AppFeature {
                 guard let pending else {
                     let (msg, row) = Self.outgoing(
                         identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
-                        fields: replyFields, alsoViaPropagation: alsoViaPropagation,
-                        replyToHash: replyToHash, replyQuote: replyQuote)
+                        fields: replyFields + expiryFields, alsoViaPropagation: alsoViaPropagation,
+                        replyToHash: replyToHash, replyQuote: replyQuote,
+                        expirySeconds: expiry,
+                        expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
                     return .merge(
                         .cancel(id: CancelID.attachmentPreparation),
                         .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
-                        .run { [database] send in
+                        .run { [database, attachmentStore] send in
                             try await database.write { try Message.insert { row }.execute($0) }
                             try await reloadThread(database, peerHex, send)
                             try await reloadConversations(database, send)
+                            if expiry != nil {
+                                try await purgeAndReschedule(database, attachmentStore, now: now, send)
+                            }
                         }
                     )
                 }
@@ -776,15 +804,17 @@ public struct AppFeature {
                 let attachmentStore = self.attachmentStore
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
-                    .run { [database, replyFields, replyToHash, replyQuote] send in
+                    .run { [database, replyFields, replyToHash, replyQuote, expiryFields, expiry] send in
                         // The attachment field (0x05 or 0x06) comes first, then any reply fields.
                         let attachmentFields = pending.isImage
                             ? AttachmentWire.encodeImage(pending.data)
                             : AttachmentWire.encodeFile(name: pending.name, data: pending.data)
                         let (msg, row) = Self.outgoing(
                             identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
-                            fields: attachmentFields + replyFields, alsoViaPropagation: alsoViaPropagation,
-                            replyToHash: replyToHash, replyQuote: replyQuote)
+                            fields: attachmentFields + replyFields + expiryFields, alsoViaPropagation: alsoViaPropagation,
+                            replyToHash: replyToHash, replyQuote: replyQuote,
+                            expirySeconds: expiry,
+                            expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
                         let messageHash = row.messageHash
                         let path: String
                         do {
@@ -813,6 +843,9 @@ public struct AppFeature {
                         await send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation))))
                         try await reloadThread(database, peerHex, send)
                         try await reloadConversations(database, send)
+                        if expiry != nil {
+                            try await purgeAndReschedule(database, attachmentStore, now: now, send)
+                        }
                     }
                 )
 
@@ -1133,6 +1166,62 @@ public struct AppFeature {
                 state.setThreadReactionRows(reactions.filter { allowed.contains($0.reactorHex) })
                 state.attachmentsByMessageId = Attachment.byMessageId(attachments)
                 return .none
+
+            case let .conversationExpiryLoaded(peerHex, seconds):
+                // Guarded like reactions and attachments: a late load for a thread the user has
+                // left must not label the next conversation with the previous one's timer.
+                guard peerHex == state.openPeerHex else { return .none }
+                state.openConversationExpiry = seconds
+                return .none
+
+            case let .expirySelected(seconds):
+                guard let peerHex = state.openPeerHex, let peer = Data(hexString: peerHex) else { return .none }
+                let seconds = ExpiryWire.clamp(seconds)
+                state.openConversationExpiry = seconds > 0 ? seconds : nil
+                let now = date.now
+                let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+                // The change goes out as a message with a readable body (spec §1): other LXMF
+                // clients show the sentence, ReTiCaMsgr peers adopt the timer from the field.
+                let (msg, row) = Self.outgoing(
+                    identity: state.identity, peer: peer, peerHex: peerHex,
+                    text: ExpiryPreset.announcement(seconds: seconds), now: now,
+                    fields: ExpiryWire.encodeChange(seconds: seconds), alsoViaPropagation: alsoViaPropagation,
+                    replyToHash: nil, replyQuote: nil, isTimerChange: true)
+                return .merge(
+                    .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
+                    .run { [database] send in
+                        try await database.write { db in
+                            try ConversationSetting.set(peerHex, seconds: seconds, at: now, db)
+                            try Message.insert { row }.execute(db)
+                        }
+                        try await reloadThread(database, peerHex, send)
+                        try await reloadConversations(database, send)
+                    }
+                )
+
+            case let .expiryPurgeCompleted(purged, nextDue):
+                // Reload only when something went (amendment A2): every caller already reloaded
+                // after its own write, so a no-op purge must not reload twice.
+                let openPeer = state.openPeerHex
+                let reload: Effect<Action> = purged > 0
+                    ? .run { [database] send in
+                        try await reloadConversations(database, send)
+                        if let openPeer { try await reloadThread(database, openPeer, send) }
+                    }
+                    : .none
+                guard let nextDue else { return .merge(.cancel(id: CancelID.expiry), reload) }
+                let delay = max(0, nextDue.timeIntervalSince(date.now))
+                let sleeper: Effect<Action> = .run { [clock] send in
+                    try await clock.sleep(for: .seconds(delay))
+                    await send(.expiryDue)
+                }
+                .cancellable(id: CancelID.expiry, cancelInFlight: true)
+                return .merge(reload, sleeper)
+
+            case .expiryDue:
+                return .run { [database, attachmentStore, now = date.now] send in
+                    try await purgeAndReschedule(database, attachmentStore, now: now, send)
+                }
 
             case let .setNodeMode(enabled):
                 state.$nodeModeEnabled.withLock { $0 = enabled }
@@ -1545,7 +1634,9 @@ public struct AppFeature {
     /// no stampState either). `packed` is a computed re-encode, so it is read once.
     static func outgoing(identity: Identity, peer: Data, peerHex: String, text: String, now: Date,
                          fields: [MsgPackValue.IntPair], alsoViaPropagation: Bool,
-                         replyToHash: String?, replyQuote: String?) -> (LXMessage, Message) {
+                         replyToHash: String?, replyQuote: String?,
+                         expirySeconds: Int? = nil, expiresAt: Date? = nil,
+                         isTimerChange: Bool = false) -> (LXMessage, Message) {
         let msg = LXMessage.create(
             source: identity,
             destinationHash: peer,
@@ -1571,7 +1662,10 @@ public struct AppFeature {
             contentSize: msg.content.count,
             fieldKeys: MessageMetadata.fieldKeys(msg.fields),
             replyToHash: replyToHash,
-            replyQuote: replyQuote
+            replyQuote: replyQuote,
+            expirySeconds: expirySeconds,
+            expiresAt: expiresAt,
+            isTimerChange: isTimerChange
         )
         return (msg, row)
     }
@@ -1714,15 +1808,43 @@ private func reloadConversations(_ database: any DatabaseWriter, _ send: Send<Ap
 }
 
 private func reloadThread(_ database: any DatabaseWriter, _ peerHex: String, _ send: Send<AppFeature.Action>) async throws {
-    let (rows, reactions, attachments) = try await database.read { db -> ([Message], [Reaction], [Attachment]) in
+    let (rows, reactions, attachments, expiry) = try await database.read { db -> ([Message], [Reaction], [Attachment], Int?) in
         let rows = try Message.where { $0.peerHex.eq(peerHex) }.order(by: \.timestamp).fetchAll(db)
         let hashes = rows.map(\.messageHash).filter { !$0.isEmpty }
         let reactions = hashes.isEmpty ? [] : try Reaction.where { $0.messageHash.in(hashes) }.fetchAll(db)
         let ids = rows.map(\.id)
         let attachments = ids.isEmpty ? [] : try Attachment.where { $0.messageId.in(ids) }.fetchAll(db)
-        return (rows, reactions, attachments)
+        let expiry = try ConversationSetting.expiry(for: peerHex, db)
+        return (rows, reactions, attachments, expiry)
     }
     await send(.threadLoaded(rows, reactions: reactions, attachments: attachments))
+    await send(.conversationExpiryLoaded(peerHex: peerHex, seconds: expiry))
+}
+
+/// First view (spec §3): every row of `peerHex` that carries a duration and has no `expiresAt`
+/// yet is stamped `now + expirySeconds`. Outgoing rows are stamped at send, so in practice this
+/// touches received rows. Returns how many rows changed, so the caller knows whether to reload.
+private func stampViewed(_ database: any DatabaseWriter, _ peerHex: String, now: Date) async throws -> Int {
+    try await database.write { db in
+        let unstamped = try Message
+            .where { $0.peerHex.eq(peerHex) && $0.expirySeconds.isNot(nil) && $0.expiresAt.is(nil) }
+            .fetchAll(db)
+        for row in unstamped {
+            guard let seconds = row.expirySeconds else { continue }
+            let due: Date? = now.addingTimeInterval(TimeInterval(seconds))
+            try Message.where { $0.id.eq(row.id) }.update { $0.expiresAt = due }.execute(db)
+        }
+        return unstamped.count
+    }
+}
+
+/// Purge what is due, then tell the reducer what is left so it can arm the sleeper (spec §3
+/// "Purge"). Called on launch, foreground, thread open, after every stamp, after every send with a
+/// timer, and when the sleeper fires.
+private func purgeAndReschedule(_ database: any DatabaseWriter, _ attachmentStore: AttachmentStore,
+                                now: Date, _ send: Send<AppFeature.Action>) async throws {
+    let result = try await MessagePurge.run(database, attachmentStore: attachmentStore, now: now)
+    await send(.expiryPurgeCompleted(purged: result.purged, nextDue: result.nextDue))
 }
 
 /// Persist the full `learned` snapshot to `learnedDestinationRows`, replacing the table atomically.
