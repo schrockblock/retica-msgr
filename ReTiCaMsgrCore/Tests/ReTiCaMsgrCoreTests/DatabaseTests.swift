@@ -298,7 +298,7 @@ private func attachTableMessage(_ id: String, hash: String) -> Message {
 
 // MARK: - Disappearing messages (addDisappearingMessages)
 
-private func expiryTableMessage(_ id: String, hash: String) -> Message {
+private func expiryTableMessage(_ id: String, hash: String, expirySeconds: Int? = nil, expiresAt: Date? = nil, isTimerChange: Bool = false) -> Message {
     Message(
         id: UUID(uuidString: id)!,
         peerHex: String(repeating: "c", count: 32),
@@ -307,7 +307,10 @@ private func expiryTableMessage(_ id: String, hash: String) -> Message {
         timestamp: Date(timeIntervalSince1970: 1700000000),
         status: MessageStatus.received,
         validated: true,
-        messageHash: hash
+        messageHash: hash,
+        expirySeconds: expirySeconds,
+        expiresAt: expiresAt,
+        isTimerChange: isTimerChange
     )
 }
 
@@ -315,10 +318,7 @@ private func expiryTableMessage(_ id: String, hash: String) -> Message {
 /// by dropping it on both sides.
 @Test func expiryTableMessageColumnsRoundTrip() throws {
     let db = try AppDatabase.makeInMemory()
-    var m = expiryTableMessage("00000000-0000-0000-0000-000000000020", hash: String(repeating: "f", count: 64))
-    m.expirySeconds = 86_400
-    m.expiresAt = Date(timeIntervalSince1970: 1700086400)
-    m.isTimerChange = true
+    let m = expiryTableMessage("00000000-0000-0000-0000-000000000020", hash: String(repeating: "f", count: 64), expirySeconds: 86_400, expiresAt: Date(timeIntervalSince1970: 1700086400), isTimerChange: true)
     try db.write { try Message.insert { m }.execute($0) }
     let back = try #require(try db.read { try Message.all.fetchAll($0) }.first)
     #expect(back.expirySeconds == 86_400)
