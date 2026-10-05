@@ -4277,3 +4277,85 @@ private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt:
     await store.finish()
     await store.skipReceivedActions(strict: false)
 }
+
+// MARK: - Disappearing messages: final-review fixes (spec amendments A10 to A14)
+
+/// Deliver `m` as a validated message and let every effect finish.
+@MainActor
+private func expiryFixReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage) async {
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+/// A10: a message written before the stored timer was set does not move it, though the message
+/// itself still honours the duration it carried.
+@MainActor @Test func expiryFixOlderOrdinaryMessageLeavesSettingAlone() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me)
+    await expiryFixReceive(store, wireMessage(from: sender, to: me, at: 1699999000, content: "old",
+                                              fields: ExpiryWire.encode(seconds: 86_400)))
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 600)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.expirySeconds == 86_400)
+}
+
+/// A10: a newer ordinary message converges, and the setting's time is the sender's timestamp.
+@MainActor @Test func expiryFixNewerOrdinaryMessageConverges() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me)
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(1_000))
+    await expiryFixReceive(store, wireMessage(from: sender, to: me, at: 1700000500, content: "new",
+                                              fields: ExpiryWire.encode(seconds: 86_400)))
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 86_400)
+    let rows = try await db.read { try Message.all.order(by: \.timestamp).fetchAll($0) }
+    #expect(rows.count == 2)
+    #expect(rows.first?.isTimerChange == true)
+    #expect(rows.first?.body == "Them set disappearing messages to 1 day")
+    let setting = try await db.read { try ConversationSetting.current(for: expiryHex(sender), $0) }
+    #expect(setting?.updatedAt == Date(timeIntervalSince1970: 1700000500))
+}
+
+/// A10: a change message that arrives after a newer setting is stored as its line, but the setting
+/// does not move.
+@MainActor @Test func expiryFixLateChangeMessageIsStoredButIgnored() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me)
+    await expiryFixReceive(store, wireMessage(from: sender, to: me, at: 1699999000, content: "Disappearing messages turned off",
+                                              fields: ExpiryWire.encodeChange(seconds: 0)))
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 600)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.isTimerChange == true)
+}
+
+/// A10: a sender clock in the future is capped at arrival, so a later local pick still wins.
+@MainActor @Test func expiryFixFutureDatedChangeIsCappedAtReceiveTime() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = expiryHex(sender)
+    let store = makeStore(db, identity: me) { $0.openPeerHex = senderHex }
+    await expiryFixReceive(store, wireMessage(from: sender, to: me, at: 1800000000, content: "Disappearing messages set to 1 hour",
+                                              fields: ExpiryWire.encodeChange(seconds: 3_600)))
+    let adopted = try await db.read { try ConversationSetting.current(for: senderHex, $0) }
+    #expect(adopted?.expirySeconds == 3_600)
+    #expect(adopted?.updatedAt == infoT0)
+    #expect(store.state.openConversationExpiry == 3_600)
+
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(1))
+    await store.send(.expirySelected(seconds: 0))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try ConversationSetting.expiry(for: senderHex, $0) } == nil)
+}

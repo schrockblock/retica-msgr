@@ -5,7 +5,7 @@ import ReTiCA
 /// amendment A1). `FIELD_CUSTOM_META` (0xFD, "for custom data structures" per LXMF.py) holds a
 /// string-keyed msgpack map: `reticamsgr.expiry` = duration in seconds (uint), and on a
 /// timer-change message `reticamsgr.expiry.change` = true. 0xFB/0xFC are left alone: Retichat uses
-/// that pair for key transfer, and a message has only one of it.
+/// that pair for key transfer, and a message has only one such pair.
 ///
 /// Received leniently: no 0xFD, a 0xFD that is not a map (lxmf-group-hub writes other data there), a
 /// map without our key, a value that is not an integer, a negative value or one over the cap all

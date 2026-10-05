@@ -1121,6 +1121,8 @@ public struct AppFeature {
                 // Arriving into the open thread while the app is active is "viewed" at once.
                 let viewedNow: Date? = (incomingPeer == openPeer && state.isForeground) ? date.now : nil
                 let peerName = state.peerDisplayName(incomingPeer)
+                // Captured by value for the effect: when the sender says it wrote the message (A10).
+                let senderTime = MessageMetadata.senderTimestamp(m.timestamp)
                 let receivedBody = String(decoding: m.content, as: UTF8.self)
                 let attachmentStore = self.attachmentStore
                 // Receiving gives no path back to the sender (it needed a path to US; a propagated
@@ -1138,7 +1140,7 @@ public struct AppFeature {
                     status: MessageStatus.received,
                     validated: validated,
                     messageHash: seenHashHex,
-                    senderTimestamp: MessageMetadata.senderTimestamp(m.timestamp),
+                    senderTimestamp: senderTime,
                     arrivalMethod: MessageMetadata.arrivalMethod(method),
                     wireSize: m.receivedBytes?.count,
                     titleSize: m.title.count,
@@ -1178,20 +1180,29 @@ public struct AppFeature {
                     let attachmentRow = pendingAttachmentRow
                     try await database.write { db in
                         if let decoded = decodedExpiry {
-                            let current = try ConversationSetting.expiry(for: incomingPeer, db) ?? 0
-                            if decoded.isChange {
-                                try ConversationSetting.set(incomingPeer, seconds: decoded.seconds, at: seenNow, db)
-                            } else if decoded.seconds != current {
-                                // Convergence after a missed change message: adopt the peer's timer
-                                // and say so, 1 ms before the message so the line sorts above it.
-                                try ConversationSetting.set(incomingPeer, seconds: decoded.seconds, at: seenNow, db)
-                                try Message.insert {
-                                    Message(id: UUID(), peerHex: incomingPeer, isOutgoing: false,
-                                            body: ExpiryPreset.peerAnnouncement(peerName: peerName, seconds: decoded.seconds),
-                                            timestamp: row.timestamp.addingTimeInterval(-0.001),
-                                            status: MessageStatus.received, validated: validated,
-                                            messageHash: "", fieldKeys: "", isTimerChange: true)
-                                }.execute(db)
+                            // Amendment A10: the value is applied only when it was set later than the
+                            // stored one. Its time is the sender's timestamp, capped at arrival so a
+                            // future-dated clock cannot lock the timer. No stored row means adopt. A
+                            // change message that is not newer is still stored as its line below.
+                            let effectiveAt = min(senderTime ?? seenNow, seenNow)
+                            let stored = try ConversationSetting.current(for: incomingPeer, db)
+                            let isNewer = stored.map { effectiveAt > $0.updatedAt } ?? true
+                            if isNewer {
+                                let current = try ConversationSetting.expiry(for: incomingPeer, db) ?? 0
+                                if decoded.isChange {
+                                    try ConversationSetting.set(incomingPeer, seconds: decoded.seconds, at: effectiveAt, db)
+                                } else if decoded.seconds != current {
+                                    // Convergence after a missed change message: adopt the peer's timer
+                                    // and say so, 1 ms before the message so the line sorts above it.
+                                    try ConversationSetting.set(incomingPeer, seconds: decoded.seconds, at: effectiveAt, db)
+                                    try Message.insert {
+                                        Message(id: UUID(), peerHex: incomingPeer, isOutgoing: false,
+                                                body: ExpiryPreset.peerAnnouncement(peerName: peerName, seconds: decoded.seconds),
+                                                timestamp: row.timestamp.addingTimeInterval(-0.001),
+                                                status: MessageStatus.received, validated: validated,
+                                                messageHash: "", fieldKeys: "", isTimerChange: true)
+                                    }.execute(db)
+                                }
                             }
                         }
                         try Message.insert { row }.execute(db)

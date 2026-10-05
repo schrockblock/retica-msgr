@@ -25,6 +25,11 @@ public struct ConversationSetting: Equatable, Sendable {
         return seconds
     }
 
+    /// The stored row, or nil when the conversation never had a timer set.
+    public static func current(for peerHex: String, _ db: GRDB.Database) throws -> ConversationSetting? {
+        try ConversationSetting.where({ $0.peerHex.eq(peerHex) }).fetchOne(db)
+    }
+
     /// Upsert. 0 (and any negative value) is stored as NULL, meaning off.
     public static func set(_ peerHex: String, seconds: Int, at now: Date, _ db: GRDB.Database) throws {
         try ConversationSetting.where { $0.peerHex.eq(peerHex) }.delete().execute(db)
