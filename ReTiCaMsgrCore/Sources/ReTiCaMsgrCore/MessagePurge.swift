@@ -47,7 +47,7 @@ public enum MessagePurge {
                 try attachmentStore.delete(attachment.path)
             } catch {
                 // The path embeds the message hash, so it stays out of the public log.
-                log.error("purge: could not delete \(attachment.path, privacy: .private):\(String(describing: error), privacy: .public)")
+                log.error("purge: could not delete \(attachment.path, privacy: .private): \(String(describing: error), privacy: .public)")
             }
         }
         try await database.write { db in
