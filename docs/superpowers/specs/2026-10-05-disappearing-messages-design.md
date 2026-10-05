@@ -232,3 +232,37 @@ themselves; an Info sheet open on a purged row already shows "Message unavailabl
 - Honouring the field for messages that arrive via push wake-up but are never opened: they are
   stamped only on first view, as designed.
 - Group conversations.
+
+## Amendments at planning time (2026-10-05)
+
+Decisions the implementation plan (`docs/superpowers/plans/2026-10-05-disappearing-messages.md`)
+forced while turning §1–§4 into code. Where they differ from the text above, these win.
+
+- **A1. Timer-change recognition.** A timer-change message is recognised by a second key in the
+  0xFD map, `reticamsgr.expiry.change` = `true`, not by matching the body against the announcement
+  strings. The body stays the readable sentence. `ExpiryWire.decode` returns
+  `Decoded(seconds:isChange:)`; `encode(seconds:)` writes only the duration, `encodeChange(seconds:)`
+  adds the flag.
+- **A2. Purge result.** `MessagePurge.run` returns `Result(purged: Int, nextDue: Date?)`. The
+  reducer reloads the thread and conversations only when `purged > 0`, so purge-and-reschedule can
+  be appended after every existing reload without a second reload in the common case.
+- **A3. Due comparison in Swift.** The purge fetches rows with a non-null `expiresAt` and compares
+  in Swift (`<= now`), rather than comparing an optional column in SQL. The set is small.
+- **A4. Explicit zero.** An ordinary message carrying `reticamsgr.expiry` = 0 means "the peer's
+  timer is off": it converges the local setting to off with a line, like any other differing value.
+  A message with no field at all still leaves the setting alone.
+- **A5. Foreground flag.** `State.isForeground` starts `true`, becomes `false` on `.backgrounded`
+  and `true` on `.foregrounded`. Opening a thread stamps regardless (a user action). A message
+  arriving into the open thread is stamped only while `isForeground`.
+- **A6. Reachability gate is UI-only.** The toolbar menu is disabled while the peer is unreachable,
+  exactly as the reaction palette is. The reducer does not check reachability.
+- **A7. Setting reaches state through its own action.** `reloadThread` also reads
+  `conversationSettings` and sends `conversationExpiryLoaded(peerHex:seconds:)` after `threadLoaded`,
+  guarded on the open peer, instead of widening `threadLoaded`.
+- **A8. Convergence line details.** The inserted line is an incoming `isTimerChange` row with an
+  empty `messageHash`, `fieldKeys` `""`, and a timestamp 1 ms before the message that triggered it,
+  so it sorts above that message. The peer name comes from the stored announce and falls back to
+  "Them" (`ReplyPreview.them`). A received change message with an empty body gets the same local
+  text.
+- **A9. Only validated senders.** The 0xFD field is decoded only when the message's signature
+  validated. An unvalidated message is stored as plain text and never touches the setting.
