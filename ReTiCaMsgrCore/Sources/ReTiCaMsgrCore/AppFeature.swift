@@ -1118,18 +1118,19 @@ public struct AppFeature {
                 // Standard LXMF reply fields (0x30 / 0x31). Only an ordinary message gets here: a
                 // reaction that also carries reply fields was handled above, reply fields ignored.
                 let reply = ReplyWire.decode(m.fields)
-                // Standard LXMF attachment fields (0x05 / 0x06). Decoded here, written inside the
-                // effect: the bytes go to disk first, then the message and attachment rows land in
-                // one transaction. A field that does not decode leaves an ordinary text message.
-                let decodedAttachment = AttachmentWire.decode(m.fields)
-                if let dropped = decodedAttachment?.droppedFileCount, dropped > 0 {
-                    // Spec §2: one attachment per message is kept; say what was left out.
-                    AppFeature.inbound.notice("attachment: kept one, dropped \(dropped, privacy: .public) other file entries from \(String(m.hash.hexString.prefix(8)), privacy: .public)")
-                }
                 // Disappearing messages (spec §3 "Receiving", amendments A1, A4, A5). Only a
                 // validated sender may set or carry a timer: an unsigned message is plain text.
                 let decodedExpiry = validated ? ExpiryWire.decode(m.fields) : nil
                 let isTimerChange = decodedExpiry?.isChange == true
+                // Standard LXMF attachment fields (0x05 / 0x06). Decoded here, written inside the
+                // effect: the bytes go to disk first, then the message and attachment rows land in
+                // one transaction. A field that does not decode leaves an ordinary text message.
+                // A timer-change line never carries one (amendment A14): nothing would show it.
+                let decodedAttachment = isTimerChange ? nil : AttachmentWire.decode(m.fields)
+                if let dropped = decodedAttachment?.droppedFileCount, dropped > 0 {
+                    // Spec §2: one attachment per message is kept; say what was left out.
+                    AppFeature.inbound.notice("attachment: kept one, dropped \(dropped, privacy: .public) other file entries from \(String(m.hash.hexString.prefix(8)), privacy: .public)")
+                }
                 let incomingSeconds: Int? = {
                     guard let decoded = decodedExpiry, !decoded.isChange, decoded.seconds > 0 else { return nil }
                     return decoded.seconds

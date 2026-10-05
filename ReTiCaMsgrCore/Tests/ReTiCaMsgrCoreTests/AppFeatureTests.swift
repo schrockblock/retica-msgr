@@ -4508,3 +4508,17 @@ private func expiryFixReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage) 
     #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
     #expect(try await db.read { try ConversationSetting.all.fetchAll($0) }.isEmpty)
 }
+
+/// A14: a change message is only a line, so an attachment riding on it is not stored.
+@MainActor @Test func expiryFixChangeMessageDropsAttachment() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me, attachmentStore: attachTempStore())
+    await expiryFixReceive(store, wireMessage(from: Identity(), to: me, at: 1699999999, content: "",
+                                              fields: ExpiryWire.encodeChange(seconds: 60)
+                                                  + AttachmentWire.encodeFile(name: "a.txt", data: Data([1]))))
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.isTimerChange == true)
+    #expect(try await db.read { try Attachment.all.fetchAll($0) }.isEmpty)
+}
