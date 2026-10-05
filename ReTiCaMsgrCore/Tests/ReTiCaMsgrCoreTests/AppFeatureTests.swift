@@ -4018,6 +4018,7 @@ private func expiryHex(_ identity: Identity) -> String {
 }
 
 /// Review Focus 2: a 0xFD that is not ours leaves an ordinary text message and the setting alone.
+/// Amendment A12: being field-less for us, it takes the local timer.
 @MainActor @Test func expiryReceiveMalformedFieldIsPlainText() async throws {
     let db = try! AppDatabase.makeInMemory()
     let me = Identity()
@@ -4032,7 +4033,7 @@ private func expiryHex(_ identity: Identity) -> String {
     let rows = try await db.read { try Message.all.fetchAll($0) }
     #expect(rows.count == 1)
     #expect(rows.first?.body == "hub data")
-    #expect(rows.first?.expirySeconds == nil)
+    #expect(rows.first?.expirySeconds == 600)
     #expect(rows.first?.isTimerChange == false)
     #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 600)
 }
@@ -4439,4 +4440,42 @@ private func expiryFixReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage) 
     await store.skipReceivedActions(strict: false)
     let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
     #expect(row.expiresAt == nil)
+}
+
+/// A12: a message without our field takes the local timer, and leaves the setting alone.
+@MainActor @Test func expiryFixFieldlessMessageTakesLocalTimer() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me)
+    await expiryFixReceive(store, wireMessage(from: sender, to: me, at: 1700000500, content: "plain"))
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.expirySeconds == 600)
+    #expect(rows.first?.expiresAt == nil)
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 600)
+}
+
+/// A12 with A11: a field-less message into the visible thread is viewed at once on the local timer.
+@MainActor @Test func expiryFixFieldlessMessageIntoVisibleThreadIsStamped() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me) { s in
+        s.openPeerHex = expiryHex(sender)
+        s.chatVisible = true
+    }
+    let m = wireMessage(from: sender, to: me, at: 1700000500, content: "plain")
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(600) }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.expirySeconds == 600)
+    #expect(row.expiresAt == infoT0.addingTimeInterval(600))
 }

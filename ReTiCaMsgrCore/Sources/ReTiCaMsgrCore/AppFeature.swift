@@ -1195,15 +1195,16 @@ public struct AppFeature {
                     // A `let` copy so an escaping `@Sendable` closure captures a value, not the
                     // mutable var above.
                     let attachmentRow = pendingAttachmentRow
-                    try await database.write { db in
+                    let storedExpiresAt = try await database.write { db -> Date? in
+                        var stored = row
                         if let decoded = decodedExpiry {
                             // Amendment A10: the value is applied only when it was set later than the
                             // stored one. Its time is the sender's timestamp, capped at arrival so a
                             // future-dated clock cannot lock the timer. No stored row means adopt. A
                             // change message that is not newer is still stored as its line below.
                             let effectiveAt = min(senderTime ?? seenNow, seenNow)
-                            let stored = try ConversationSetting.current(for: incomingPeer, db)
-                            let isNewer = stored.map { effectiveAt > $0.updatedAt } ?? true
+                            let setting = try ConversationSetting.current(for: incomingPeer, db)
+                            let isNewer = setting.map { effectiveAt > $0.updatedAt } ?? true
                             if isNewer {
                                 let current = try ConversationSetting.expiry(for: incomingPeer, db) ?? 0
                                 if decoded.isChange {
@@ -1221,8 +1222,15 @@ public struct AppFeature {
                                     }.execute(db)
                                 }
                             }
+                        } else if !isTimerChange, let local = try ConversationSetting.expiry(for: incomingPeer, db) {
+                            // Amendment A12: a message with no expiry of ours (none, a foreign 0xFD,
+                            // a malformed one, or an unsigned sender) takes the local timer, so this
+                            // device deletes the whole conversation on the user's own setting. It
+                            // never changes the setting (spec §3).
+                            stored.expirySeconds = local
+                            stored.expiresAt = viewedNow.map { $0.addingTimeInterval(TimeInterval(local)) }
                         }
-                        try Message.insert { row }.execute(db)
+                        try Message.insert { stored }.execute(db)
                         if let attachmentRow {
                             try Attachment.insert { attachmentRow }.execute(db)
                         }
@@ -1232,12 +1240,13 @@ public struct AppFeature {
                         // wrong regardless). Then prune to RingSet.capacity so the table mirrors
                         // the in-memory ring and doesn't grow without bound.
                         try recordSeenHash(seenHashHex, at: seenNow, db)
+                        return stored.expiresAt
                     }
                     try await reloadConversations(database, send)
                     if incomingPeer == openPeer {
                         try await reloadThread(database, incomingPeer, send)
                     }
-                    if row.expiresAt != nil {
+                    if storedExpiresAt != nil {
                         try await purgeAndReschedule(database, attachmentStore, now: seenNow, send)
                     }
                 }
