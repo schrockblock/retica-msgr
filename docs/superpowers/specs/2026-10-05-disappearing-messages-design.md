@@ -266,3 +266,38 @@ forced while turning §1–§4 into code. Where they differ from the text above,
   text.
 - **A9. Only validated senders.** The 0xFD field is decoded only when the message's signature
   validated. An unvalidated message is stored as plain text and never touches the setting.
+
+## Amendments at final review (2026-10-05)
+
+Rulings from the whole-branch review. Where they differ from the text or amendments above, these
+win.
+
+- **A10. Convergence respects time, not arrival order.** `ConversationSetting.updatedAt` is the time
+  the current value was set: `date.now` for a local pick, and for a value adopted from the peer the
+  sender's LXMF timestamp capped at the receive time (a future-dated clock cannot lock the timer).
+  An incoming field, change or ordinary, is applied only when its effective time is strictly newer
+  than the stored `updatedAt`. No stored row means adopt. A change message that is not newer is
+  still stored as its `isTimerChange` line, but the setting does not move. A late ordinary message
+  still keeps the duration it carried on its own row.
+- **A11. "Viewed" needs the chat on screen.** `State.chatVisible` is true while ChatView is
+  showing: set by `.openConversation`, `.startConversation` and `.chatAppeared`, cleared by
+  `.closeConversation` and `.chatDisappeared` (ChatView's onAppear and onDisappear). An arrival is
+  stamped only when it is for the open peer, `isForeground` and `chatVisible`. The `.foregrounded`
+  stamp needs `chatVisible` too. `.chatAppeared` stamps the open thread, reloads it if anything
+  changed and purges, exactly like `.foregrounded`. This refines A5: the open thread on another tab
+  is not being looked at.
+- **A12. Field-less messages take the local timer.** When a timer is on for the conversation and an
+  incoming message carries no decodable expiry (no 0xFD, a foreign or malformed 0xFD, or an
+  unvalidated sender), its row takes `expirySeconds` from the local setting and is stamped on first
+  view like any other, so this device deletes the whole conversation on the user's own timer. Such a
+  message still never changes the setting (§3 stands). The caveat text is unchanged: the peer's
+  device keeps its copies.
+- **A13. Incoming change rows are rendered locally.** Replaces the "empty body" clause of A8. An
+  incoming change row's stored body is always `ExpiryPreset.peerAnnouncement(peerName:seconds:)` for
+  the decoded value. The received body is ignored, so a line cannot claim a different value than
+  the field set. Outgoing change rows keep the wire body ("Disappearing messages set to …"), which
+  already reads as the local user's action.
+- **A14. Smaller rulings.** Re-picking the value already in force is a no-op (no message, no row).
+  A change message never stores an attachment (its row renders as a line with no attachment view).
+  An outgoing change line shows its send status beside the text until it is delivered or
+  propagated.

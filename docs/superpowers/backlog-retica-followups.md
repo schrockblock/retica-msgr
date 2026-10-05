@@ -181,3 +181,13 @@ Follow-ups noticed while implementing:
   `.backgrounded`; harmless today because no thread can be open then.
 - The Simulator cannot reach a peer, so the toolbar menu, the system line after choosing a preset, the title subtitle and the bubble glyph after a send were only code-reviewed, never seen. Check them on a device with a reachable ReTiCaMsgr peer, and check ChatTitle for clipping with a long title plus "4 weeks".
 - Test-helper duplication left by the plan: MessageInfoTests' expiryInfo helpers duplicate the file's info(_:)/utc/peer32/hash64; ExpiryPreset.swift has an unused import Foundation and rebuilds its units array per call.
+- An out-of-order `expiryPurgeCompleted` (two purges racing) can briefly cancel or postpone the
+  sleeper. Track the armed deadline in state and only re-arm for an earlier one.
+- `MessagePurge.run` fetches full rows for every stamped message on each run. Select only
+  `id`/`expiresAt` and index `expiresAt`.
+- A send within milliseconds of opening a thread, before `conversationExpiryLoaded` lands, goes out
+  without the field.
+- The timer cannot be turned off while the peer is unreachable (the menu is gated like reactions).
+- Reaction rows whose target was purged before the reaction arrived are left orphaned.
+- `ThumbnailCache` keeps decoded images of purged attachments in memory until evicted.
+- No test covers the convergence line with a learned display name (only the "Them" fallback).
