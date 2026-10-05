@@ -3443,6 +3443,8 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
         // carries the (absent) conversation timer alongside the thread's messages.
         await store.receive(.threadLoaded([], reactions: [], attachments: []))
         await store.receive(.conversationExpiryLoaded(peerHex: peerB, seconds: nil))
+        // Disappearing messages: opening/starting a thread also purges and arms the sleeper.
+        await store.receive(.expiryPurgeCompleted(purged: 0, nextDue: nil))
         await clock.advance(by: .milliseconds(1))
         await store.finish()                // an uncancelled preparation's result fails here
         await store.send(.replyCancelled)   // probe: no attachmentPrepared
@@ -3801,7 +3803,7 @@ private func expirySendAndFetch(_ db: any DatabaseWriter, draft: String, expiry:
     let db = try! AppDatabase.makeInMemory()
     let files = attachTempStore()
     let jpeg = TestImages.jpeg(width: 40, height: 30)
-    let (sent, row, _) = await expirySendAndFetch(db, draft: "cap", expiry: 3_600, attachmentStore: files) { s in
+    let (sent, row, store) = await expirySendAndFetch(db, draft: "cap", expiry: 3_600, attachmentStore: files) { s in
         s.pendingAttachment = pendingImage(jpeg)
         s.replyTarget = AppFeature.ReplyTarget(messageHash: replyTargetHash, body: "orig", isOutgoing: false)
     }
@@ -3812,6 +3814,11 @@ private func expirySendAndFetch(_ db: any DatabaseWriter, draft: String, expiry:
     #expect(stored.expirySeconds == 3_600)
     #expect(stored.expiresAt == infoT0.addingTimeInterval(3_600))
     #expect(stored.fieldKeys == "0x06,0x30,0x31,0xfd")
+    // The attachment path arms the sleeper too.
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(3_600) }
+        return false
+    }
 }
 
 @MainActor @Test func expirySendCloseConversationClearsOpenExpiry() async {
@@ -4041,4 +4048,209 @@ private func expiryHex(_ identity: Identity) -> String {
     #expect(rows.first?.isTimerChange == false)
     #expect(rows.first?.body == "Disappearing messages turned off")
     #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 600)
+}
+
+// MARK: - Disappearing messages: first view, lifecycle, sleeper (spec 2026-10-05 §3)
+
+private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt: Date?, outgoing: Bool = false,
+                            hash: String? = nil) -> Message {
+    Message(id: uuid(id), peerHex: peer, isOutgoing: outgoing, body: "r\(id)",
+            timestamp: infoT0.addingTimeInterval(TimeInterval(id)),
+            status: outgoing ? MessageStatus.delivered : MessageStatus.received, validated: !outgoing,
+            messageHash: hash ?? String(repeating: String(format: "%02x", 0x50 + id), count: 32),
+            expirySeconds: seconds, expiresAt: expiresAt)
+}
+
+/// Opening a thread is the first view of every unstamped row in it. A row already stamped keeps
+/// its time, an ordinary row stays nil, and the sleeper is armed for the earliest stamp.
+@MainActor @Test func expiryTimerOpeningThreadStampsUnstampedRowsOnly() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [
+        expiryTimerRow(1, peerA, seconds: 60, expiresAt: nil),
+        expiryTimerRow(2, peerA, seconds: 60, expiresAt: infoT0.addingTimeInterval(10)),
+        expiryTimerRow(3, peerA, seconds: nil, expiresAt: nil),
+        expiryTimerRow(4, peerB, seconds: 60, expiresAt: nil),   // another conversation: not viewed
+    ])
+    let store = makeStore(db, identity: Identity())
+    await store.send(.openConversation(peerA))
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(10) }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try await db.read { try Message.all.order(by: \.timestamp).fetchAll($0) }
+    #expect(rows[0].expiresAt == infoT0.addingTimeInterval(60))
+    #expect(rows[1].expiresAt == infoT0.addingTimeInterval(10))
+    #expect(rows[2].expiresAt == nil)
+    #expect(rows[3].expiresAt == nil)
+    #expect(store.state.threadMessages.map(\.expiresAt) == [infoT0.addingTimeInterval(60), infoT0.addingTimeInterval(10), nil])
+}
+
+/// `startConversation` is the other way into a thread and stamps too.
+@MainActor @Test func expiryTimerStartConversationStampsToo() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [expiryTimerRow(1, peerA, seconds: 30, expiresAt: nil)])
+    let store = makeStore(db, identity: Identity())
+    await store.send(.startConversation(peerA))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.expiresAt == infoT0.addingTimeInterval(30))
+}
+
+/// The sleeper fires at the earliest `expiresAt`, the row is purged and the thread reloads. A
+/// 30-second preset with the thread open therefore disappears on time.
+@MainActor @Test func expiryTimerDueRowIsPurgedAndThreadReloads() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let clock = TestClock()
+    try! await seed(db, [expiryTimerRow(1, peerA, seconds: 30, expiresAt: infoT0.addingTimeInterval(30))])
+    let store = makeStore(db, identity: Identity(), clock: clock)
+    await store.send(.openConversation(peerA))
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(30) }
+        return false
+    }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.threadMessages.count == 1)
+
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(30))
+    await clock.advance(by: .seconds(30))
+    await store.receive { if case .expiryDue = $0 { return true }; return false }
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 1 && nextDue == nil }
+        return false
+    }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadMessages.isEmpty)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+/// A nearer expiry re-arms the sleeper: after a 60 s row is armed, a message stamped for 10 s
+/// arrives, and the sleeper fires at 10 s, not 60.
+@MainActor @Test func expiryTimerNearerExpiryReschedulesSleeper() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let clock = TestClock()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = expiryHex(sender)
+    try! await seed(db, [expiryTimerRow(1, senderHex, seconds: 60, expiresAt: infoT0.addingTimeInterval(60))])
+    try await db.write { try ConversationSetting.set(senderHex, seconds: 10, at: infoT0, $0) }
+    let store = makeStore(db, identity: me, clock: clock)
+    await store.send(.openConversation(senderHex))
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(60) }
+        return false
+    }
+    await store.skipReceivedActions(strict: false)
+
+    let m = wireMessage(from: sender, to: me, at: 1699999999, content: "quick", fields: ExpiryWire.encode(seconds: 10))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(10) }
+        return false
+    }
+    await store.skipReceivedActions(strict: false)
+
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(10))
+    await clock.advance(by: .seconds(10))
+    await store.receive { if case .expiryDue = $0 { return true }; return false }
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 1 && nextDue == infoT0.addingTimeInterval(60) }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let bodies = try await db.read { try Message.all.fetchAll($0) }.map(\.body)
+    #expect(bodies == ["r1"])
+}
+
+/// Review Focus 5: nothing runs while suspended, so launch catches up on rows that fell due,
+/// including the attachment file and reactions.
+@MainActor @Test func expiryTimerLaunchPurgesRowsDueWhileSuspended() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let files = attachTempStore()
+    let due = expiryTimerRow(1, peerA, seconds: 60, expiresAt: infoT0.addingTimeInterval(-1))
+    let path = try files.store(Data([1]), messageHash: due.messageHash, outgoing: false, ext: "bin")
+    let attachment = Attachment(id: UUID(), messageId: due.id, kind: AttachmentKind.file, name: "a.bin",
+                                format: "bin", size: 1, width: nil, height: nil, path: path)
+    try! await seed(db, [due, expiryTimerRow(2, peerA, seconds: nil, expiresAt: nil)])
+    try await db.write { d in
+        try Attachment.insert { attachment }.execute(d)
+        try Reaction.insert { Reaction(messageHash: due.messageHash, reactorHex: peerA, emoji: "👍", sentAt: 1) }.execute(d)
+    }
+    let store = makeStore(db, identity: Identity(), attachmentStore: files)
+    await store.send(.onLaunch)
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 1 && nextDue == nil }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.map(\.body) == ["r2"])
+    #expect(try await db.read { try Attachment.all.fetchAll($0) }.isEmpty)
+    #expect(try await db.read { try Reaction.all.fetchAll($0) }.isEmpty)
+    #expect(!files.exists(path))
+    #expect(store.state.conversations.first?.lastBody == "r2")
+}
+
+/// Returning to the foreground with a thread open is a view of its unstamped rows, and a purge.
+@MainActor @Test func expiryTimerForegroundStampsOpenThreadAndPurges() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [
+        expiryTimerRow(1, peerA, seconds: 60, expiresAt: nil),
+        expiryTimerRow(2, peerA, seconds: 5, expiresAt: infoT0.addingTimeInterval(-1)),
+    ])
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.isForeground = false
+    }
+    await store.send(.foregrounded) {
+        $0.connection = .connecting
+        $0.isForeground = true
+    }
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 1 && nextDue == infoT0.addingTimeInterval(60) }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.map(\.body) == ["r1"])
+    #expect(rows.first?.expiresAt == infoT0.addingTimeInterval(60))
+    #expect(store.state.threadMessages.map(\.body) == ["r1"])
+}
+
+/// Foreground with no thread open still purges, and stamps nothing.
+@MainActor @Test func expiryTimerForegroundWithoutThreadOnlyPurges() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [
+        expiryTimerRow(1, peerA, seconds: 60, expiresAt: nil),
+        expiryTimerRow(2, peerA, seconds: 5, expiresAt: infoT0.addingTimeInterval(-1)),
+    ])
+    let store = makeStore(db, identity: Identity())
+    await store.send(.foregrounded) { $0.connection = .connecting }
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 1 && nextDue == nil }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.map(\.body) == ["r1"])
+    #expect(rows.first?.expiresAt == nil)
+}
+
+@MainActor @Test func expiryTimerBackgroundedClearsForegroundFlagAndStampsNothing() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [expiryTimerRow(1, peerA, seconds: 60, expiresAt: nil)])
+    let store = makeStore(db, identity: Identity()) { $0.openPeerHex = peerA }
+    #expect(store.state.isForeground == true)
+    await store.send(.backgrounded) { $0.isForeground = false }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.expiresAt == nil)
 }

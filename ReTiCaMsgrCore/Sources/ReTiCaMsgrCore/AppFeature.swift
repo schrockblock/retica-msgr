@@ -504,6 +504,10 @@ public struct AppFeature {
                             destinations[pair.hash] = pair.destination
                         }
                         await send(.rehydrateLearnedDestinations(destinations))
+                    },
+                    .run { [database, attachmentStore, now = date.now] send in
+                        // Nothing ran while suspended or dead: purge what fell due and arm the sleeper.
+                        try await purgeAndReschedule(database, attachmentStore, now: now, send)
                     }
                 )
 
@@ -515,7 +519,17 @@ public struct AppFeature {
                 // unrebuilt (A4). A HEALTHY tcp interface still short-circuits, because re-dialling
                 // it would tear down its live links on every app switch.
                 // Either way, drain the push inbox: packets may have been stashed while suspended.
-                return .merge(redialIfTCPDown(&state), .send(.push(.drainInbox)))
+                // Disappearing messages: the open thread is being looked at again (first view for
+                // rows that arrived while suspended), and rows that fell due meanwhile go now.
+                state.isForeground = true
+                let openPeer = state.openPeerHex
+                let expiryCatchUp: Effect<Action> = .run { [database, attachmentStore, now = date.now] send in
+                    if let openPeer, try await stampViewed(database, openPeer, now: now) > 0 {
+                        try await reloadThread(database, openPeer, send)
+                    }
+                    try await purgeAndReschedule(database, attachmentStore, now: now, send)
+                }
+                return .merge(redialIfTCPDown(&state), .send(.push(.drainInbox)), expiryCatchUp)
 
             case .pushWake:
                 return .merge(redialIfTCPDown(&state), .send(.push(.drainInbox)))
@@ -712,7 +726,12 @@ public struct AppFeature {
                 state.attachmentOriginalRequested = nil
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
-                    .run { [database] send in try await reloadThread(database, peerHex, send) },
+                    .run { [database, attachmentStore, now = date.now] send in
+                        // First view (spec §3): stamp before the load so the rows arrive stamped.
+                        _ = try await stampViewed(database, peerHex, now: now)
+                        try await reloadThread(database, peerHex, send)
+                        try await purgeAndReschedule(database, attachmentStore, now: now, send)
+                    },
                     // After a relaunch a conversation peer may have no path (session-only gate, none
                     // persisted or it expired): ask for one instead of leaving Send disabled until
                     // the peer happens to re-announce.
@@ -744,7 +763,12 @@ public struct AppFeature {
                 state.attachmentOriginalRequested = nil
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
-                    .run { [database] send in try await reloadThread(database, hex, send) },
+                    .run { [database, attachmentStore, now = date.now] send in
+                        // First view (spec §3): stamp before the load so the rows arrive stamped.
+                        _ = try await stampViewed(database, hex, now: now)
+                        try await reloadThread(database, hex, send)
+                        try await purgeAndReschedule(database, attachmentStore, now: now, send)
+                    },
                     state.pathRequestIfUnreachable(hex)
                 )
 
