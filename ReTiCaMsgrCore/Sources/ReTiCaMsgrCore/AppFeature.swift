@@ -1150,7 +1150,9 @@ public struct AppFeature {
                     id: UUID(),
                     peerHex: incomingPeer,
                     isOutgoing: false,
-                    body: isTimerChange && receivedBody.isEmpty
+                    // Amendment A13: a change row always shows our own sentence for the decoded
+                    // value, so the line cannot be made to say something other than what was set.
+                    body: isTimerChange
                         ? ExpiryPreset.peerAnnouncement(peerName: peerName, seconds: decodedExpiry?.seconds ?? 0)
                         : receivedBody,
                     timestamp: date.now,

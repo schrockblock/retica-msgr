@@ -3897,8 +3897,8 @@ private func expiryHex(_ identity: Identity) -> String {
     #expect(rows.first?.expirySeconds == 600)
 }
 
-/// A timer-change message updates the setting and is stored only as the announcement row, body as
-/// received. Turning off stores NULL.
+/// A timer-change message updates the setting and is stored only as the announcement row, in the
+/// local wording (amendment A13). Turning off stores NULL.
 @MainActor @Test func expiryReceiveTimerChangeUpdatesSettingAndStoresOnlyAnnouncement() async throws {
     let db = try! AppDatabase.makeInMemory()
     let me = Identity()
@@ -3912,7 +3912,7 @@ private func expiryHex(_ identity: Identity) -> String {
     var rows = try await db.read { try Message.all.fetchAll($0) }
     #expect(rows.count == 1)
     #expect(rows.first?.isTimerChange == true)
-    #expect(rows.first?.body == "Disappearing messages set to 1 hour")
+    #expect(rows.first?.body == "Them set disappearing messages to 1 hour")
     #expect(rows.first?.expirySeconds == nil)
     #expect(rows.first?.expiresAt == nil)
     #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 3_600)
@@ -3925,6 +3925,7 @@ private func expiryHex(_ identity: Identity) -> String {
     rows = try await db.read { try Message.all.order(by: \.timestamp).fetchAll($0) }
     #expect(rows.count == 2)
     #expect(rows.last?.isTimerChange == true)
+    #expect(rows.last?.body == "Them turned disappearing messages off")
     #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == nil)
     #expect(try await db.read { try ConversationSetting.all.fetchAll($0) }.count == 1)
 }
@@ -4478,4 +4479,19 @@ private func expiryFixReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage) 
     let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
     #expect(row.expirySeconds == 600)
     #expect(row.expiresAt == infoT0.addingTimeInterval(600))
+}
+
+/// A13: the received body of a change message is ignored. The line states what the field set.
+@MainActor @Test func expiryFixIncomingChangeBodyIsRenderedLocally() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me)
+    await expiryFixReceive(store, wireMessage(from: sender, to: me, at: 1699999999, content: "Disappearing messages turned off",
+                                              fields: ExpiryWire.encodeChange(seconds: 30)))
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.isTimerChange == true)
+    #expect(rows.first?.body == "Them set disappearing messages to 30 seconds")
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 30)
 }
