@@ -80,6 +80,13 @@ public enum MessageInfo {
         if let reason = m.failureReason {
             rows.append(Row("Reason", failureReasonName(reason)))
         }
+        // Disappearing messages (spec §4): when the purge will take this row, or, for a received
+        // row not viewed yet, how long after the first view.
+        if let at = m.expiresAt {
+            rows.append(timeRow("Expires", at, sameDayAs: m.timestamp, tz))
+        } else if let seconds = m.expirySeconds {
+            rows.append(Row("Disappears after", ExpiryPreset.label(forSeconds: seconds)))
+        }
         return Section(title: "Timeline", rows: rows)
     }
 

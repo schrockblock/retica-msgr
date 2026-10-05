@@ -193,3 +193,40 @@ private func missingRow(_ label: String) -> MessageInfo.Row {
     #expect(MessageInfo.shortHash("abcdefghi") == "abcdefghi")       // 9 chars: nothing to hide
     #expect(MessageInfo.shortHash("abcdefghij") == "abcd…ghij")
 }
+
+// MARK: - Disappearing messages (spec 2026-10-05 §4 Info sheet)
+
+private func expiryInfoMessage(expirySeconds: Int?, expiresAt: Date?) -> Message {
+    Message(id: UUID(uuidString: "00000000-0000-0000-0000-000000000030")!,
+            peerHex: String(repeating: "a", count: 32), isOutgoing: true, body: "x",
+            timestamp: Date(timeIntervalSince1970: 1700000000), status: MessageStatus.sent, validated: false,
+            messageHash: String(repeating: "ab", count: 32), fieldKeys: "0xfd",
+            expirySeconds: expirySeconds, expiresAt: expiresAt)
+}
+
+private func expiryInfoTimeline(_ m: Message) -> [MessageInfo.Row] {
+    MessageInfo.sections(for: m, timeZone: TimeZone(identifier: "UTC")!).first { $0.title == "Timeline" }!.rows
+}
+
+/// A stamped row shows when it expires (same-day short form, ISO copy). The 0xFD field is named.
+@Test func expiryInfoStampedRowShowsExpiresTime() {
+    let rows = expiryInfoTimeline(expiryInfoMessage(expirySeconds: 300, expiresAt: Date(timeIntervalSince1970: 1700000300)))
+    let expires = rows.first { $0.label == "Expires" }
+    #expect(expires?.display == "22:18:20")
+    #expect(expires?.copy == "2023-11-14T22:18:20.000Z")
+    #expect(rows.contains { $0.label == "Disappears after" } == false)
+    let payload = MessageInfo.sections(for: expiryInfoMessage(expirySeconds: 300, expiresAt: nil)).first { $0.title == "Payload" }!
+    #expect(payload.rows.contains(MessageInfo.Row("Field", "0xFD custom meta")))
+}
+
+/// A received row that carries a duration but was not viewed yet shows the duration instead.
+@Test func expiryInfoUnstampedRowShowsDuration() {
+    let rows = expiryInfoTimeline(expiryInfoMessage(expirySeconds: 86_400, expiresAt: nil))
+    #expect(rows.contains(MessageInfo.Row("Disappears after", "1 day")))
+    #expect(rows.contains { $0.label == "Expires" } == false)
+}
+
+@Test func expiryInfoOrdinaryRowHasNeitherRow() {
+    let rows = expiryInfoTimeline(expiryInfoMessage(expirySeconds: nil, expiresAt: nil))
+    #expect(rows.contains { $0.label == "Expires" || $0.label == "Disappears after" } == false)
+}
