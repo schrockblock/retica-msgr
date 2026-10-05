@@ -19,7 +19,7 @@ public struct ConversationSetting: Equatable, Sendable {
 
     /// The active timer for `peerHex` in seconds, or nil when there is none: no row, NULL, or 0.
     public static func expiry(for peerHex: String, _ db: GRDB.Database) throws -> Int? {
-        guard let row = try ConversationSetting.where { $0.peerHex.eq(peerHex) }.fetchOne(db),
+        guard let row = try ConversationSetting.where({ $0.peerHex.eq(peerHex) }).fetchOne(db),
               let seconds = row.expirySeconds, seconds > 0
         else { return nil }
         return seconds
