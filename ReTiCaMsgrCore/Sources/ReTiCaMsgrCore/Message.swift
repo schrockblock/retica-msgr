@@ -6,8 +6,9 @@ import SQLiteData
 /// the reaction target for all rows.
 ///
 /// The optional fields after `messageHash` are debugging metadata for the Info sheet, added by the
-/// `addMessageInfo` migration, then the reply fields, added by `addReplies`. Rows stored before a
-/// migration read back `nil` for its fields.
+/// `addMessageInfo` migration, then the reply fields, added by `addReplies`, then the disappearing
+/// messages fields, added by `addDisappearingMessages`. Rows stored before a migration read back
+/// `nil` for its fields.
 @Table
 public struct Message: Identifiable, Equatable, Sendable {
     public var id: UUID
@@ -49,6 +50,15 @@ public struct Message: Identifiable, Equatable, Sendable {
     /// Outgoing only: the propagated copy was refused up front — `PropagationRefusal.*`.
     /// nil when it was not refused (or no propagation node was configured).
     public var propagationRefused: String?
+    /// Disappearing messages: the duration in seconds carried in FIELD_CUSTOM_META (0xFD).
+    /// nil when this message never disappears.
+    public var expirySeconds: Int?
+    /// When the purge deletes this row. Outgoing: set at send. Incoming: set on first view in the
+    /// open thread, so nil with a non-nil `expirySeconds` means "not viewed yet".
+    public var expiresAt: Date?
+    /// A timer-change announcement ("Disappearing messages set to 1 day"): rendered as a system
+    /// line, never carries an attachment or reactions, never expires.
+    public var isTimerChange: Bool
 
     public init(
         id: UUID,
@@ -73,7 +83,10 @@ public struct Message: Identifiable, Equatable, Sendable {
         replyToHash: String? = nil,
         replyQuote: String? = nil,
         failureReason: String? = nil,
-        propagationRefused: String? = nil
+        propagationRefused: String? = nil,
+        expirySeconds: Int? = nil,
+        expiresAt: Date? = nil,
+        isTimerChange: Bool = false
     ) {
         self.id = id
         self.peerHex = peerHex
@@ -98,6 +111,9 @@ public struct Message: Identifiable, Equatable, Sendable {
         self.replyQuote = replyQuote
         self.failureReason = failureReason
         self.propagationRefused = propagationRefused
+        self.expirySeconds = expirySeconds
+        self.expiresAt = expiresAt
+        self.isTimerChange = isTimerChange
     }
 }
 

@@ -132,6 +132,25 @@ public enum AppDatabase {
                 t.add(column: "propagationRefused", .text)
             }
         }
+        m.registerMigration("addDisappearingMessages") { db in
+            // Disappearing messages (spec 2026-10-05 §2). `expirySeconds` is the duration carried
+            // on the wire, `expiresAt` the absolute deletion time the purge reads: NULL with a
+            // duration means "received, not yet viewed". `isTimerChange` marks the announcement
+            // rows that render as a system line and never expire. Rows from before this
+            // migration read back NULL / NULL / false: ordinary, never-expiring bubbles.
+            try db.alter(table: "messages") { t in
+                t.add(column: "expirySeconds", .integer)
+                t.add(column: "expiresAt", .datetime)
+                t.add(column: "isTimerChange", .boolean).notNull().defaults(to: false)
+            }
+            // The shared per-conversation timer. Not in `learnedPeerRows`: that is an announce
+            // cache, pruned after 45 days and replaced on every announce.
+            try db.create(table: "conversationSettings") { t in
+                t.primaryKey("peerHex", .text).notNull()
+                t.column("expirySeconds", .integer)   // NULL = off
+                t.column("updatedAt", .datetime).notNull()
+            }
+        }
         return m
     }
 

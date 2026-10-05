@@ -295,3 +295,85 @@ private func attachTableMessage(_ id: String, hash: String) -> Message {
     #expect(AttachmentKind.image == "image")
     #expect(AttachmentKind.file == "file")
 }
+
+// MARK: - Disappearing messages (addDisappearingMessages)
+
+private func expiryTableMessage(_ id: String, hash: String) -> Message {
+    Message(
+        id: UUID(uuidString: id)!,
+        peerHex: String(repeating: "c", count: 32),
+        isOutgoing: false,
+        body: "soon gone",
+        timestamp: Date(timeIntervalSince1970: 1700000000),
+        status: MessageStatus.received,
+        validated: true,
+        messageHash: hash
+    )
+}
+
+/// Literal expectations, not only `back == m`, so a model that drops a field on init cannot pass
+/// by dropping it on both sides.
+@Test func expiryTableMessageColumnsRoundTrip() throws {
+    let db = try AppDatabase.makeInMemory()
+    var m = expiryTableMessage("00000000-0000-0000-0000-000000000020", hash: String(repeating: "f", count: 64))
+    m.expirySeconds = 86_400
+    m.expiresAt = Date(timeIntervalSince1970: 1700086400)
+    m.isTimerChange = true
+    try db.write { try Message.insert { m }.execute($0) }
+    let back = try #require(try db.read { try Message.all.fetchAll($0) }.first)
+    #expect(back.expirySeconds == 86_400)
+    #expect(back.expiresAt == Date(timeIntervalSince1970: 1700086400))
+    #expect(back.isTimerChange == true)
+    #expect(back == m)
+}
+
+/// Init defaults: a row built without the new parameters is an ordinary, never-expiring message.
+@Test func expiryTableInitDefaultsAreNilNilFalse() {
+    let m = expiryTableMessage("00000000-0000-0000-0000-000000000021", hash: "")
+    #expect(m.expirySeconds == nil)
+    #expect(m.expiresAt == nil)
+    #expect(m.isTimerChange == false)
+}
+
+/// A row written before `addDisappearingMessages` reads back with no expiry and `isTimerChange`
+/// false, so every message from before this feature is an ordinary bubble.
+@Test func expiryTableLegacyRowReadsBackWithDefaults() throws {
+    let queue = try DatabaseQueue()
+    try AppDatabase.migrator().migrate(queue, upTo: "createAttachments")
+    try queue.write { db in
+        try db.execute(
+            sql: """
+                INSERT INTO messages (id, peerHex, isOutgoing, body, timestamp, status, validated, messageHash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: ["00000000-0000-0000-0000-000000000022", String(repeating: "c", count: 32),
+                        0, "old", "2023-11-14 22:13:20.000", MessageStatus.received, 1, ""]
+        )
+    }
+    try AppDatabase.migrator().migrate(queue)
+    let row = try #require(try queue.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.body == "old")
+    #expect(row.expirySeconds == nil)
+    #expect(row.expiresAt == nil)
+    #expect(row.isTimerChange == false)
+}
+
+@Test func expiryTableConversationSettingUpsertsAndReadsOff() throws {
+    let db = try AppDatabase.makeInMemory()
+    let peer = String(repeating: "d", count: 32)
+    let t1 = Date(timeIntervalSince1970: 1700000000)
+    let t2 = Date(timeIntervalSince1970: 1700000100)
+    try db.write { try ConversationSetting.set(peer, seconds: 600, at: t1, $0) }
+    #expect(try db.read { try ConversationSetting.expiry(for: peer, $0) } == 600)
+    try db.write { try ConversationSetting.set(peer, seconds: 0, at: t2, $0) }
+    let rows = try db.read { try ConversationSetting.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.expirySeconds == nil)
+    #expect(rows.first?.updatedAt == t2)
+    #expect(try db.read { try ConversationSetting.expiry(for: peer, $0) } == nil)
+}
+
+@Test func expiryTableConversationSettingMissingPeerIsNil() throws {
+    let db = try AppDatabase.makeInMemory()
+    #expect(try db.read { try ConversationSetting.expiry(for: String(repeating: "e", count: 32), $0) } == nil)
+}
