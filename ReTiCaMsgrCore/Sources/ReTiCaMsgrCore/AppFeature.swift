@@ -247,8 +247,13 @@ public struct AppFeature {
         /// the Announces list shows), trimmed. nil when no conversation is open, no announce was
         /// heard, or the name is blank, so labels fall back to "Them" rather than "".
         public var openPeerDisplayName: String? {
-            guard let hex = openPeerHex,
-                  let hash = Data(hexString: hex),
+            openPeerHex.flatMap(peerDisplayName)
+        }
+
+        /// `peerHex`'s display name from its LXMF delivery announce (`learnedPeers`), trimmed; nil
+        /// when no announce was heard or the name is blank, so labels fall back to "Them".
+        public func peerDisplayName(_ hex: String) -> String? {
+            guard let hash = Data(hexString: hex),
                   let name = node.client.learnedPeers[hash]?.displayName?
                       .trimmingCharacters(in: .whitespacesAndNewlines),
                   !name.isEmpty
@@ -555,6 +560,8 @@ public struct AppFeature {
                 return .none
 
             case .backgrounded:
+                // Amendment A5: a message arriving into the open thread from now on is not viewed.
+                state.isForeground = false
                 // Flush the learned-destination table immediately instead of waiting out the
                 // debounce interval. On iOS, applicationDidEnterBackground gives the app ~5 s
                 // before the process is suspended; the debounce timer cannot run while suspended,
@@ -1079,6 +1086,18 @@ public struct AppFeature {
                     // Spec §2: one attachment per message is kept; say what was left out.
                     AppFeature.inbound.notice("attachment: kept one, dropped \(dropped, privacy: .public) other file entries from \(String(m.hash.hexString.prefix(8)), privacy: .public)")
                 }
+                // Disappearing messages (spec §3 "Receiving", amendments A1, A4, A5). Only a
+                // validated sender may set or carry a timer: an unsigned message is plain text.
+                let decodedExpiry = validated ? ExpiryWire.decode(m.fields) : nil
+                let isTimerChange = decodedExpiry?.isChange == true
+                let incomingSeconds: Int? = {
+                    guard let decoded = decodedExpiry, !decoded.isChange, decoded.seconds > 0 else { return nil }
+                    return decoded.seconds
+                }()
+                // Arriving into the open thread while the app is active is "viewed" at once.
+                let viewedNow: Date? = (incomingPeer == openPeer && state.isForeground) ? date.now : nil
+                let peerName = state.peerDisplayName(incomingPeer)
+                let receivedBody = String(decoding: m.content, as: UTF8.self)
                 let attachmentStore = self.attachmentStore
                 // Receiving gives no path back to the sender (it needed a path to US; a propagated
                 // download gives none at all), so a sender whose delivery announce we never heard
@@ -1088,7 +1107,9 @@ public struct AppFeature {
                     id: UUID(),
                     peerHex: incomingPeer,
                     isOutgoing: false,
-                    body: String(decoding: m.content, as: UTF8.self),
+                    body: isTimerChange && receivedBody.isEmpty
+                        ? ExpiryPreset.peerAnnouncement(peerName: peerName, seconds: decodedExpiry?.seconds ?? 0)
+                        : receivedBody,
                     timestamp: date.now,
                     status: MessageStatus.received,
                     validated: validated,
@@ -1101,7 +1122,12 @@ public struct AppFeature {
                     fieldKeys: MessageMetadata.fieldKeys(m.fields),
                     stampState: MessageMetadata.stampState(m),
                     replyToHash: reply?.replyTo.hexString,
-                    replyQuote: reply?.quote
+                    replyQuote: reply?.quote,
+                    expirySeconds: incomingSeconds,
+                    expiresAt: incomingSeconds.flatMap { seconds in
+                        viewedNow.map { $0.addingTimeInterval(TimeInterval(seconds)) }
+                    },
+                    isTimerChange: isTimerChange
                 )
                 let storeMessage: Effect<Action> = .run { [database] send in
                     var pendingAttachmentRow: Attachment? = nil
@@ -1127,6 +1153,23 @@ public struct AppFeature {
                     // mutable var above.
                     let attachmentRow = pendingAttachmentRow
                     try await database.write { db in
+                        if let decoded = decodedExpiry {
+                            let current = try ConversationSetting.expiry(for: incomingPeer, db) ?? 0
+                            if decoded.isChange {
+                                try ConversationSetting.set(incomingPeer, seconds: decoded.seconds, at: seenNow, db)
+                            } else if decoded.seconds != current {
+                                // Convergence after a missed change message: adopt the peer's timer
+                                // and say so, 1 ms before the message so the line sorts above it.
+                                try ConversationSetting.set(incomingPeer, seconds: decoded.seconds, at: seenNow, db)
+                                try Message.insert {
+                                    Message(id: UUID(), peerHex: incomingPeer, isOutgoing: false,
+                                            body: ExpiryPreset.peerAnnouncement(peerName: peerName, seconds: decoded.seconds),
+                                            timestamp: row.timestamp.addingTimeInterval(-0.001),
+                                            status: MessageStatus.received, validated: validated,
+                                            messageHash: "", fieldKeys: "", isTimerChange: true)
+                                }.execute(db)
+                            }
+                        }
                         try Message.insert { row }.execute(db)
                         if let attachmentRow {
                             try Attachment.insert { attachmentRow }.execute(db)
@@ -1141,6 +1184,9 @@ public struct AppFeature {
                     try await reloadConversations(database, send)
                     if incomingPeer == openPeer {
                         try await reloadThread(database, incomingPeer, send)
+                    }
+                    if row.expiresAt != nil {
+                        try await purgeAndReschedule(database, attachmentStore, now: seenNow, send)
                     }
                 }
                 return .merge(pathRequest, storeMessage)

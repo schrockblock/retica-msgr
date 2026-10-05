@@ -3839,3 +3839,206 @@ private func expirySendAndFetch(_ db: any DatabaseWriter, draft: String, expiry:
     await store.send(.conversationExpiryLoaded(peerHex: peerA, seconds: 600))
     #expect(store.state.openConversationExpiry == nil)
 }
+
+// MARK: - Disappearing messages: receive path (spec 2026-10-05 §3)
+
+private func expiryHex(_ identity: Identity) -> String {
+    LXMessage.deliveryHash(identityHash: identity.hash).hexString
+}
+
+/// Spec §3 "Receiving": the duration is stored, the row is NOT stamped (not viewed), and since no
+/// setting existed the convergence rule writes one and inserts a line above the message.
+@MainActor @Test func expiryReceiveStoresDurationUnstampedAndConvergesSetting() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me)
+    let m = wireMessage(from: sender, to: me, at: 1699999999, content: "hi", fields: ExpiryWire.encode(seconds: 600))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try await db.read { try Message.all.order(by: \.timestamp).fetchAll($0) }
+    #expect(rows.count == 2)
+    let line = try #require(rows.first)
+    let message = try #require(rows.last)
+    #expect(line.isTimerChange == true)
+    #expect(line.isOutgoing == false)
+    #expect(line.body == "Them set disappearing messages to 10 minutes")
+    #expect(line.messageHash == "")
+    #expect(line.expirySeconds == nil)
+    #expect(line.timestamp < message.timestamp)
+    #expect(message.body == "hi")
+    #expect(message.expirySeconds == 600)
+    #expect(message.expiresAt == nil)
+    #expect(message.isTimerChange == false)
+    #expect(message.fieldKeys == "0xfd")
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 600)
+}
+
+@MainActor @Test func expiryReceiveEqualSettingAddsNoLine() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me)
+    let m = wireMessage(from: sender, to: me, at: 1699999999, content: "hi", fields: ExpiryWire.encode(seconds: 600))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.expirySeconds == 600)
+}
+
+/// A timer-change message updates the setting and is stored only as the announcement row, body as
+/// received. Turning off stores NULL.
+@MainActor @Test func expiryReceiveTimerChangeUpdatesSettingAndStoresOnlyAnnouncement() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me)
+    let on = wireMessage(from: sender, to: me, at: 1699999999, content: "Disappearing messages set to 1 hour",
+                         fields: ExpiryWire.encodeChange(seconds: 3_600))
+    await store.send(.node(.client(.delegate(.messageReceived(message: on, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    var rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.isTimerChange == true)
+    #expect(rows.first?.body == "Disappearing messages set to 1 hour")
+    #expect(rows.first?.expirySeconds == nil)
+    #expect(rows.first?.expiresAt == nil)
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 3_600)
+
+    let off = wireMessage(from: sender, to: me, at: 1700000001, content: "Disappearing messages turned off",
+                          fields: ExpiryWire.encodeChange(seconds: 0))
+    await store.send(.node(.client(.delegate(.messageReceived(message: off, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    rows = try await db.read { try Message.all.order(by: \.timestamp).fetchAll($0) }
+    #expect(rows.count == 2)
+    #expect(rows.last?.isTimerChange == true)
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == nil)
+    #expect(try await db.read { try ConversationSetting.all.fetchAll($0) }.count == 1)
+}
+
+/// A change message with an empty body (a future client might send none) gets the local line text.
+@MainActor @Test func expiryReceiveTimerChangeWithEmptyBodyGetsLocalText() async throws {
+    let me = Identity()
+    let m = wireMessage(from: Identity(), to: me, at: 1699999999, content: "", fields: ExpiryWire.encodeChange(seconds: 86_400))
+    let rows = try await receiveAndFetch(m, me: me)
+    #expect(rows.count == 1)
+    #expect(rows.first?.isTimerChange == true)
+    #expect(rows.first?.body == "Them set disappearing messages to 1 day")
+}
+
+/// Spec §3: a message without the field never touches the setting (a non-honouring peer must not
+/// keep switching it off), and amendment A4: an explicit 0 on an ordinary message does converge.
+@MainActor @Test func expiryReceiveWithoutFieldLeavesSettingAloneButZeroConverges() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me)
+    let plain = wireMessage(from: sender, to: me, at: 1699999999, content: "no field")
+    await store.send(.node(.client(.delegate(.messageReceived(message: plain, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 600)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.count == 1)
+
+    // Move the frozen clock so the second message (and its convergence line, 1 ms before it)
+    // sorts after the first by timestamp.
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(5))
+    let zero = wireMessage(from: sender, to: me, at: 1700000001, content: "off now", fields: ExpiryWire.encode(seconds: 0))
+    await store.send(.node(.client(.delegate(.messageReceived(message: zero, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == nil)
+    let rows = try await db.read { try Message.all.order(by: \.timestamp).fetchAll($0) }
+    #expect(rows.count == 3)
+    #expect(rows[1].isTimerChange == true)
+    #expect(rows[1].body == "Them turned disappearing messages off")
+    #expect(rows[2].body == "off now")
+    #expect(rows[2].expirySeconds == nil)
+}
+
+/// Spec §3 "First view": a message arriving into the open thread while the app is active is
+/// viewed at once, so it is stamped on insert and the sleeper is armed.
+@MainActor @Test func expiryReceiveIntoOpenForegroundThreadStampsAtOnce() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me) { $0.openPeerHex = expiryHex(sender) }
+    let m = wireMessage(from: sender, to: me, at: 1699999999, content: "hi", fields: ExpiryWire.encode(seconds: 600))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(600) }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.expiresAt == infoT0.addingTimeInterval(600))
+    #expect(store.state.threadMessages.first?.expiresAt == infoT0.addingTimeInterval(600))
+}
+
+/// Amendment A5: the open thread is not being looked at while the app is in the background.
+@MainActor @Test func expiryReceiveIntoOpenThreadWhileBackgroundedDoesNotStamp() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me) { $0.openPeerHex = expiryHex(sender) }
+    await store.send(.backgrounded)
+    #expect(store.state.isForeground == false)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let m = wireMessage(from: sender, to: me, at: 1699999999, content: "hi", fields: ExpiryWire.encode(seconds: 600))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.expirySeconds == 600)
+    #expect(row.expiresAt == nil)
+}
+
+/// Review Focus 2: a 0xFD that is not ours leaves an ordinary text message and the setting alone.
+@MainActor @Test func expiryReceiveMalformedFieldIsPlainText() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me)
+    let m = wireMessage(from: sender, to: me, at: 1699999999, content: "hub data",
+                        fields: [.init(0xFD, .bin(Data([1, 2, 3])))])
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.body == "hub data")
+    #expect(rows.first?.expirySeconds == nil)
+    #expect(rows.first?.isTimerChange == false)
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 600)
+}
+
+/// Review Focus 1: an unvalidated sender cannot change the timer. The message is kept as text.
+@MainActor @Test func expiryReceiveUnvalidatedChangeIsPlainText() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me)
+    let m = wireMessage(from: sender, to: me, at: 1699999999, content: "Disappearing messages turned off",
+                        fields: ExpiryWire.encodeChange(seconds: 0))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: false, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.isTimerChange == false)
+    #expect(rows.first?.body == "Disappearing messages turned off")
+    #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 600)
+}
