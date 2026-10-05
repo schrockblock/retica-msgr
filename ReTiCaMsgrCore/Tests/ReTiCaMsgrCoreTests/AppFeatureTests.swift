@@ -4495,3 +4495,16 @@ private func expiryFixReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage) 
     #expect(rows.first?.body == "Them set disappearing messages to 30 seconds")
     #expect(try await db.read { try ConversationSetting.expiry(for: expiryHex(sender), $0) } == 30)
 }
+
+/// A14: re-picking the timer already in force is a no-op. Exhaustive, so any effect would fail it.
+@MainActor @Test func expiryFixReselectingCurrentValueSendsNothing() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.openConversationExpiry = 3_600
+    }
+    store.exhaustivity = .on
+    await store.send(.expirySelected(seconds: 3_600))
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    #expect(try await db.read { try ConversationSetting.all.fetchAll($0) }.isEmpty)
+}

@@ -1286,6 +1286,8 @@ public struct AppFeature {
             case let .expirySelected(seconds):
                 guard let peerHex = state.openPeerHex, let peer = Data(hexString: peerHex) else { return .none }
                 let seconds = ExpiryWire.clamp(seconds)
+                // Amendment A14: picking the value already in force sends and stores nothing.
+                guard seconds != (state.openConversationExpiry ?? 0) else { return .none }
                 state.openConversationExpiry = seconds > 0 ? seconds : nil
                 let now = date.now
                 let alsoViaPropagation = !state.propagationNodeHex.isEmpty
