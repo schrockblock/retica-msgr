@@ -159,6 +159,9 @@ struct ChatView: View {
             .padding(.trailing)
             .padding(.leading, 8)
         }
+        // Amendment A11: a message is "viewed" only while this screen is actually showing.
+        .onAppear { store.send(.chatAppeared) }
+        .onDisappear { store.send(.chatDisappeared) }
         .safeAreaInset(edge: .top) {
             let transfers = store.inboundTransfersForOpenThread
             if !transfers.isEmpty {

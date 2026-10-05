@@ -170,6 +170,11 @@ public struct AppFeature {
         /// "viewed" only while this is true. Starts true: a launch is a foreground launch unless
         /// `.backgrounded` says otherwise, and a push-wake launch has no open thread anyway.
         public var isForeground = true
+        /// Whether ChatView is on screen (amendment A11). `openPeerHex` stays set while the user is
+        /// on another tab, so arrival and foreground stamping also require this. Set by opening or
+        /// starting a conversation and `.chatAppeared`, cleared by `.closeConversation` and
+        /// `.chatDisappeared`. Session-only.
+        public var chatVisible = false
         // The Send gate: peers a send would route to right now (live learned path; from pathLearned
         // and seedReachablePeers). A peer outside it gets a path request on receipt / open
         // (`pathRequestIfUnreachable`); the answer lands here via pathLearned. Session-only.
@@ -284,6 +289,11 @@ public struct AppFeature {
         case openConversation(String)
         case closeConversation
         case startConversation(String)
+        /// ChatView's onAppear: the open thread is on screen again (back from another tab), so its
+        /// unstamped rows are viewed now.
+        case chatAppeared
+        /// ChatView's onDisappear: the open thread is no longer on screen.
+        case chatDisappeared
         case setNodeMode(Bool)
         case setRelayMode(Bool)
         case setPropagationNode(String)
@@ -522,13 +532,7 @@ public struct AppFeature {
                 // Disappearing messages: the open thread is being looked at again (first view for
                 // rows that arrived while suspended), and rows that fell due meanwhile go now.
                 state.isForeground = true
-                let openPeer = state.openPeerHex
-                let expiryCatchUp: Effect<Action> = .run { [database, attachmentStore, now = date.now] send in
-                    if let openPeer, try await stampViewed(database, openPeer, now: now) > 0 {
-                        try await reloadThread(database, openPeer, send)
-                    }
-                    try await purgeAndReschedule(database, attachmentStore, now: now, send)
-                }
+                let expiryCatchUp = viewOpenThreadEffect(state)
                 return .merge(redialIfTCPDown(&state), .send(.push(.drainInbox)), expiryCatchUp)
 
             case .pushWake:
@@ -716,6 +720,7 @@ public struct AppFeature {
 
             case let .openConversation(peerHex):
                 state.openPeerHex = peerHex
+                state.chatVisible = true
                 // Review fix: a target from the previous conversation must not survive the switch —
                 // it would point at a message the new thread doesn't even contain.
                 state.replyTarget = nil
@@ -740,6 +745,7 @@ public struct AppFeature {
 
             case .closeConversation:
                 state.openPeerHex = nil
+                state.chatVisible = false
                 state.threadMessages = []
                 state.setThreadReactionRows([])
                 state.attachmentsByMessageId = [:]
@@ -755,6 +761,7 @@ public struct AppFeature {
             case let .startConversation(hex):
                 guard let data = Data(hexString: hex), data.count == 16 else { return .none }
                 state.openPeerHex = hex
+                state.chatVisible = true
                 // Review fix: same as `openConversation` — clear any stale target from before.
                 state.replyTarget = nil
                 state.pendingAttachment = nil
@@ -771,6 +778,15 @@ public struct AppFeature {
                     },
                     state.pathRequestIfUnreachable(hex)
                 )
+
+            case .chatAppeared:
+                // Back on the chat from another tab: what arrived meanwhile is viewed now (A11).
+                state.chatVisible = true
+                return viewOpenThreadEffect(state)
+
+            case .chatDisappeared:
+                state.chatVisible = false
+                return .none
 
             case .sendTapped:
                 let text = state.draft
@@ -1118,8 +1134,9 @@ public struct AppFeature {
                     guard let decoded = decodedExpiry, !decoded.isChange, decoded.seconds > 0 else { return nil }
                     return decoded.seconds
                 }()
-                // Arriving into the open thread while the app is active is "viewed" at once.
-                let viewedNow: Date? = (incomingPeer == openPeer && state.isForeground) ? date.now : nil
+                // Arriving into the open thread while the app is active and the chat is on screen
+                // (amendment A11) is "viewed" at once.
+                let viewedNow: Date? = (incomingPeer == openPeer && state.isForeground && state.chatVisible) ? date.now : nil
                 let peerName = state.peerDisplayName(incomingPeer)
                 // Captured by value for the effect: when the sender says it wrote the message (A10).
                 let senderTime = MessageMetadata.senderTimestamp(m.timestamp)
@@ -1671,6 +1688,21 @@ public struct AppFeature {
             }
             if !ordered.isEmpty { effects.append(.concatenate(ordered)) }
             return effects.isEmpty ? .none : .merge(effects)
+        }
+    }
+
+    /// The open thread is being looked at again (`.foregrounded`, `.chatAppeared`): stamp its
+    /// unstamped rows (first view, spec §3) and reload it if any changed, but only while ChatView is
+    /// on screen (amendment A11). Rows that fell due meanwhile are purged and the sleeper re-armed
+    /// either way.
+    private func viewOpenThreadEffect(_ state: State) -> Effect<Action> {
+        let openPeer = state.openPeerHex
+        let chatVisible = state.chatVisible
+        return .run { [database, attachmentStore, now = date.now] send in
+            if let openPeer, chatVisible, try await stampViewed(database, openPeer, now: now) > 0 {
+                try await reloadThread(database, openPeer, send)
+            }
+            try await purgeAndReschedule(database, attachmentStore, now: now, send)
         }
     }
 

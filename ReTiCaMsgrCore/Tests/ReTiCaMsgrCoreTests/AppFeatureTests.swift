@@ -3977,7 +3977,10 @@ private func expiryHex(_ identity: Identity) -> String {
     let me = Identity()
     let sender = Identity()
     try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
-    let store = makeStore(db, identity: me) { $0.openPeerHex = expiryHex(sender) }
+    let store = makeStore(db, identity: me) { s in
+        s.openPeerHex = expiryHex(sender)
+        s.chatVisible = true
+    }
     let m = wireMessage(from: sender, to: me, at: 1699999999, content: "hi", fields: ExpiryWire.encode(seconds: 600))
     await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
     await store.receive { action in
@@ -3997,7 +4000,10 @@ private func expiryHex(_ identity: Identity) -> String {
     let me = Identity()
     let sender = Identity()
     try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
-    let store = makeStore(db, identity: me) { $0.openPeerHex = expiryHex(sender) }
+    let store = makeStore(db, identity: me) { s in
+        s.openPeerHex = expiryHex(sender)
+        s.chatVisible = true
+    }
     await store.send(.backgrounded)
     #expect(store.state.isForeground == false)
     await store.finish()
@@ -4205,6 +4211,7 @@ private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt:
     ])
     let store = makeStore(db, identity: Identity()) { s in
         s.openPeerHex = peerA
+        s.chatVisible = true
         s.isForeground = false
     }
     await store.send(.foregrounded) {
@@ -4246,7 +4253,10 @@ private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt:
 @MainActor @Test func expiryTimerBackgroundedClearsForegroundFlagAndStampsNothing() async throws {
     let db = try! AppDatabase.makeInMemory()
     try! await seed(db, [expiryTimerRow(1, peerA, seconds: 60, expiresAt: nil)])
-    let store = makeStore(db, identity: Identity()) { $0.openPeerHex = peerA }
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.chatVisible = true
+    }
     #expect(store.state.isForeground == true)
     await store.send(.backgrounded) { $0.isForeground = false }
     await store.finish()
@@ -4262,6 +4272,7 @@ private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt:
     try! await seed(db, [expiryTimerRow(1, peerA, seconds: 60, expiresAt: nil)])
     let store = makeStore(db, identity: Identity()) { s in
         s.openPeerHex = peerA
+        s.chatVisible = true
         s.isForeground = false
     }
     await store.send(.foregrounded) {
@@ -4358,4 +4369,74 @@ private func expiryFixReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage) 
     await store.finish()
     await store.skipReceivedActions(strict: false)
     #expect(try await db.read { try ConversationSetting.expiry(for: senderHex, $0) } == nil)
+}
+
+/// A11: the thread is open but the user is on another tab, so an arrival is not viewed.
+@MainActor @Test func expiryFixArrivalWhileChatHiddenDoesNotStamp() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me) { $0.openPeerHex = expiryHex(sender) }
+    #expect(store.state.isForeground == true)
+    #expect(store.state.chatVisible == false)
+    await expiryFixReceive(store, wireMessage(from: sender, to: me, at: 1699999999, content: "hi",
+                                              fields: ExpiryWire.encode(seconds: 600)))
+    let row = try #require(try await db.read { try Message.where { !$0.isTimerChange }.fetchAll($0) }.first)
+    #expect(row.expirySeconds == 600)
+    #expect(row.expiresAt == nil)
+}
+
+/// A11: coming back to the chat is the first view of what arrived meanwhile, and arms the sleeper.
+@MainActor @Test func expiryFixChatAppearedStampsAndArmsSleeper() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [expiryTimerRow(1, peerA, seconds: 60, expiresAt: nil)])
+    let store = makeStore(db, identity: Identity()) { $0.openPeerHex = peerA }
+    await store.send(.chatAppeared) { $0.chatVisible = true }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(60) }
+        return false
+    }
+    #expect(store.state.threadMessages.map(\.expiresAt) == [infoT0.addingTimeInterval(60)])
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.expiresAt == infoT0.addingTimeInterval(60))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+/// A11: leaving the chat screen, by tab switch or by closing the conversation, hides it.
+@MainActor @Test func expiryFixChatDisappearedClearsVisibility() async throws {
+    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
+    await store.send(.openConversation(peerA)) { $0.chatVisible = true }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    await store.send(.chatDisappeared) { $0.chatVisible = false }
+    #expect(store.state.chatVisible == false)
+    await store.send(.chatAppeared) { $0.chatVisible = true }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    await store.send(.closeConversation) { $0.chatVisible = false }
+    #expect(store.state.chatVisible == false)
+}
+
+/// A11: foregrounding onto another tab stamps nothing in the open thread, but still purges.
+@MainActor @Test func expiryFixForegroundWithChatHiddenStampsNothing() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [expiryTimerRow(1, peerA, seconds: 60, expiresAt: nil)])
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.isForeground = false
+    }
+    await store.send(.foregrounded) {
+        $0.connection = .connecting
+        $0.isForeground = true
+    }
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == nil }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.expiresAt == nil)
 }
