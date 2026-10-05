@@ -4522,3 +4522,29 @@ private func expiryFixReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage) 
     #expect(rows.first?.isTimerChange == true)
     #expect(try await db.read { try Attachment.all.fetchAll($0) }.isEmpty)
 }
+
+/// The sleeper does not fire before the earliest expiry: one second short of it, an exhaustive
+/// probe shows no `.expiryDue` has arrived, and the last second delivers it.
+@MainActor @Test func expiryFixSleeperDoesNotFireEarly() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let clock = TestClock()
+    try! await seed(db, [expiryTimerRow(1, peerA, seconds: 30, expiresAt: infoT0.addingTimeInterval(30))])
+    let store = makeStore(db, identity: Identity(), clock: clock)
+    await store.send(.openConversation(peerA))
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(30) }
+        return false
+    }
+    await store.skipReceivedActions(strict: false)
+
+    store.exhaustivity = .on
+    await clock.advance(by: .seconds(29))
+    await store.send(.chatDisappeared) { $0.chatVisible = false }
+
+    store.exhaustivity = .off
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(30))
+    await clock.advance(by: .seconds(1))
+    await store.receive { if case .expiryDue = $0 { return true }; return false }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
