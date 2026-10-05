@@ -166,3 +166,18 @@ debugging" for the recipes):
 - `rnpath`/`rnprobe` against the hub report "not found"/"timed out" even when the path exists,
   because the shared instance answers local path requests only from its announce cache, which
   misses. `rnpath -t` (full table) is the authoritative check.
+
+## Disappearing messages (2026-10-05)
+
+Left out by design (spec "Out of scope"): read receipts, a live countdown on bubbles, manual
+delete-message and delete-conversation (the `MessagePurge` primitives make both small), groups.
+Follow-ups noticed while implementing:
+
+- A timer change selected while the peer is unreachable is blocked in the UI only; the reducer
+  would send it and let it fail, as reactions do.
+- The convergence line uses the peer's announce display name at receive time; a later announce
+  with a new name does not rewrite earlier lines.
+- `isForeground` starts true, so a push-wake launch counts as foreground until the first
+  `.backgrounded`; harmless today because no thread can be open then.
+- The Simulator cannot reach a peer, so the toolbar menu, the system line after choosing a preset, the title subtitle and the bubble glyph after a send were only code-reviewed, never seen. Check them on a device with a reachable ReTiCaMsgr peer, and check ChatTitle for clipping with a long title plus "4 weeks".
+- Test-helper duplication left by the plan: MessageInfoTests' expiryInfo helpers duplicate the file's info(_:)/utc/peer32/hash64; ExpiryPreset.swift has an unused import Foundation and rebuilds its units array per call.
