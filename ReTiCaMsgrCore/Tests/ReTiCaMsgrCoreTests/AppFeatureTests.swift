@@ -4254,3 +4254,26 @@ private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt:
     let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
     #expect(row.expiresAt == nil)
 }
+
+/// Foreground with nothing due still reloads the thread after stamping, so the stamped rows
+/// reach the UI without waiting for a later purge or load.
+@MainActor @Test func expiryTimerForegroundReloadsThreadAfterStampingWhenNothingIsDue() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [expiryTimerRow(1, peerA, seconds: 60, expiresAt: nil)])
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.isForeground = false
+    }
+    await store.send(.foregrounded) {
+        $0.connection = .connecting
+        $0.isForeground = true
+    }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(60) }
+        return false
+    }
+    #expect(store.state.threadMessages.map(\.expiresAt) == [infoT0.addingTimeInterval(60)])
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
