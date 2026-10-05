@@ -1330,12 +1330,12 @@ Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-5.txt`
 ### Task 6: AppFeature — receiving
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (`State.displayName(ofPeerHex:)`, `.messageReceived`)
+- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (`State.peerDisplayName(_:)`, `.messageReceived`)
 - Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: Task 5's state and helpers; `ExpiryWire.decode`; `ExpiryPreset.peerAnnouncement`; `ConversationSetting`.
-- Produces: `State.displayName(ofPeerHex:) -> String?` (public; `openPeerDisplayName` delegates to it).
+- Produces: `State.peerDisplayName(_:) -> String?` (public; `openPeerDisplayName` delegates to it).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1552,18 +1552,18 @@ private func expiryHex(_ identity: Identity) -> String {
 Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryReceive > /tmp/ReTiCaMsgr/exp-t6-red.log 2>&1`
 Expected: compiles (everything referenced exists) and the tests FAIL on counts, `expirySeconds == nil`, or the setting.
 
-- [ ] **Step 3: `displayName(ofPeerHex:)`**
+- [ ] **Step 3: `peerDisplayName(_:)`**
 
 In `AppFeature.State`, replace `openPeerDisplayName`'s body so it delegates, and add the general form:
 
 ```swift
         public var openPeerDisplayName: String? {
-            openPeerHex.flatMap(displayName(ofPeerHex:))
+            openPeerHex.flatMap(peerDisplayName)
         }
 
         /// `peerHex`'s display name from its LXMF delivery announce (`learnedPeers`), trimmed; nil
         /// when no announce was heard or the name is blank, so labels fall back to "Them".
-        public func displayName(ofPeerHex hex: String) -> String? {
+        public func peerDisplayName(_ hex: String) -> String? {
             guard let hash = Data(hexString: hex),
                   let name = node.client.learnedPeers[hash]?.displayName?
                       .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1588,7 +1588,7 @@ After `let decodedAttachment = AttachmentWire.decode(m.fields)` block (after the
                 }()
                 // Arriving into the open thread while the app is active is "viewed" at once.
                 let viewedNow: Date? = (incomingPeer == openPeer && state.isForeground) ? date.now : nil
-                let peerName = state.displayName(ofPeerHex: incomingPeer)
+                let peerName = state.peerDisplayName(incomingPeer)
                 let receivedBody = String(decoding: m.content, as: UTF8.self)
 ```
 
