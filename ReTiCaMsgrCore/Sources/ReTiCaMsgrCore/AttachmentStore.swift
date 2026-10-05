@@ -105,6 +105,16 @@ public struct AttachmentStore: Sendable {
         return destination
     }
 
+    /// Removes the export copies of one attachment (`exportDirectory/<id>/`). Called by the purge:
+    /// the system clears tmp on its own schedule, which is too late for a message that was meant to
+    /// disappear. A missing directory is fine; a failed removal is swallowed (nothing to do about it
+    /// here, and the row must still go).
+    public func deleteExports(for attachment: Attachment) {
+        let directory = exportDirectory.appending(path: attachment.id.uuidString)
+        guard fileExists(directory) else { return }
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     /// Checks file existence using the undecoded path property (not percent-encoded).
     /// `FileManager.fileExists(atPath:)` expects a literal path, not a percent-encoded one.
     private func fileExists(_ url: URL) -> Bool {
