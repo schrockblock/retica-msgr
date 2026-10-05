@@ -47,63 +47,69 @@ struct ChatView: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 List(store.threadMessages) { message in
-                    let reactions = store.threadReactions[message.messageHash] ?? []
-                    // A reply to a caption-less photo or file in the thread quotes its placeholder.
-                    let replyPreview = ReplyPreview.resolve(for: message, in: store.threadMessages, peerName: peerName,
-                                                            attachments: store.attachmentsByMessageId)
-                    let attachment = store.attachmentsByMessageId[message.id]
-                    // A sending message shows the bar from the start: 0 until the first report,
-                    // which the bar draws as indeterminate ("waiting for link").
-                    let progress = message.isOutgoing && message.status == MessageStatus.sending
-                        ? store.outgoingProgress[message.messageHash] ?? 0 : nil
-                    MessageBubble(
-                        message: message,
-                        reactions: reactions,
-                        replyPreview: replyPreview,
-                        attachment: attachment,
-                        attachmentURL: attachment.flatMap(attachmentStore.url(for:)),
-                        progress: attachment != nil ? progress : nil,
-                        isHighlighted: highlightedMessageID == message.id,
-                        onQuoteTap: { showOriginal($0, proxy: proxy) },
-                        onImageTap: { a, url in
-                            viewerTarget = ViewerTarget(attachment: a, url: url, shareURL: shareableURL(for: a, stored: url))
-                        },
-                        onFileTap: { a, url in quickLookURL = shareableURL(for: a, stored: url) }
-                    )
-                    .id(message.id)
-                    .listRowSeparator(.hidden)
-                    .contextMenu {
-                        if !message.messageHash.isEmpty {
-                            ReactionPaletteMenu(
-                                current: reactions.first(where: \.includesMe)?.emoji,
-                                onSelect: { store.send(.reactionSelected(messageHash: message.messageHash, emoji: $0)) },
-                                onMore: { pickerTarget = PickerTarget(messageHash: message.messageHash) }
-                            )
-                            .disabled(!peerReachable)
-                            // Not gated on reachability: composing works offline, and Send is gated itself.
-                            Button("Reply", systemImage: "arrowshape.turn.up.left") {
-                                store.send(.replyTapped(message.id))
-                                draftFocused = true
+                    if message.isTimerChange {
+                        TimerChangeLine(text: message.body)
+                            .id(message.id)
+                            .listRowSeparator(.hidden)
+                    } else {
+                        let reactions = store.threadReactions[message.messageHash] ?? []
+                        // A reply to a caption-less photo or file in the thread quotes its placeholder.
+                        let replyPreview = ReplyPreview.resolve(for: message, in: store.threadMessages, peerName: peerName,
+                                                                attachments: store.attachmentsByMessageId)
+                        let attachment = store.attachmentsByMessageId[message.id]
+                        // A sending message shows the bar from the start: 0 until the first report,
+                        // which the bar draws as indeterminate ("waiting for link").
+                        let progress = message.isOutgoing && message.status == MessageStatus.sending
+                            ? store.outgoingProgress[message.messageHash] ?? 0 : nil
+                        MessageBubble(
+                            message: message,
+                            reactions: reactions,
+                            replyPreview: replyPreview,
+                            attachment: attachment,
+                            attachmentURL: attachment.flatMap(attachmentStore.url(for:)),
+                            progress: attachment != nil ? progress : nil,
+                            isHighlighted: highlightedMessageID == message.id,
+                            onQuoteTap: { showOriginal($0, proxy: proxy) },
+                            onImageTap: { a, url in
+                                viewerTarget = ViewerTarget(attachment: a, url: url, shareURL: shareableURL(for: a, stored: url))
+                            },
+                            onFileTap: { a, url in quickLookURL = shareableURL(for: a, stored: url) }
+                        )
+                        .id(message.id)
+                        .listRowSeparator(.hidden)
+                        .contextMenu {
+                            if !message.messageHash.isEmpty {
+                                ReactionPaletteMenu(
+                                    current: reactions.first(where: \.includesMe)?.emoji,
+                                    onSelect: { store.send(.reactionSelected(messageHash: message.messageHash, emoji: $0)) },
+                                    onMore: { pickerTarget = PickerTarget(messageHash: message.messageHash) }
+                                )
+                                .disabled(!peerReachable)
+                                // Not gated on reachability: composing works offline, and Send is gated itself.
+                                Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                                    store.send(.replyTapped(message.id))
+                                    draftFocused = true
+                                }
                             }
-                        }
-                        if message.isOutgoing, message.status == MessageStatus.sending, !message.messageHash.isEmpty {
-                            Button("Cancel Send", systemImage: "xmark.circle", role: .destructive) {
-                                store.send(.cancelSendTapped(message.id))
+                            if message.isOutgoing, message.status == MessageStatus.sending, !message.messageHash.isEmpty {
+                                Button("Cancel Send", systemImage: "xmark.circle", role: .destructive) {
+                                    store.send(.cancelSendTapped(message.id))
+                                }
                             }
-                        }
-                        Button("Info", systemImage: "info.circle") {
-                            infoTarget = InfoTarget(id: message.id)
-                        }
-                        // A caption-less photo or file has no text to copy.
-                        if !message.body.isEmpty {
-                            Button("Copy", systemImage: "doc.on.doc") {
-                                UIPasteboard.general.string = message.body
+                            Button("Info", systemImage: "info.circle") {
+                                infoTarget = InfoTarget(id: message.id)
                             }
+                            // A caption-less photo or file has no text to copy.
+                            if !message.body.isEmpty {
+                                Button("Copy", systemImage: "doc.on.doc") {
+                                    UIPasteboard.general.string = message.body
+                                }
+                            }
+                        } preview: {
+                            BubbleText(message: message, replyPreview: replyPreview,
+                                       attachment: attachment, attachmentURL: attachment.flatMap(attachmentStore.url(for:)))
+                                .padding(8)
                         }
-                    } preview: {
-                        BubbleText(message: message, replyPreview: replyPreview,
-                                   attachment: attachment, attachmentURL: attachment.flatMap(attachmentStore.url(for:)))
-                            .padding(8)
                     }
                 }
                 .listStyle(.plain)
@@ -159,7 +165,16 @@ struct ChatView: View {
                 ReceivingCapsule(transfers: transfers).padding(.top, 4)
             }
         }
-        .navigationTitle(store.openPeerHex.map(shortHex) ?? "Chat")
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                ChatTitle(title: store.openPeerHex.map(shortHex) ?? "Chat", expiry: store.openConversationExpiry)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                ExpiryMenu(current: store.openConversationExpiry) { store.send(.expirySelected(seconds: $0)) }
+                    // The change has to reach the peer, so it is gated like the reaction palette.
+                    .disabled(!peerReachable)
+            }
+        }
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $pickerTarget) { target in
             EmojiPickerSheet { emoji in
@@ -247,10 +262,19 @@ struct MessageBubble: View {
                         .padding(.top, -10)
                         .padding(.horizontal, 8)
                 }
-                if message.isOutgoing {
-                    Text(message.status)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                if message.isOutgoing || message.expirySeconds != nil {
+                    HStack(spacing: 4) {
+                        if message.expirySeconds != nil {
+                            // Spec §4: a static glyph, no live countdown.
+                            Image(systemName: "timer")
+                                .accessibilityLabel("Disappearing message")
+                        }
+                        if message.isOutgoing {
+                            Text(message.status)
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
             }
             if !message.isOutgoing { Spacer() }
