@@ -48,7 +48,7 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 List(store.threadMessages) { message in
                     if message.isTimerChange {
-                        TimerChangeLine(text: message.body)
+                        TimerChangeLine(text: message.body, status: message.isOutgoing ? message.status : nil)
                             .id(message.id)
                             .listRowSeparator(.hidden)
                     } else {

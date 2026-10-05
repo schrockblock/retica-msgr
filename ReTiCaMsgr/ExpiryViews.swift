@@ -55,17 +55,30 @@ struct ChatTitle: View {
 }
 
 /// A timer-change announcement: a centred, secondary single line instead of a bubble. No context
-/// menu, no reactions, no reply.
+/// menu, no reactions, no reply. An outgoing change shows its send status until it is delivered
+/// or propagated (amendment A14): a change that never reached the peer has not taken effect there.
 struct TimerChangeLine: View {
     let text: String
+    var status: String? = nil
+
+    private var visibleStatus: String? {
+        guard let status, status != MessageStatus.delivered, status != MessageStatus.propagated else { return nil }
+        return status
+    }
 
     var body: some View {
         HStack {
             Spacer()
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            Group {
+                if let visibleStatus {
+                    Text("\(text)\(Text(" · \(visibleStatus)").font(.caption2))")
+                } else {
+                    Text(text)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
             Spacer()
         }
         .padding(.vertical, 4)
