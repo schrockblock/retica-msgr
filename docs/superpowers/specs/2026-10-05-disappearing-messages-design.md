@@ -301,3 +301,29 @@ win.
   A change message never stores an attachment (its row renders as a line with no attachment view).
   An outgoing change line shows its send status beside the text until it is delivered or
   propagated.
+
+## Amendments from the follow-up pass (2026-10-05)
+
+The deferred items from the final review, fixed on `fix/disappearing-followups`.
+
+- **A15. The sleeper tracks its armed deadline.** `State.armedExpiry` holds the deadline the
+  sleeper waits for. A purge completion re-arms only when nothing is armed or its `nextDue` is
+  earlier; a completion with nothing due, or with a later deadline, is left alone because it may be
+  stale (two purges racing). `.expiryDue` clears the deadline before purging. A completion whose
+  deadline is already past arms a zero-delay sleeper rather than waiting for the next trigger.
+  `MessagePurge` reads only `id` and `messageHash` of the due rows and takes the next deadline as
+  `MIN(expiresAt)` over a new partial index on `messages.expiresAt` (migration `addExpiresAtIndex`),
+  replacing A3's Swift-side scan.
+- **A16. A send reads the stored timer until the thread's setting has loaded.**
+  `State.openConversationExpiryLoaded` is false from `.openConversation`/`.startConversation` until
+  `conversationExpiryLoaded` lands (and true right after `expirySelected`). While false, the send
+  effect reads `ConversationSetting.expiry` from the database; once true, the state value is
+  authoritative, so a pick that has not yet been written is still honoured. Both send paths build
+  the message inside their effect.
+- **A17. Smaller rulings.** The toolbar menu is no longer gated on reachability (replaces A6): the
+  pick applies locally at once, the change line shows a failed send, and every later message carries
+  the timer so the peer converges anyway. Launch deletes reaction rows whose target message is gone
+  and whose `sentAt` is older than 24 hours (`Reaction.pruneOrphans`), leaving fresh orphans for
+  messages still in flight. The purge hands the ids of deleted attachment rows to
+  `AttachmentCacheEvictor`, which the app wires to `ThumbnailCache.evict(attachmentIds:)`, so decoded
+  images leave memory with their files.

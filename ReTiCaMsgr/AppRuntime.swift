@@ -115,6 +115,10 @@ final class AppRuntime {
             }
             // The package's liveValue only reports an issue: the app owns UIKit.
             $0.pushPlatform = .uiKit
+            // A purged attachment's decoded images leave the app's cache with its file (A17).
+            $0.attachmentCacheEvictor = AttachmentCacheEvictor { ids in
+                await ThumbnailCache.shared.evict(attachmentIds: ids)
+            }
         }
         self.store = store
         store.send(.onLaunch)

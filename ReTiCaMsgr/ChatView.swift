@@ -173,9 +173,10 @@ struct ChatView: View {
                 ChatTitle(title: store.openPeerHex.map(shortHex) ?? "Chat", expiry: store.openConversationExpiry)
             }
             ToolbarItem(placement: .topBarTrailing) {
+                // Not gated on reachability (amendment A17): the pick applies here at once, the
+                // change line shows if its message failed, and every later message carries the
+                // timer, so the peer converges even when the change itself never arrived.
                 ExpiryMenu(current: store.openConversationExpiry) { store.send(.expirySelected(seconds: $0)) }
-                    // The change has to reach the peer, so it is gated like the reaction palette.
-                    .disabled(!peerReachable)
             }
         }
         .navigationBarTitleDisplayMode(.inline)

@@ -151,6 +151,12 @@ public enum AppDatabase {
                 t.column("updatedAt", .datetime).notNull()
             }
         }
+        m.registerMigration("addExpiresAtIndex") { db in
+            // The purge selects due rows and the next deadline by `expiresAt` on every send,
+            // arrival, thread open and sleeper wake (amendment A15). Partial on non-NULL so the
+            // index holds only the rows with a timer.
+            try db.execute(sql: "CREATE INDEX messages_expiresAt ON messages(expiresAt) WHERE expiresAt IS NOT NULL")
+        }
         return m
     }
 

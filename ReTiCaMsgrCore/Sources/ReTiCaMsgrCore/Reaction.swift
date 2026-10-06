@@ -35,4 +35,21 @@ public struct Reaction: Equatable, Sendable {
         try Reaction.insert { r }.execute(db)
         return true
     }
+
+    /// How long an orphan (a reaction with no stored target message) is kept before launch prunes
+    /// it (amendment A17). Reactions can legitimately arrive before their message over a mesh, so
+    /// a fresh orphan is a message still on its way, not a leftover of a purged one.
+    public static let orphanGraceInterval: TimeInterval = 24 * 60 * 60
+
+    /// Deletes reactions whose target message no longer exists and whose `sentAt` is before
+    /// `cutoff` (seconds since 1970). The target of a purged disappearing message is one such case.
+    public static func pruneOrphans(olderThan cutoff: Double, _ db: GRDB.Database) throws {
+        try db.execute(
+            sql: """
+                DELETE FROM reactions
+                WHERE sentAt < ? AND messageHash NOT IN (SELECT messageHash FROM messages)
+                """,
+            arguments: [cutoff]
+        )
+    }
 }

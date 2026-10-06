@@ -377,3 +377,10 @@ private func expiryTableMessage(_ id: String, hash: String, expirySeconds: Int? 
     let db = try AppDatabase.makeInMemory()
     #expect(try db.read { try ConversationSetting.expiry(for: String(repeating: "e", count: 32), $0) } == nil)
 }
+
+/// Amendment A15: the purge selects by `expiresAt` on every trigger, so the column is indexed.
+@Test func expiryFollowupExpiresAtIsIndexed() throws {
+    let db = try AppDatabase.makeInMemory()
+    let indexes = try db.read { try $0.indexes(on: "messages") }
+    #expect(indexes.contains { $0.columns == ["expiresAt"] })
+}

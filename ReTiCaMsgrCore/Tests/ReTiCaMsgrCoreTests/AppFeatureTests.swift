@@ -3442,7 +3442,9 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
         // advanced yet, so nothing else can have arrived before it). `reloadThread` now also
         // carries the (absent) conversation timer alongside the thread's messages.
         await store.receive(.threadLoaded([], reactions: [], attachments: []))
-        await store.receive(.conversationExpiryLoaded(peerHex: peerB, seconds: nil))
+        await store.receive(.conversationExpiryLoaded(peerHex: peerB, seconds: nil)) {
+            $0.openConversationExpiryLoaded = true
+        }
         // Disappearing messages: opening/starting a thread also purges and arms the sleeper.
         await store.receive(.expiryPurgeCompleted(purged: 0, nextDue: nil))
         await clock.advance(by: .milliseconds(1))
@@ -3695,7 +3697,9 @@ private func expirySendAndFetch(_ db: any DatabaseWriter, draft: String, expiry:
     let store = makeStore(db, identity: Identity(), attachmentStore: attachmentStore) { s in
         s.openPeerHex = peerA
         s.draft = draft
+        // The thread's setting has "loaded": `expiry` is authoritative for the send (A16).
         s.openConversationExpiry = expiry
+        s.openConversationExpiryLoaded = true
         configure?(&s)
     }
     await store.send(.sendTapped)
@@ -4547,4 +4551,210 @@ private func expiryFixReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage) 
     await store.receive { if case .expiryDue = $0 { return true }; return false }
     await store.finish()
     await store.skipReceivedActions(strict: false)
+}
+
+// MARK: - Disappearing messages: deferred follow-ups (spec amendments A15 to A17)
+
+/// Arm the sleeper by opening peerA's thread with one row due at `+seconds`, and consume the
+/// completion that armed it.
+@MainActor
+private func expiryFollowupArm(_ db: any DatabaseWriter, clock: TestClock<Duration>, dueIn seconds: Int)
+    async -> TestStoreOf<AppFeature> {
+    try! await seed(db, [expiryTimerRow(1, peerA, seconds: seconds, expiresAt: infoT0.addingTimeInterval(TimeInterval(seconds)))])
+    let store = makeStore(db, identity: Identity(), clock: clock)
+    await store.send(.openConversation(peerA))
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(TimeInterval(seconds)) }
+        return false
+    }
+    await store.skipReceivedActions(strict: false)
+    return store
+}
+
+/// A15: a completion with nothing due may be stale (a purge that read before a newer stamp). It
+/// must not cancel the live sleeper, which fires, purges and clears the armed deadline itself.
+@MainActor @Test func expiryFollowupStaleNilCompletionKeepsSleeperArmed() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let clock = TestClock()
+    let store = await expiryFollowupArm(db, clock: clock, dueIn: 30)
+    #expect(store.state.armedExpiry == infoT0.addingTimeInterval(30))
+
+    await store.send(.expiryPurgeCompleted(purged: 0, nextDue: nil))
+    #expect(store.state.armedExpiry == infoT0.addingTimeInterval(30))
+
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(30))
+    await clock.advance(by: .seconds(30))
+    await store.receive { if case .expiryDue = $0 { return true }; return false }
+    #expect(store.state.armedExpiry == nil)
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 1 && nextDue == nil }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+}
+
+/// A15: a completion naming a LATER deadline than the armed one does not postpone the sleeper.
+@MainActor @Test func expiryFollowupLaterCompletionDoesNotPostponeSleeper() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let clock = TestClock()
+    let store = await expiryFollowupArm(db, clock: clock, dueIn: 30)
+
+    await store.send(.expiryPurgeCompleted(purged: 0, nextDue: infoT0.addingTimeInterval(60)))
+    #expect(store.state.armedExpiry == infoT0.addingTimeInterval(30))
+
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(30))
+    await clock.advance(by: .seconds(30))
+    await store.receive { if case .expiryDue = $0 { return true }; return false }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+/// A15: a completion whose deadline is already in the past still arms a sleeper, which fires at
+/// once rather than leaving the due row until the next trigger.
+@MainActor @Test func expiryFollowupPastDueCompletionFiresImmediately() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let clock = TestClock()
+    try! await seed(db, [expiryTimerRow(1, peerA, seconds: 5, expiresAt: infoT0.addingTimeInterval(-1))])
+    let store = makeStore(db, identity: Identity(), clock: clock)
+    await store.send(.expiryPurgeCompleted(purged: 0, nextDue: infoT0.addingTimeInterval(-1)))
+    await clock.advance(by: .zero)
+    await store.receive { if case .expiryDue = $0 { return true }; return false }
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 1 && nextDue == nil }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+}
+
+/// A16: a send before `conversationExpiryLoaded` has landed reads the stored setting, so a quick
+/// send after opening a thread still carries the field and is stamped.
+@MainActor @Test func expiryFollowupSendBeforeSettingLoadsReadsTheDatabase() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try await db.write { try ConversationSetting.set(peerA, seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.draft = "quick"
+        // Not loaded yet: state says nothing, the database says 600.
+        s.openConversationExpiry = nil
+        s.openConversationExpiryLoaded = false
+    }
+    await store.send(.sendTapped)
+    var sent: LXMessage?
+    await store.receive { action in
+        if case let .node(.client(.sendMessage(msg, _))) = action { sent = msg; return true }
+        return false
+    }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    let wire = try #require(sent)
+    #expect(ExpiryWire.decode(wire.fields) == ExpiryWire.Decoded(seconds: 600, isChange: false))
+    let row = try #require(try await db.read { try Message.where { $0.peerHex.eq(peerA) }.fetchAll($0) }.first)
+    #expect(row.expirySeconds == 600)
+    #expect(row.expiresAt == infoT0.addingTimeInterval(600))
+}
+
+/// A16: once the setting has loaded, the state value is authoritative even when the database still
+/// holds an older value (the write from `expirySelected` may not have landed yet).
+@MainActor @Test func expiryFollowupLoadedStateWinsOverDatabase() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try await db.write { try ConversationSetting.set(peerA, seconds: 600, at: infoT0, $0) }
+    let (sent, row, _) = await expirySendAndFetch(db, draft: "off now", expiry: nil)
+    let wire = try #require(sent)
+    #expect(wire.fields.isEmpty)
+    #expect(try #require(row).expirySeconds == nil)
+}
+
+/// A16: opening a thread resets the loaded flag until the thread's setting arrives.
+@MainActor @Test func expiryFollowupOpenConversationResetsLoadedFlagUntilSettingArrives() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [msg(1, peerA, "a1", 1000)])
+    let store = makeStore(db, identity: Identity()) { $0.openConversationExpiryLoaded = true }
+    await store.send(.openConversation(peerA)) {
+        $0.openPeerHex = peerA
+        $0.chatVisible = true
+        $0.openConversationExpiryLoaded = false
+    }
+    await store.receive { if case .conversationExpiryLoaded = $0 { return true }; return false }
+    #expect(store.state.openConversationExpiryLoaded == true)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+/// A17: launch deletes reaction rows whose target message is gone and that are older than a day.
+@MainActor @Test func expiryFollowupLaunchPrunesStaleOrphanReactions() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let kept = String(repeating: "aa", count: 32)
+    let orphan = String(repeating: "bb", count: 32)
+    try! await seed(db, [msg(1, peerA, "here", 1000, hash: kept)])
+    let staleAt = infoT0.timeIntervalSince1970 - 90_000   // 25 h ago
+    try await db.write { d in
+        try Reaction.insert { Reaction(messageHash: kept, reactorHex: peerA, emoji: "👍", sentAt: staleAt) }.execute(d)
+        try Reaction.insert { Reaction(messageHash: orphan, reactorHex: peerA, emoji: "❤️", sentAt: staleAt) }.execute(d)
+    }
+    let store = makeStore(db, identity: Identity())
+    await store.send(.onLaunch)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let hashes = try await db.read { try Reaction.all.fetchAll($0) }.map(\.messageHash)
+    #expect(hashes == [kept])
+}
+
+/// A17: an orphan newer than a day is kept, because its message may still be on the way.
+@MainActor @Test func expiryFollowupLaunchKeepsFreshOrphanReactions() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let orphan = String(repeating: "cc", count: 32)
+    let freshAt = infoT0.timeIntervalSince1970 - 3_600   // 1 h ago
+    try await db.write { d in
+        try Reaction.insert { Reaction(messageHash: orphan, reactorHex: peerA, emoji: "❤️", sentAt: freshAt) }.execute(d)
+    }
+    let store = makeStore(db, identity: Identity())
+    await store.send(.onLaunch)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try Reaction.all.fetchAll($0) }.count == 1)
+}
+
+/// A17: a purge hands the ids of the attachments it deleted to the thumbnail evictor, so the
+/// decoded images leave memory with the files.
+@MainActor @Test func expiryFollowupPurgeEvictsThumbnailsOfPurgedAttachments() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let files = attachTempStore()
+    let due = expiryTimerRow(1, peerA, seconds: 60, expiresAt: infoT0.addingTimeInterval(-1))
+    let path = try files.store(Data([1]), messageHash: due.messageHash, outgoing: false, ext: "bin")
+    let attachment = Attachment(id: UUID(), messageId: due.id, kind: AttachmentKind.file, name: "a.bin",
+                                format: "bin", size: 1, width: nil, height: nil, path: path)
+    try! await seed(db, [due])
+    try await db.write { try Attachment.insert { attachment }.execute($0) }
+    let evicted = LockIsolated<[UUID]>([])
+    let store = makeStore(db, identity: Identity(), attachmentStore: files)
+    store.dependencies.attachmentCacheEvictor = AttachmentCacheEvictor { ids in evicted.withValue { $0.append(contentsOf: ids) } }
+    await store.send(.onLaunch)
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, _) = action { return purged == 1 }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(evicted.value == [attachment.id])
+}
+
+/// The convergence line names the peer by its learned display name, not the open peer's.
+@MainActor @Test func expiryFollowupConvergenceLineUsesLearnedDisplayName() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHash = LXMessage.deliveryHash(identityHash: sender.hash)
+    let store = makeStore(db, identity: me) { $0.openPeerHex = peerB }   // someone else's thread is open
+    let learned = LXMFNode.LearnedPeer(displayName: "Ada", stampCost: nil, supportsCompression: false,
+                                       learnedAt: infoT0)
+    await store.send(.node(.client(.rehydrateLearnedPeers([senderHash: learned]))))
+    await store.skipReceivedActions(strict: false)
+    await expiryFixReceive(store, wireMessage(from: sender, to: me, at: 1699999999, content: "hi",
+                                              fields: ExpiryWire.encode(seconds: 600)))
+    let rows = try await db.read { try Message.all.order(by: \.timestamp).fetchAll($0) }
+    #expect(rows.count == 2)
+    #expect(rows.first?.body == "Ada set disappearing messages to 10 minutes")
 }

@@ -173,21 +173,16 @@ Left out by design (spec "Out of scope"): read receipts, a live countdown on bub
 delete-message and delete-conversation (the `MessagePurge` primitives make both small), groups.
 Follow-ups noticed while implementing:
 
-- A timer change selected while the peer is unreachable is blocked in the UI only; the reducer
-  would send it and let it fail, as reactions do.
 - The convergence line uses the peer's announce display name at receive time; a later announce
   with a new name does not rewrite earlier lines.
 - `isForeground` starts true, so a push-wake launch counts as foreground until the first
   `.backgrounded`; harmless today because no thread can be open then.
 - The Simulator cannot reach a peer, so the toolbar menu, the system line after choosing a preset, the title subtitle and the bubble glyph after a send were only code-reviewed, never seen. Check them on a device with a reachable ReTiCaMsgr peer, and check ChatTitle for clipping with a long title plus "4 weeks".
 - Test-helper duplication left by the plan: MessageInfoTests' expiryInfo helpers duplicate the file's info(_:)/utc/peer32/hash64; ExpiryPreset.swift has an unused import Foundation and rebuilds its units array per call.
-- An out-of-order `expiryPurgeCompleted` (two purges racing) can briefly cancel or postpone the
-  sleeper. Track the armed deadline in state and only re-arm for an earlier one.
-- `MessagePurge.run` fetches full rows for every stamped message on each run. Select only
-  `id`/`expiresAt` and index `expiresAt`.
-- A send within milliseconds of opening a thread, before `conversationExpiryLoaded` lands, goes out
-  without the field.
-- The timer cannot be turned off while the peer is unreachable (the menu is gated like reactions).
-- Reaction rows whose target was purged before the reaction arrived are left orphaned.
-- `ThumbnailCache` keeps decoded images of purged attachments in memory until evicted.
-- No test covers the convergence line with a learned display name (only the "Them" fallback).
+- Fixed on 2026-10-05 (spec amendments A15–A17, branch `fix/disappearing-followups`): the
+  out-of-order purge-completion race, the purge's full-row scan, the send-before-setting-loaded
+  gap, the reachability gate on the menu, orphan reaction rows, the thumbnail cache, and the
+  learned-display-name test.
+- Still open: a sheet presented over ChatView keeps `chatVisible` true, so an arrival while a sheet
+  is up counts as viewed. ChatView's onAppear double-stamps right after `.openConversation`
+  (harmless: the second stamp finds nothing).

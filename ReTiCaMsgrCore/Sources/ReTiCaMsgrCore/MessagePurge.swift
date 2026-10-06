@@ -15,28 +15,36 @@ public enum MessagePurge {
         public var purged: Int
         /// The earliest `expiresAt` still in the table, for the reducer's sleeper. nil = nothing armed.
         public var nextDue: Date?
+        /// The attachment rows that went with the messages, for the app's image cache (A17).
+        public var purgedAttachmentIds: [UUID]
 
-        public init(purged: Int, nextDue: Date?) {
+        public init(purged: Int, nextDue: Date?, purgedAttachmentIds: [UUID] = []) {
             self.purged = purged
             self.nextDue = nextDue
+            self.purgedAttachmentIds = purgedAttachmentIds
         }
     }
 
     static let log = Logger(subsystem: "com.reticamsgr", category: "expiry")
 
-    /// The comparison runs in Swift over the stamped rows (amendment A3): there are few of them,
-    /// and it avoids depending on optional-column comparison in the query builder.
+    /// Only `id` and `messageHash` of the due rows are read, and the next deadline is a `MIN` over
+    /// the indexed column (amendment A15), so a long disappearing conversation does not pull every
+    /// stamped body into memory on each trigger.
     public static func run(_ database: any DatabaseWriter, attachmentStore: AttachmentStore,
                            now: Date) async throws -> Result {
-        let stamped = try await database.read { db in
-            try Message.where { $0.expiresAt.isNot(nil) }.fetchAll(db)
+        let due = try await database.read { db in
+            try Row.fetchAll(db, sql: "SELECT id, messageHash FROM messages WHERE expiresAt IS NOT NULL AND expiresAt <= ?",
+                             arguments: [now])
+                .compactMap { row -> (id: UUID, hash: String)? in
+                    guard let id = UUID(uuidString: row["id"]) else { return nil }
+                    return (id, row["messageHash"])
+                }
         }
-        let due = stamped.filter { ($0.expiresAt ?? .distantFuture) <= now }
         guard !due.isEmpty else {
-            return Result(purged: 0, nextDue: stamped.compactMap(\.expiresAt).min())
+            return Result(purged: 0, nextDue: try await nextDeadline(database, after: now))
         }
         let ids = due.map(\.id)
-        let hashes = due.map(\.messageHash).filter { !$0.isEmpty }
+        let hashes = due.map(\.hash).filter { !$0.isEmpty }
         let attachments = try await database.read { db in
             try Attachment.where { $0.messageId.in(ids) }.fetchAll(db)
         }
@@ -56,9 +64,16 @@ public enum MessagePurge {
             }
             try Message.where { $0.id.in(ids) }.delete().execute(db)
         }
-        let remaining = try await database.read { db in
-            try Message.where { $0.expiresAt.isNot(nil) }.fetchAll(db)
+        return Result(purged: due.count, nextDue: try await nextDeadline(database, after: now),
+                      purgedAttachmentIds: attachments.map(\.id))
+    }
+
+    /// The earliest `expiresAt` still ahead of `now`. Anything at or before `now` was just deleted
+    /// (or will be on the next run), so it never becomes a zero-delay deadline.
+    static func nextDeadline(_ database: any DatabaseWriter, after now: Date) async throws -> Date? {
+        try await database.read { db in
+            try Date.fetchOne(db, sql: "SELECT MIN(expiresAt) FROM messages WHERE expiresAt IS NOT NULL AND expiresAt > ?",
+                              arguments: [now])
         }
-        return Result(purged: due.count, nextDue: remaining.compactMap(\.expiresAt).min())
     }
 }

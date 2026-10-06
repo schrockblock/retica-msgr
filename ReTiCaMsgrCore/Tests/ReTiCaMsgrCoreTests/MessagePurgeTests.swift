@@ -42,7 +42,7 @@ private func purgeMessage(_ n: Int, expiresAt: Date?, expirySeconds: Int? = 60, 
 
     let result = try await MessagePurge.run(db, attachmentStore: files, now: purgeNow)
 
-    #expect(result == MessagePurge.Result(purged: 1, nextDue: nil))
+    #expect(result == MessagePurge.Result(purged: 1, nextDue: nil, purgedAttachmentIds: [attachment.id]))
     #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
     #expect(try await db.read { try Attachment.all.fetchAll($0) }.isEmpty)
     #expect(try await db.read { try Reaction.all.fetchAll($0) }.isEmpty)
@@ -59,7 +59,7 @@ private func purgeMessage(_ n: Int, expiresAt: Date?, expirySeconds: Int? = 60, 
         try Message.insert { purgeMessage(3, expiresAt: purgeNow.addingTimeInterval(5)) }.execute(d)
     }
     let result = try await MessagePurge.run(db, attachmentStore: purgeStore(), now: purgeNow)
-    #expect(result == MessagePurge.Result(purged: 1, nextDue: purgeNow.addingTimeInterval(5)))
+    #expect(result == MessagePurge.Result(purged: 1, nextDue: purgeNow.addingTimeInterval(5), purgedAttachmentIds: []))
     let bodies = try await db.read { try Message.all.order(by: \.timestamp).fetchAll($0) }.map(\.body)
     #expect(bodies == ["m2", "m3"])
 }
@@ -74,7 +74,7 @@ private func purgeMessage(_ n: Int, expiresAt: Date?, expirySeconds: Int? = 60, 
         try Message.insert { purgeMessage(2, expiresAt: nil, expirySeconds: nil) }.execute(d)
     }
     let result = try await MessagePurge.run(db, attachmentStore: purgeStore(), now: purgeNow.addingTimeInterval(1_000_000))
-    #expect(result == MessagePurge.Result(purged: 0, nextDue: nil))
+    #expect(result == MessagePurge.Result(purged: 0, nextDue: nil, purgedAttachmentIds: []))
     #expect(try await db.read { try Message.all.fetchAll($0) }.count == 2)
 }
 

@@ -23,9 +23,23 @@ final class ThumbnailCache {
     /// a count limit alone would let a few of them pin a lot of memory.
     static let totalCostLimit = 64 * 1024 * 1024
 
+    /// Every cache key written under each key prefix (an attachment id), so a purged attachment's
+    /// decodes at every size can be dropped: NSCache cannot enumerate its keys.
+    private var keysByPrefix: [String: Set<NSString>] = [:]
+
     private init() {
         cache.countLimit = 200
         cache.totalCostLimit = Self.totalCostLimit
+    }
+
+    /// Drops every decode of the given attachments (amendment A17): a purged photo must not stay in
+    /// memory after its file is gone.
+    func evict(attachmentIds: [UUID]) {
+        for id in attachmentIds {
+            for key in keysByPrefix.removeValue(forKey: id.uuidString) ?? [] {
+                cache.removeObject(forKey: key)
+            }
+        }
     }
 
     func image(for url: URL, key: String, maxPixels: Int) async -> UIImage? {
@@ -45,7 +59,10 @@ final class ThumbnailCache {
             guard let src = source() else { return nil }
             return Self.decode(src, maxPixels: maxPixels)
         }.value
-        if let decoded { cache.setObject(decoded, forKey: cacheKey, cost: Self.cost(of: decoded)) }
+        if let decoded {
+            cache.setObject(decoded, forKey: cacheKey, cost: Self.cost(of: decoded))
+            keysByPrefix[key, default: []].insert(cacheKey)
+        }
         return decoded
     }
 
