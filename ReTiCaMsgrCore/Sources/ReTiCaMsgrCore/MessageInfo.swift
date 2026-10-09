@@ -37,10 +37,14 @@ public enum MessageInfo {
     public static let legacyFooter = "Some details weren't recorded for messages from before this feature."
 
     public static func sections(for message: Message, attachment: Attachment? = nil,
+                                deliveries: [GroupDelivery] = [], memberNames: [String: String] = [:],
                                 timeZone: TimeZone = .current) -> [Section] {
         var sections = [timeline(message, timeZone), delivery(message), identity(message), payload(message)]
         if let attachment {
             sections.append(attachmentSection(attachment))
+        }
+        if !deliveries.isEmpty {
+            sections.append(members(deliveries, names: memberNames, sameDayAs: message.timestamp, timeZone))
         }
         return sections
     }
@@ -134,6 +138,21 @@ public enum MessageInfo {
             optionalRow("Dimensions", dimensions),
             Row("Stored", a.hasBytes ? "Yes" : "No"),
         ])
+    }
+
+    /// Spec 2026-10-09 §4: one row per member copy of an outgoing group row, sorted by address.
+    /// The label is the member's announce name or a short hex, the display the copy's status and
+    /// its first proof time once proved, and the copy value the copy's LXMF hash.
+    static func members(_ deliveries: [GroupDelivery], names: [String: String], sameDayAs reference: Date,
+                        _ tz: TimeZone) -> Section {
+        let rows = deliveries.sorted { $0.memberHex < $1.memberHex }.map { d -> Row in
+            var display = d.status
+            if let at = d.deliveredAt {
+                display += " " + time(at, sameDayAs: reference, timeZone: tz)
+            }
+            return Row(label: names[d.memberHex] ?? shortHash(d.memberHex), display: display, copy: d.messageHash ?? "")
+        }
+        return Section(title: "Members", rows: rows)
     }
 
     // MARK: - Rows
