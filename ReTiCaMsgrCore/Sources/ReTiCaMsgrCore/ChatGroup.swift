@@ -31,10 +31,22 @@ public struct ChatGroup: Equatable, Sendable {
         try ChatGroup.where { $0.groupHex.eq(groupHex) }.fetchOne(db)
     }
 
-    /// Upsert by primary key (delete then insert, as `ConversationSetting.set` does).
+    /// Upsert by primary key. Never deletes the row: `groupMembers` cascades from it, so a
+    /// delete-then-insert (the `ConversationSetting.set` pattern) would wipe the roster.
     public static func upsert(_ group: ChatGroup, _ db: GRDB.Database) throws {
-        try ChatGroup.where { $0.groupHex.eq(group.groupHex) }.delete().execute(db)
-        try ChatGroup.insert { group }.execute(db)
+        if try fetch(group.groupHex, db) == nil {
+            try ChatGroup.insert { group }.execute(db)
+        } else {
+            try ChatGroup.where { $0.groupHex.eq(group.groupHex) }
+                .update {
+                    $0.name = group.name
+                    $0.creatorHex = group.creatorHex
+                    $0.revision = group.revision
+                    $0.state = group.state
+                    $0.updatedAt = group.updatedAt
+                }
+                .execute(db)
+        }
     }
 }
 

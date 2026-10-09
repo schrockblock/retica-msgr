@@ -393,7 +393,7 @@ private let groupTableP1 = String(repeating: "3c", count: 16)
 private let groupTableMe = String(repeating: "e", count: 32)
 private let groupTablePeer = String(repeating: "f", count: 32)
 
-private func groupTableMessage(_ id: String, groupHex: String?, postId: String?) -> Message {
+private func groupTableMessage(_ id: String, groupHex: String?, postId: String?, isGroupEvent: Bool = false, groupControl: String? = nil) -> Message {
     Message(
         id: UUID(uuidString: id)!,
         peerHex: groupTablePeer,
@@ -404,7 +404,9 @@ private func groupTableMessage(_ id: String, groupHex: String?, postId: String?)
         validated: true,
         messageHash: postId ?? "",
         groupHex: groupHex,
-        groupPostId: postId
+        groupPostId: postId,
+        isGroupEvent: isGroupEvent,
+        groupControl: groupControl
     )
 }
 
@@ -432,6 +434,14 @@ private func groupTableMessage(_ id: String, groupHex: String?, postId: String?)
     }
     #expect(try db.read { try ChatGroup.all.fetchAll($0) } == [renamed])
     #expect(try db.read { try GroupMember.members(of: groupTableG1, $0) } == [groupTableMe])
+    // upsert does not delete the row, so the roster survives: no GroupMember.replace.
+    var stateChange = renamed
+    stateChange.state = GroupState.invited
+    try db.write { db in
+        try ChatGroup.upsert(stateChange, db)
+    }
+    #expect(try db.read { try GroupMember.members(of: groupTableG1, $0) } == [groupTableMe])
+    #expect(try db.read { try ChatGroup.fetch(groupTableG1, $0)?.state } == GroupState.invited)
     #expect(group.isOpen == true)
     #expect(ChatGroup(groupHex: groupTableG2, name: "x", creatorHex: groupTableMe, revision: 1,
                       state: GroupState.left, updatedAt: Date()).isOpen == false)
@@ -452,9 +462,7 @@ private func groupTableMessage(_ id: String, groupHex: String?, postId: String?)
 /// by dropping it on both sides.
 @Test func groupTableMessageColumnsRoundTrip() throws {
     let db = try AppDatabase.makeInMemory()
-    var m = groupTableMessage("00000000-0000-0000-0000-000000000030", groupHex: groupTableG1, postId: groupTableP1)
-    m.isGroupEvent = true
-    m.groupControl = GroupControl.roster
+    let m = groupTableMessage("00000000-0000-0000-0000-000000000030", groupHex: groupTableG1, postId: groupTableP1, isGroupEvent: true, groupControl: GroupControl.roster)
     try db.write { try Message.insert { m }.execute($0) }
     let back = try #require(try db.read { try Message.all.fetchAll($0) }.first)
     #expect(back.groupHex == groupTableG1)
