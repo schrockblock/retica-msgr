@@ -67,7 +67,7 @@ public enum GroupControlApply {
         var lines: [String] = []
         if diff.dissolved {
             lines = [GroupEventText.deleted(by: names.sender)]
-        } else if wasOut {
+        } else if wasOut && iAmListed {
             lines = [GroupEventText.invited(by: names.sender, name: name)]
         } else {
             for hex in diff.added where hex != names.me {

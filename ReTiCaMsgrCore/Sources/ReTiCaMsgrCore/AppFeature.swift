@@ -2317,6 +2317,12 @@ public struct AppFeature {
         let seenHashHex = m.hash.hexString
         let now = date.now
         let openPeer = state.openPeerHex
+        // Amendment A12 of the disappearing-messages spec applies to the plain-message fallback
+        // too: a message with no expiry of its own takes the local timer, stamped at once when
+        // the thread is open and visible, exactly as the ordinary receive path does.
+        let viewedNow: Date? = (incomingPeer == openPeer && state.isForeground && state.chatVisible) ? now : nil
+        let attachmentStore = self.attachmentStore
+        let attachmentCacheEvictor = self.attachmentCacheEvictor
         var byHex: [String: String] = [:]
         if case let .roster(_, _, members, _) = control {
             for member in members {
@@ -2334,7 +2340,7 @@ public struct AppFeature {
             wireSize: m.receivedBytes?.count, titleSize: m.title.count, contentSize: m.content.count,
             fieldKeys: MessageMetadata.fieldKeys(m.fields), stampState: MessageMetadata.stampState(m))
         return .run { [database] send in
-            let outcome = try await database.write { db -> GroupControlApply.Outcome in
+            let (outcome, expiresAt) = try await database.write { db -> (GroupControlApply.Outcome, Date?) in
                 let outcome: GroupControlApply.Outcome
                 switch control {
                 case let .roster(gid, name, members, revision):
@@ -2347,9 +2353,18 @@ public struct AppFeature {
                 default:
                     outcome = .plainMessage
                 }
-                if outcome == .plainMessage { try Message.insert { plain }.execute(db) }
+                var expiresAt: Date? = nil
+                if outcome == .plainMessage {
+                    var row = plain
+                    if let local = try ConversationSetting.expiry(for: incomingPeer, db) {
+                        row.expirySeconds = local
+                        row.expiresAt = viewedNow.map { $0.addingTimeInterval(TimeInterval(local)) }
+                    }
+                    try Message.insert { row }.execute(db)
+                    expiresAt = row.expiresAt
+                }
                 try recordSeenHash(seenHashHex, at: now, db)
-                return outcome
+                return (outcome, expiresAt)
             }
             switch outcome {
             case .dropped:
@@ -2357,6 +2372,9 @@ public struct AppFeature {
             case .plainMessage:
                 try await reloadConversations(database, send)
                 if incomingPeer == openPeer { try await reloadThread(database, incomingPeer, send) }
+                if expiresAt != nil {
+                    try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: now, send)
+                }
             case let .applied(groupHex, creatorResends):
                 if creatorResends { await send(.groupRosterChanged(groupHex: groupHex)) }
                 try await reloadConversations(database, send)

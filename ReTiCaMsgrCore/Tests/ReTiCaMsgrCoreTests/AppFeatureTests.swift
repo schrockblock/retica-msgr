@@ -5695,6 +5695,36 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [memberC, myHex].sorted())
 }
 
+/// Amendment A12 still holds for the fallback: a plain-message outcome in a conversation with a
+/// local timer takes that timer and, when the thread is open and visible, is stamped at once.
+@MainActor @Test func groupControlPlainFallbackTakesLocalTimer() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let outsider = Identity()
+    let outsiderHex = groupMemberHash(outsider).hexString
+    try await db.write { try ConversationSetting.set(outsiderHex, seconds: 600, at: infoT0, $0) }
+    let store = await groupStore(db, identity: me, creatorHex: memberC, members: [memberC]) { s in
+        s.openPeerHex = outsiderHex          // the outsider's one-to-one thread is open and visible
+        s.openConversationKind = .peer
+        s.openGroup = nil
+        s.openGroupMembers = []
+    }
+    // Not `groupReceive`: its own trailing `skipReceivedActions` races the write's later
+    // `purgeAndReschedule` call and can silently absorb `.expiryPurgeCompleted` before this test
+    // gets to assert on it, so the `.conversationsLoaded` and `.expiryPurgeCompleted` receives are
+    // sequenced inline here instead, exactly as `groupReceive` sequences its own single receive.
+    let m = groupRosterWire(from: outsider, to: me, members: [outsiderHex, myHex], revision: 5)
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.receive { if case let .expiryPurgeCompleted(_, nextDue) = $0 { return nextDue == infoT0.addingTimeInterval(600) }; return false }
+    await store.skipReceivedActions(strict: false)
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.groupHex == nil)
+    #expect(row.expirySeconds == 600)
+    #expect(row.expiresAt == infoT0.addingTimeInterval(600))
+}
+
 /// Review Focus 2: a roster that does not list its own sender does not apply.
 @MainActor @Test func groupControlRosterOmittingSenderIsPlainMessage() async throws {
     let db = try AppDatabase.makeInMemory()
@@ -5750,6 +5780,22 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     await groupReceive(store, groupRosterWire(from: sender, to: me, members: [senderHex, myHex], revision: 2))
     #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.state == GroupState.invited)
     #expect(try await groupEventBodies(db) == ["Cy invited you to the group Mutual Aid"])
+}
+
+/// A roster that omits me landing on a group I already left writes no line and keeps it left
+/// (a leave crossing the creator's removal).
+@MainActor @Test func groupControlRosterOmittingMeOnLeftGroupWritesNoLine() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let store = await groupStore(db, identity: me, creatorHex: senderHex, members: [senderHex, memberD], state: GroupState.left)
+    try await db.write { try GroupMember.replace(groupHexA, with: [senderHex, memberD], $0) }   // my leave already removed me
+    await groupNameSender(store, sender)
+    await groupReceive(store, groupRosterWire(from: sender, to: me, members: [senderHex, memberD], revision: 2))
+    #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.state == GroupState.left)
+    #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.revision == 2)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
 }
 
 /// A leave from a member removes them with a line; from a non-member it is a plain message.
