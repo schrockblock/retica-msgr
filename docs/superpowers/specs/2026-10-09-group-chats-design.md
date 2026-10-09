@@ -275,3 +275,48 @@ rule.
 - Creator transfer, and any history for late joiners.
 - An age limit on `waiting` copies.
 - Group reactions to members who are unreachable at the time of the tap.
+
+## Amendments at planning time (2026-10-09)
+
+Decisions the implementation plan (`docs/superpowers/plans/2026-10-09-group-chats.md`) forced
+while turning §1–§5 into code. Where they differ from the text above, these win.
+
+- **A1. Names.** The Swift type is `ChatGroup` and the table `chatGroups`: SwiftUI owns `Group`,
+  and `GROUPS` is an SQLite keyword. Dates are stored as `.datetime` like every other table, not
+  DOUBLE.
+- **A2. Post id in `messageHash`.** A group post row stores its post id hex in `messageHash` as
+  well as `groupPostId`, so reactions, reply targets and the context menu work unchanged. The
+  per-member LXMF hashes live only in `groupDeliveries`.
+- **A3. `messages.groupControl`.** A nullable TEXT column (`roster` or `leave`) marks an outgoing
+  event line that carries a message to the members, so a deferred copy can be rebuilt from the
+  row and the group's current state. A rebuilt copy uses the dispatch time as its LXMF timestamp,
+  so every attempt has a fresh hash.
+- **A4. Wire bodies.** Every roster message carries `<inviter> invited you to the group <name> in
+  ReTiCaMsgr`; a delete carries `<who> deleted the group <name>`; a leave `<who> left the group
+  <name>`.
+- **A5. Stale rosters.** A roster from the stored creator whose revision is not higher is dropped
+  silently (seen hash only). A roster for a known group from anyone else, a roster that does not
+  list its own sender, and a roster for an unknown group that does not list me, are stored as the
+  plain one-to-one message their body is. A roster never applies to a `dissolved` group.
+- **A6. Decline.** Declining marks the group `left` (not deleted), inserts "You declined the
+  invitation", and sends the leave to the creator only. The conversation stays in the list,
+  read-only.
+- **A7. A leave reaching the creator.** The creator's line for it ("<who> left the group") is an
+  outgoing roster row whose delivery rows carry the bumped roster to the remaining members; the
+  reachable ones get it at once, the rest when their path is learned.
+- **A8. Derived status order.** `sending` while any copy is waiting or sending; `delivered` when
+  every copy was proved; `stored` when every copy was proved or stored and at least one was
+  stored; `failed` when every copy failed or was cancelled; otherwise `sent`. The bubble label is
+  "Delivered to d of n" while 0 < d < n, else the status word.
+- **A9. No timers in groups.** Group sends never carry the expiry entry, so the two codecs never
+  merge one 0xFD map; an expiry entry on a received group post is ignored. Group reactions go to
+  the members reachable at the tap.
+- **A10. No Cancel Send on group posts.**
+- **A11. `Conversation.peerHex` is the list key:** the peer's address, or a group's id. `kind`,
+  `title` and `groupState` are added.
+- **A12. Re-sends.** A `failed` roster delivery is re-armed and re-sent when the member's path is
+  learned; a failed post delivery is not.
+- **A13. Thread query.** A thread's rows are those with `groupHex = key`, or `groupHex IS NULL
+  AND peerHex = key`.
+- **A14. Event lines from a diff** are inserted 1 ms apart in the order added, removed, renamed,
+  naming members by their announce display name or the first eight hex characters.
