@@ -1346,11 +1346,11 @@ public struct AppFeature {
                 // Disappearing messages (spec §3 "Receiving", amendments A1, A4, A5). Only a
                 // validated sender may set or carry a timer: an unsigned message is plain text.
                 let decodedExpiry = validated ? ExpiryWire.decode(m.fields) : nil
-                let isTimerChange = decodedExpiry?.isChange == true
                 // Group chats (spec §3 "Receiving"): only a validated sender's group entry counts.
                 // `.post` is handled in the write below; `.roster` and `.leave` in their own
                 // branches; `.marker` on a non-reaction is ignored (an ordinary message).
                 let groupDecoded = validated ? GroupWire.decode(m.fields) : nil
+                let isTimerChange = decodedExpiry?.isChange == true
                 // Standard LXMF attachment fields (0x05 / 0x06). Decoded here, written inside the
                 // effect: the bytes go to disk first, then the message and attachment rows land in
                 // one transaction. A field that does not decode leaves an ordinary text message.
