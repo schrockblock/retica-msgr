@@ -5400,3 +5400,181 @@ private func groupDeliverRows(_ db: any DatabaseWriter) async throws -> (c: Grou
     #expect(rows.d?.status == MessageStatus.sending)
     #expect(rows.post?.status == MessageStatus.sending)
 }
+
+// MARK: - Group chats: receiving posts and reactions (Task 8)
+
+private let groupReceivePid = Data(repeating: 0x5e, count: 16)
+
+/// A member's post to me on the wire, shaped as `groupCopy` builds it.
+private func groupPostWire(from sender: Identity, to me: Identity, postId: Data = groupReceivePid,
+                           text: String = "sandbags at 6", at ts: Double = 1700000000.5,
+                           extra: [MsgPackValue.IntPair] = []) -> LXMessage {
+    wireMessage(from: sender, to: me, at: ts, title: "Mutual Aid", content: text,
+                fields: extra + GroupWire.encodePost(groupId: Data(hexString: groupHexA)!, postId: postId))
+}
+
+/// Delivers `m` to the open group store and drains the effects.
+@MainActor
+private func groupReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage, validated: Bool = true) async {
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: validated, method: .opportunistic)))))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Spec §3 "Receiving": a post from a current member lands in the group thread, keyed on its post
+/// id (amendment A2), with the sender as `peerHex`.
+@MainActor @Test func groupReceivePostFromMemberLandsInGroupThread() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let store = await groupStore(db, identity: me, creatorHex: senderHex, members: [senderHex, memberD])
+    await groupReceive(store, groupPostWire(from: sender, to: me))
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    let row = try #require(rows.first)
+    #expect(row.groupHex == groupHexA)
+    #expect(row.groupPostId == groupReceivePid.hexString)
+    #expect(row.messageHash == groupReceivePid.hexString)
+    #expect(row.peerHex == senderHex)
+    #expect(row.isOutgoing == false)
+    #expect(row.body == "sandbags at 6")
+    #expect(row.validated == true)
+    #expect(row.titleSize == 10)
+    #expect(row.fieldKeys == "0xfd")
+    #expect(row.expirySeconds == nil)
+    #expect(store.state.threadMessages.map(\.body) == ["sandbags at 6"])
+    #expect(store.state.conversations.map(\.title) == ["Mutual Aid"])
+    let seen = try await db.read { try SeenHashRow.all.fetchAll($0) }
+    #expect(seen.map(\.hashHex) == [groupPostWire(from: sender, to: me).hash.hexString])
+}
+
+/// Spec §1: the same post id twice (a later copy with a fresh hash) stores one row; both LXMF
+/// hashes are remembered so neither is re-delivered.
+@MainActor @Test func groupReceiveDuplicatePostIdStoresOneRowAndBothHashes() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let store = await groupStore(db, identity: me, creatorHex: senderHex, members: [senderHex])
+    await groupReceive(store, groupPostWire(from: sender, to: me, at: 1700000000.5))
+    await store.send(.node(.client(.delegate(.messageReceived(
+        message: groupPostWire(from: sender, to: me, text: "sandbags at 6 (again)", at: 1700000009),
+        signatureValidated: true, method: .propagated)))))
+    await store.skipReceivedActions(strict: false)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.map(\.body) == ["sandbags at 6"])
+    #expect(try await db.read { try SeenHashRow.all.fetchAll($0) }.count == 2)
+}
+
+/// Review Focus 1: a post from someone not on the roster (a removed member, say) is an ordinary
+/// one-to-one message from that sender, field ignored.
+@MainActor @Test func groupReceivePostFromNonMemberIsPlainMessage() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let outsider = Identity()
+    let store = await groupStore(db, identity: me, creatorHex: memberC, members: [memberC])
+    let m = groupPostWire(from: outsider, to: me)
+    await groupReceive(store, m)
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.groupHex == nil)
+    #expect(row.groupPostId == nil)
+    #expect(row.messageHash == m.hash.hexString)
+    #expect(row.peerHex == groupMemberHash(outsider).hexString)
+    #expect(row.body == "sandbags at 6")
+    #expect(store.state.threadMessages.isEmpty)   // the open group thread did not gain it
+    #expect(store.state.conversations.map(\.kind) == [.peer])
+}
+
+/// An unknown group id, a group the user left, and an unvalidated signature all yield a plain
+/// message too.
+@MainActor @Test func groupReceivePostForUnknownClosedOrUnvalidatedIsPlainMessage() async throws {
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    // Unknown group: no group row at all.
+    let unknownDb = try AppDatabase.makeInMemory()
+    let unknown = makeStore(unknownDb, identity: me)
+    await groupReceive(unknown, groupPostWire(from: sender, to: me))
+    #expect(try await unknownDb.read { try Message.all.fetchAll($0) }.first?.groupHex == nil)
+    // Left group.
+    let leftDb = try AppDatabase.makeInMemory()
+    let left = await groupStore(leftDb, identity: me, creatorHex: senderHex, members: [senderHex], state: GroupState.left)
+    await groupReceive(left, groupPostWire(from: sender, to: me))
+    #expect(try await leftDb.read { try Message.all.fetchAll($0) }.first?.groupHex == nil)
+    // Unvalidated.
+    let unvalidatedDb = try AppDatabase.makeInMemory()
+    let unvalidated = await groupStore(unvalidatedDb, identity: me, creatorHex: senderHex, members: [senderHex])
+    await groupReceive(unvalidated, groupPostWire(from: sender, to: me), validated: false)
+    #expect(try await unvalidatedDb.read { try Message.all.fetchAll($0) }.first?.groupHex == nil)
+    // Invited (not yet accepted) still takes the post into the group.
+    let invitedDb = try AppDatabase.makeInMemory()
+    let invited = await groupStore(invitedDb, identity: me, creatorHex: senderHex, members: [senderHex], state: GroupState.invited)
+    await groupReceive(invited, groupPostWire(from: sender, to: me))
+    #expect(try await invitedDb.read { try Message.all.fetchAll($0) }.first?.groupHex == groupHexA)
+}
+
+/// Amendment A9: an expiry entry riding beside the group entry is ignored on a group post, and
+/// never touches a conversation setting.
+@MainActor @Test func groupReceivePostIgnoresExpiryEntry() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let store = await groupStore(db, identity: me, creatorHex: senderHex, members: [senderHex])
+    let fields = [MsgPackValue.IntPair(0xFD, .map([
+        .init("reticamsgr.expiry", .uint(60)),
+        .init("reticamsgr.group", .array([.bin(Data(hexString: groupHexA)!), .bin(groupReceivePid)])),
+    ]))]
+    await groupReceive(store, wireMessage(from: sender, to: me, at: 1700000000.5, title: "Mutual Aid", content: "x", fields: fields))
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.groupHex == groupHexA)
+    #expect(row.expirySeconds == nil)
+    #expect(row.expiresAt == nil)
+    #expect(try await db.read { try ConversationSetting.all.fetchAll($0) }.isEmpty)
+}
+
+/// Spec §3: a group reaction is kept from a current member and keys on the post id; one from a
+/// non-member is dropped (its hash still remembered).
+@MainActor @Test func groupReceiveReactionFromMemberAttachesToPostAndNonMemberDoesNot() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let member = Identity()
+    let outsider = Identity()
+    let memberHex = groupMemberHash(member).hexString
+    let store = await groupStore(db, identity: me, creatorHex: memberHex, members: [memberHex])
+    let marker = GroupWire.encodeMarker(groupId: Data(hexString: groupHexA)!)
+    let good = LXMessage.create(source: member, destinationHash: groupMemberHash(me), timestamp: 1700000001,
+                                title: Data(), content: Data(),
+                                fields: ReactionWire.encode(target: groupReceivePid, emoji: "👍") + marker)
+    await store.send(.node(.client(.delegate(.messageReceived(message: good, signatureValidated: true, method: .opportunistic)))))
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try Reaction.all.fetchAll($0) }
+            == [Reaction(messageHash: groupReceivePid.hexString, reactorHex: memberHex, emoji: "👍", sentAt: 1700000001)])
+    let bad = LXMessage.create(source: outsider, destinationHash: groupMemberHash(me), timestamp: 1700000002,
+                               title: Data(), content: Data(),
+                               fields: ReactionWire.encode(target: groupReceivePid, emoji: "😂") + marker)
+    await store.send(.node(.client(.delegate(.messageReceived(message: bad, signatureValidated: true, method: .opportunistic)))))
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try Reaction.all.fetchAll($0) }.count == 1)
+    #expect(try await db.read { try SeenHashRow.all.fetchAll($0) }.count == 2)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+}
+
+/// A reply in a group keeps the original's 16-byte post id as its stored target.
+@MainActor @Test func groupReceiveReplyKeepsPostIdTarget() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let original = Data(repeating: 0x7b, count: 16)
+    let store = await groupStore(db, identity: me, creatorHex: senderHex, members: [senderHex])
+    await groupReceive(store, groupPostWire(from: sender, to: me, text: "yes",
+                                            extra: ReplyWire.encode(replyTo: original, quote: "sandbags at 6")))
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.groupHex == groupHexA)
+    #expect(row.replyToHash == original.hexString)
+    #expect(row.replyQuote == "sandbags at 6")
+    #expect(row.fieldKeys == "0x30,0x31,0xfd")
+}

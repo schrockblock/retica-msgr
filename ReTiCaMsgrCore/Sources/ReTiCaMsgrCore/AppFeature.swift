@@ -1301,17 +1301,36 @@ public struct AppFeature {
                 case let .reaction(target, emoji):
                     // Reactions never become bubbles and never touch the conversation list.
                     // Unvalidated ones can't be attributed, so only the seen hash is recorded.
+                    // A group reaction (spec §3 "Receiving") carries the group marker and is kept
+                    // only from a current member of a known open group; it keys on the post id.
+                    let marker: String? = {
+                        guard validated, case let .marker(gid)? = GroupWire.decode(m.fields) else { return nil }
+                        return gid.hexString
+                    }()
                     let reaction: Reaction? = validated
                         ? Reaction(messageHash: target.hexString, reactorHex: incomingPeer,
                                    emoji: emoji, sentAt: m.timestamp)
                         : nil
                     return .run { [database] send in
-                        try await database.write { db in
-                            if let reaction { try Reaction.apply(reaction, db) }
+                        let applied = try await database.write { db -> Bool in
+                            var applied = false
+                            if let reaction {
+                                if let marker {
+                                    if let group = try ChatGroup.fetch(marker, db), group.isOpen,
+                                       try GroupMember.contains(marker, incomingPeer, db) {
+                                        try Reaction.apply(reaction, db)
+                                        applied = true
+                                    }
+                                } else {
+                                    try Reaction.apply(reaction, db)
+                                    applied = true
+                                }
+                            }
                             try recordSeenHash(seenHashHex, at: seenNow, db)
+                            return applied
                         }
-                        if reaction != nil, incomingPeer == openPeer {
-                            try await reloadThread(database, incomingPeer, send)
+                        if applied, let openPeer, incomingPeer == openPeer || marker == openPeer {
+                            try await reloadThread(database, openPeer, send)
                         }
                     }
                 case .malformed:
@@ -1328,6 +1347,10 @@ public struct AppFeature {
                 // validated sender may set or carry a timer: an unsigned message is plain text.
                 let decodedExpiry = validated ? ExpiryWire.decode(m.fields) : nil
                 let isTimerChange = decodedExpiry?.isChange == true
+                // Group chats (spec §3 "Receiving"): only a validated sender's group entry counts.
+                // `.post` is handled in the write below; `.roster` and `.leave` in their own
+                // branches; `.marker` on a non-reaction is ignored (an ordinary message).
+                let groupDecoded = validated ? GroupWire.decode(m.fields) : nil
                 // Standard LXMF attachment fields (0x05 / 0x06). Decoded here, written inside the
                 // effect: the bytes go to disk first, then the message and attachment rows land in
                 // one transaction. A field that does not decode leaves an ordinary text message.
@@ -1405,9 +1428,34 @@ public struct AppFeature {
                     // A `let` copy so an escaping `@Sendable` closure captures a value, not the
                     // mutable var above.
                     let attachmentRow = pendingAttachmentRow
-                    let storedExpiresAt = try await database.write { db -> Date? in
+                    let result = try await database.write { db -> (expiresAt: Date?, threadKey: String?) in
                         var stored = row
-                        if let decoded = decodedExpiry {
+                        // A post goes into its group only from a current member of a known open
+                        // group (spec §1 receive rules); anything else stays a one-to-one message
+                        // with the field ignored. A duplicate post id records its hash and stores
+                        // nothing. A group post never carries a timer (amendment A9).
+                        var isGroupPost = false
+                        if case let .post(gid, pid)? = groupDecoded {
+                            let gidHex = gid.hexString
+                            let pidHex = pid.hexString
+                            if let group = try ChatGroup.fetch(gidHex, db), group.isOpen,
+                               try GroupMember.contains(gidHex, incomingPeer, db) {
+                                if try Message.where { $0.groupHex.eq(gidHex) && $0.groupPostId.eq(pidHex) }.fetchOne(db) != nil {
+                                    try recordSeenHash(seenHashHex, at: seenNow, db)
+                                    return (nil, nil)
+                                }
+                                stored.groupHex = gidHex
+                                stored.groupPostId = pidHex
+                                stored.messageHash = pidHex   // amendment A2
+                                stored.expirySeconds = nil
+                                stored.expiresAt = nil
+                                stored.isTimerChange = false
+                                isGroupPost = true
+                            }
+                        }
+                        if isGroupPost {
+                            // No conversation-setting logic for a group row.
+                        } else if let decoded = decodedExpiry {
                             // Amendment A10: the value is applied only when it was set later than the
                             // stored one. Its time is the sender's timestamp, capped at arrival so a
                             // future-dated clock cannot lock the timer. No stored row means adopt. A
@@ -1450,13 +1498,13 @@ public struct AppFeature {
                         // wrong regardless). Then prune to RingSet.capacity so the table mirrors
                         // the in-memory ring and doesn't grow without bound.
                         try recordSeenHash(seenHashHex, at: seenNow, db)
-                        return stored.expiresAt
+                        return (stored.expiresAt, stored.groupHex ?? incomingPeer)
                     }
                     try await reloadConversations(database, send)
-                    if incomingPeer == openPeer {
-                        try await reloadThread(database, incomingPeer, send)
+                    if let key = result.threadKey, key == openPeer {
+                        try await reloadThread(database, key, send)
                     }
-                    if storedExpiresAt != nil {
+                    if result.expiresAt != nil {
                         try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: seenNow, send)
                     }
                 }
