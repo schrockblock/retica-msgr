@@ -4939,3 +4939,217 @@ private func groupSends(_ store: TestStoreOf<AppFeature>, _ action: AppFeature.A
     #expect(store.state.openGroup == nil)
     #expect(store.state.openGroupMembers.isEmpty)
 }
+
+// MARK: - Group chats: copies, dispatch, creating (Task 5)
+
+/// Amendment A3: a member's copy follows the row's kind. The group name is the title, a post
+/// carries its reply fields then the ids, a roster line the current roster (or an empty one for
+/// a deleted group, with the delete body), a leave line the leave marker.
+@Test func groupCreateCopyShapesFollowTheRowKind() throws {
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let gid = Data(hexString: groupHexA)!
+    let pid = Data(repeating: 0x5a, count: 16)
+    let member = Data(hexString: memberC)!
+    let group = ChatGroup(groupHex: groupHexA, name: "Mutual Aid", creatorHex: myHex, revision: 4,
+                          state: GroupState.active, updatedAt: infoT0)
+    let post = Message(id: uuid(1), peerHex: myHex, isOutgoing: true, body: "see you at 6", timestamp: infoT0,
+                       status: MessageStatus.sending, validated: false, messageHash: pid.hexString,
+                       replyToHash: String(repeating: "7b", count: 16), replyQuote: "orig",
+                       groupHex: groupHexA, groupPostId: pid.hexString)
+    let postCopy = try #require(AppFeature.groupCopy(of: post, to: member, group: group, members: [memberC, myHex],
+                                                     identity: me, myName: "Ada", timestamp: 1700000010))
+    #expect(postCopy.destinationHash == member)
+    #expect(postCopy.title == Data("Mutual Aid".utf8))
+    #expect(postCopy.content == Data("see you at 6".utf8))
+    #expect(postCopy.timestamp == 1700000010)
+    #expect(postCopy.fields.map(\.key) == [0x30, 0x31, 0xFD])
+    #expect(ReplyWire.decode(postCopy.fields)?.replyTo == Data(repeating: 0x7b, count: 16))
+    #expect(ReplyWire.decode(postCopy.fields)?.quote == "orig")
+    #expect(GroupWire.decode(postCopy.fields) == .post(groupId: gid, postId: pid))
+
+    let roster = AppFeature.groupEventRow(groupHex: groupHexA, me: myHex, body: "You added Cy",
+                                          control: GroupControl.roster, now: infoT0)
+    #expect(roster.isGroupEvent == true)
+    #expect(roster.isOutgoing == true)
+    #expect(roster.peerHex == myHex)
+    #expect(roster.groupHex == groupHexA)
+    #expect(roster.messageHash == "")
+    let rosterCopy = try #require(AppFeature.groupCopy(of: roster, to: member, group: group, members: [memberC, myHex],
+                                                       identity: me, myName: "Ada", timestamp: 1700000010))
+    #expect(rosterCopy.title == Data("Mutual Aid".utf8))
+    #expect(rosterCopy.content == Data("Ada invited you to the group Mutual Aid in ReTiCaMsgr".utf8))
+    #expect(GroupWire.decode(rosterCopy.fields) == .roster(groupId: gid, name: "Mutual Aid",
+                                                           members: [member, Data(hexString: myHex)!], revision: 4))
+
+    var dissolved = group
+    dissolved.state = GroupState.dissolved
+    let deleteCopy = try #require(AppFeature.groupCopy(of: roster, to: member, group: dissolved, members: [],
+                                                       identity: me, myName: "Ada", timestamp: 1700000010))
+    #expect(deleteCopy.content == Data("Ada deleted the group Mutual Aid".utf8))
+    #expect(GroupWire.decode(deleteCopy.fields) == .roster(groupId: gid, name: "Mutual Aid", members: [], revision: 4))
+
+    let leave = AppFeature.groupEventRow(groupHex: groupHexA, me: myHex, body: "You left the group",
+                                         control: GroupControl.leave, now: infoT0)
+    let leaveCopy = try #require(AppFeature.groupCopy(of: leave, to: member, group: group, members: [memberC],
+                                                      identity: me, myName: "Ada", timestamp: 1700000010))
+    #expect(leaveCopy.content == Data("Ada left the group Mutual Aid".utf8))
+    #expect(GroupWire.decode(leaveCopy.fields) == .leave(groupId: gid))
+
+    var idless = post
+    idless.groupPostId = nil
+    #expect(AppFeature.groupCopy(of: idless, to: member, group: group, members: [], identity: me, myName: "Ada", timestamp: 1) == nil)
+}
+
+/// Spec §3 "Creating": the group, its roster (me included), the creation line with one waiting
+/// delivery per member, path requests for the members I cannot reach, and the thread opens.
+@MainActor @Test func groupCreateWritesGroupMembersLineAndWaitingDeliveries() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let store = makeStore(db, identity: me)
+    await store.send(.createGroup(name: "  Mutual Aid  ", members: [memberC, memberD.uppercased(), myHex]))
+    let groupHex = try #require(store.state.openPeerHex)
+    #expect(groupHex.count == 32)
+    #expect(store.state.openConversationKind == .group)
+    #expect(store.state.chatVisible == true)
+    #expect(store.state.openGroup?.name == "Mutual Aid")
+    #expect(store.state.openGroup?.creatorHex == myHex)
+    #expect(store.state.openGroupMembers.map(\.memberHex) == [memberC, memberD, myHex].sorted())
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    let group = try #require(try await db.read { try ChatGroup.fetch(groupHex, $0) })
+    #expect(group.revision == 1)
+    #expect(group.state == GroupState.active)
+    #expect(group.updatedAt == infoT0)
+    #expect(try await db.read { try GroupMember.members(of: groupHex, $0) } == [memberC, memberD, myHex].sorted())
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    let line = try #require(rows.first)
+    #expect(line.body == "You created the group Mutual Aid")
+    #expect(line.isGroupEvent == true)
+    #expect(line.groupControl == "roster")
+    #expect(line.groupHex == groupHex)
+    #expect(line.status == MessageStatus.sending)   // derived: every copy is waiting
+    let deliveries = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    #expect(deliveries.map(\.memberHex).sorted() == [memberC, memberD])
+    #expect(deliveries.allSatisfy { $0.status == GroupDeliveryStatus.waiting && $0.messageHash == nil && $0.messageId == line.id })
+    #expect(store.state.node.client.endpoint.transport.pathRequests[Data(hexString: memberC)!] != nil)
+    #expect(store.state.node.client.endpoint.transport.pathRequests[Data(hexString: memberD)!] != nil)
+    #expect(store.state.conversations.first?.title == "Mutual Aid")
+    #expect(store.state.conversations.first?.kind == .group)
+    #expect(store.state.threadMessages.map(\.body) == ["You created the group Mutual Aid"])
+}
+
+/// A reachable member gets their roster copy at once: title, invite body, full roster, revision
+/// 1; their row moves to sending with the copy's hash, the unreachable member's stays waiting.
+@MainActor @Test func groupCreateSendsRosterToReachableMembers() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let store = makeStore(db, identity: me) { s in
+        s.reachablePeers = [memberC]
+        s.$displayName.withLock { $0 = "Ada" }
+    }
+    let sent = await groupSends(store, .createGroup(name: "Mutual Aid", members: [memberC, memberD]), count: 1)
+    let groupHex = try #require(store.state.openPeerHex)
+    let wire = try #require(sent.first)
+    #expect(wire.destinationHash == Data(hexString: memberC))
+    #expect(wire.title == Data("Mutual Aid".utf8))
+    #expect(wire.content == Data("Ada invited you to the group Mutual Aid in ReTiCaMsgr".utf8))
+    #expect(wire.timestamp == infoT0.timeIntervalSince1970)
+    let expectedRoster = [memberC, memberD, myHex].sorted().map { Data(hexString: $0)! }
+    #expect(GroupWire.decode(wire.fields) == .roster(groupId: Data(hexString: groupHex)!, name: "Mutual Aid",
+                                                     members: expectedRoster, revision: 1))
+    let deliveries = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    let toC = try #require(deliveries.first { $0.memberHex == memberC })
+    let toD = try #require(deliveries.first { $0.memberHex == memberD })
+    #expect(toC.status == MessageStatus.sending)
+    #expect(toC.messageHash == wire.hash.hexString)
+    #expect(toD.status == GroupDeliveryStatus.waiting)
+    #expect(toD.messageHash == nil)
+    #expect(store.state.node.client.endpoint.transport.pathRequests[Data(hexString: memberC)!] == nil)
+    #expect(store.state.node.client.endpoint.transport.pathRequests[Data(hexString: memberD)!] != nil)
+}
+
+/// An empty name, no other member, or more than 12 in all, creates nothing.
+@MainActor @Test func groupCreateRejectsBadInput() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me)
+    store.exhaustivity = .on
+    await store.send(.createGroup(name: "   ", members: [memberC]))
+    await store.send(.createGroup(name: "g", members: []))
+    await store.send(.createGroup(name: "g", members: [lxmfAddressHex(me), "nothex"]))
+    let twelveOthers = (0..<12).map { String(format: "%02x", $0) + String(repeating: "0", count: 30) }
+    await store.send(.createGroup(name: "g", members: twelveOthers))
+    #expect(store.state.openPeerHex == nil)
+    #expect(try await db.read { try ChatGroup.all.fetchAll($0) }.isEmpty)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    // Eleven others plus me is the ceiling and is accepted.
+    store.exhaustivity = .off
+    await store.send(.createGroup(name: "g", members: Array(twelveOthers.prefix(11))))
+    #expect(store.state.openPeerHex != nil)
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Spec §3 "Deferred copies": the member's path arriving sends their waiting copy.
+@MainActor @Test func groupCreatePathLearnedSendsWaitingCopy() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me) { $0.$displayName.withLock { $0 = "Ada" } }
+    await store.send(.createGroup(name: "Mutual Aid", members: [memberC]))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    let groupHex = try #require(store.state.openPeerHex)
+    let sent = await groupSends(store, .node(.client(.endpoint(.delegate(.pathLearned(destinationHash: Data(hexString: memberC)!, hops: 2))))), count: 1)
+    let wire = try #require(sent.first)
+    #expect(wire.destinationHash == Data(hexString: memberC))
+    guard case let .roster(gid, _, _, _)? = GroupWire.decode(wire.fields) else { Issue.record("expected a roster"); return }
+    #expect(gid == Data(hexString: groupHex))
+    let delivery = try #require(try await db.read { try GroupDelivery.all.fetchAll($0) }.first)
+    #expect(delivery.status == MessageStatus.sending)
+    #expect(delivery.messageHash == wire.hash.hexString)
+}
+
+/// Amendment A12: a failed roster copy is re-sent when the member's path is learned again (they
+/// are behind on the roster); a failed post is not.
+@MainActor @Test func groupCreateFailedRosterIsResentButFailedPostIsNot() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let store = await groupStore(db, identity: me, members: [memberC])
+    let rosterLine = AppFeature.groupEventRow(groupHex: groupHexA, me: myHex, body: "You added Cy",
+                                              control: GroupControl.roster, now: infoT0)
+    let post = Message(id: uuid(7), peerHex: myHex, isOutgoing: true, body: "hi", timestamp: infoT0,
+                       status: MessageStatus.failed, validated: false, messageHash: String(repeating: "6f", count: 16),
+                       groupHex: groupHexA, groupPostId: String(repeating: "6f", count: 16))
+    func failed(_ id: UUID) -> GroupDelivery {
+        GroupDelivery(messageId: id, memberHex: memberC, messageHash: String(repeating: "77", count: 32),
+                      status: MessageStatus.failed, storedAt: nil, deliveredAt: nil, failedAt: infoT0)
+    }
+    // Computed here (MainActor) and captured by value below: `failed` is a MainActor-isolated
+    // local function and cannot be called from `db.write`'s @Sendable closure.
+    let failedRoster = failed(rosterLine.id)
+    let failedPost = failed(post.id)
+    try await db.write { db in
+        try Message.insert { rosterLine }.execute(db)
+        try Message.insert { post }.execute(db)
+        try GroupDelivery.insert { failedRoster }.execute(db)
+        try GroupDelivery.insert { failedPost }.execute(db)
+    }
+    let sent = await groupSends(store, .node(.client(.endpoint(.delegate(.pathLearned(destinationHash: Data(hexString: memberC)!, hops: 1))))), count: 1)
+    guard case let .roster(_, name, _, revision)? = GroupWire.decode(try #require(sent.first).fields) else {
+        Issue.record("expected a roster"); return
+    }
+    #expect(name == "Mutual Aid")
+    #expect(revision == 1)
+    let rows = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    #expect(rows.first { $0.messageId == rosterLine.id }?.status == MessageStatus.sending)
+    #expect(rows.first { $0.messageId == rosterLine.id }?.messageHash == sent[0].hash.hexString)
+    #expect(rows.first { $0.messageId == post.id }?.status == MessageStatus.failed)
+    #expect(rows.first { $0.messageId == post.id }?.messageHash == String(repeating: "77", count: 32))
+    let messages = try await db.read { try Message.all.fetchAll($0) }
+    #expect(messages.first { $0.id == rosterLine.id }?.status == MessageStatus.sending)
+    #expect(messages.first { $0.id == post.id }?.status == MessageStatus.failed)
+}

@@ -341,6 +341,9 @@ public struct AppFeature {
         case openConversation(String)
         /// A tap on a group row: opens it as a group thread.
         case openGroupConversation(String)
+        /// "Create group" (spec §3): `name` is trimmed, `members` are the other members' addresses
+        /// (me and invalid entries are dropped). Opens the new group's thread.
+        case createGroup(name: String, members: [String])
         case closeConversation
         case startConversation(String)
         /// ChatView's onAppear: the open thread is on screen again (back from another tab), so its
@@ -728,6 +731,8 @@ public struct AppFeature {
                     .send(.node(.client(.endpoint(
                         .registerRequestHandler(path: AppFeature.publicKeyRequestPath, policy: .all))))),
                 ]
+                // Group copies waiting on members whose persisted path just became usable.
+                effects.append(groupDispatchEffect(state, members: state.reachablePeers))
                 // I1: a registration the push feature asked for before the hub socket was up is
                 // resumed now — only for the TCP interface (the hub always sits behind it), and
                 // only after registerDelivery/the announce above, so the hub sees the registration
@@ -864,6 +869,54 @@ public struct AppFeature {
                 // Spec §3: a group thread asks for the paths of the members it cannot reach, so
                 // the Send gate unlocks when they answer (the one-to-one open does the same).
                 return .merge(state.openGroupOthers.map { state.pathRequestIfUnreachable($0) })
+
+            case let .createGroup(name, members):
+                let trimmedName = GroupWire.trimName(name)
+                let me = state.myAddressHex
+                let others = Set(members.map { $0.lowercased() }.filter { isValidPeerAddress($0) && $0 != me })
+                guard !trimmedName.isEmpty, !others.isEmpty, others.count + 1 <= GroupWire.maxMembers else { return .none }
+                let groupHex = GroupWire.randomId().hexString
+                let now = date.now
+                let group = ChatGroup(groupHex: groupHex, name: trimmedName, creatorHex: me, revision: 1,
+                                      state: GroupState.active, updatedAt: now)
+                let roster = others.union([me]).sorted()
+                let line = Self.groupEventRow(groupHex: groupHex, me: me, body: GroupEventText.created(name: trimmedName),
+                                              control: GroupControl.roster, now: now)
+                let deliveries = others.sorted().map { GroupDelivery.waiting(messageId: line.id, memberHex: $0) }
+                // Open the new group as `startConversation` opens a peer.
+                state.openPeerHex = groupHex
+                state.openConversationKind = .group
+                state.chatVisible = true
+                state.openGroup = group
+                state.openGroupMembers = roster.map { GroupMember(groupHex: groupHex, memberHex: $0) }
+                state.deliveriesByMessageId = [:]
+                state.openConversationExpiryLoaded = false
+                state.replyTarget = nil
+                state.pendingAttachment = nil
+                state.attachmentPreparing = false
+                state.attachmentError = nil
+                state.attachmentOriginalRequested = nil
+                let reachable = others.intersection(state.reachablePeers)
+                let identity = state.identity
+                let myName = state.myName
+                let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+                // Spec §3: members with no path get a request now; their copies wait.
+                let pathRequests = others.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
+                let write: Effect<Action> = .run { [database] send in
+                    try await database.write { db in
+                        try ChatGroup.upsert(group, db)
+                        try GroupMember.replace(groupHex, with: roster, db)
+                        try Message.insert { line }.execute(db)
+                        for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
+                        try GroupDelivery.refreshDerivedStatus(messageId: line.id, db)
+                    }
+                    _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
+                                                             myName: myName, alsoViaPropagation: alsoViaPropagation,
+                                                             now: now, send)
+                    try await reloadThread(database, groupHex, send)
+                    try await reloadConversations(database, send)
+                }
+                return .merge(pathRequests + [.cancel(id: CancelID.attachmentPreparation), write])
 
             case let .startConversation(hex):
                 guard let data = Data(hexString: hex), data.count == 16 else { return .none }
@@ -1145,6 +1198,8 @@ public struct AppFeature {
                     peerToStore = nil
                 }
                 state.reachablePeers.insert(h.hexString)
+                // Spec §3 "Deferred copies": this member may have group copies waiting for a path.
+                let groupDispatch = groupDispatchEffect(state, members: [h.hexString])
 
                 // Arm (or restart) the debounce timer for the learned-destination table. ALL
                 // pathLearned events touch Transport.State.learned (that is what pathLearned means),
@@ -1162,7 +1217,7 @@ public struct AppFeature {
                 .cancellable(id: CancelID.learnedDebounce, cancelInFlight: true)
 
                 guard let (hashKey, learned) = peerToStore else {
-                    return debounceEffect
+                    return .merge(debounceEffect, groupDispatch)
                 }
                 let hashHex = hashKey.hexString
                 let row = LearnedPeerRow(
@@ -1179,7 +1234,8 @@ public struct AppFeature {
                             try LearnedPeerRow.where { $0.destinationHashHex.eq(hashHex) }.delete().execute(db)
                             try LearnedPeerRow.insert { row }.execute(db)
                         }
-                    }
+                    },
+                    groupDispatch
                 )
 
             case let .node(.client(.delegate(.messageReceived(m, validated, method)))):
@@ -1665,10 +1721,15 @@ public struct AppFeature {
                 // interfaceConnected (Task 1) ran against an empty learned table and missed these entries. Seed
                 // from the payload now — only those whose interface is currently registered (same reachability
                 // test). No-op when disconnected: interfaceConnected will seed from Transport.learned instead.
+                var groupDispatch: Effect<Action> = .none
                 if state.connection == .connected {
                     seedReachablePeers(&state, from: destinations)
+                    groupDispatch = groupDispatchEffect(state, members: state.reachablePeers)
                 }
-                return .send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations(destinations))))))
+                return .merge(
+                    .send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations(destinations)))))),
+                    groupDispatch
+                )
 
             case let .node(.client(.router(.messagesDownloaded(transientIds)))):
                 // Persist the newly-downloaded transient IDs so a cold start doesn't re-request
@@ -1932,6 +1993,70 @@ public struct AppFeature {
         return (msg, row)
     }
 
+    /// An outgoing event line (spec §3): a system line with `isGroupEvent`, carrying `control` to
+    /// the members through its delivery rows. `status` starts as `sending` and is derived from the
+    /// delivery rows from then on (`GroupDelivery.refreshDerivedStatus`).
+    static func groupEventRow(groupHex: String, me: String, body: String, control: String?, now: Date) -> Message {
+        Message(id: UUID(), peerHex: me, isOutgoing: true, body: body, timestamp: now,
+                status: MessageStatus.sending, validated: false, messageHash: "",
+                senderTimestamp: now, fieldKeys: "", groupHex: groupHex, isGroupEvent: true, groupControl: control)
+    }
+
+    /// One member's copy of a group row (spec §3, amendment A3). The title is the group name; the
+    /// fields follow the row's kind: a post carries its reply fields then the group and post ids,
+    /// a roster line the group's current roster (an empty one, with the delete body, once the
+    /// group is dissolved), a leave line the leave marker. `timestamp` is the dispatch time, so a
+    /// re-sent copy has a fresh hash. nil when an id does not decode.
+    static func groupCopy(of row: Message, to member: Data, group: ChatGroup, members: [String],
+                          identity: Identity, myName: String, timestamp: Double) -> LXMessage? {
+        guard let groupId = Data(hexString: group.groupHex), groupId.count == GroupWire.idLength else { return nil }
+        let title = Data(GroupWire.trimName(group.name).utf8)
+        let body: String
+        let fields: [MsgPackValue.IntPair]
+        switch row.groupControl {
+        case GroupControl.roster?:
+            let roster = members.compactMap { Data(hexString: $0) }.filter { $0.count == GroupWire.idLength }
+            body = group.state == GroupState.dissolved
+                ? GroupEventText.deleteBody(who: myName, name: group.name)
+                : GroupEventText.rosterBody(inviter: myName, name: group.name)
+            fields = GroupWire.encodeRoster(groupId: groupId, name: group.name, members: roster, revision: group.revision)
+        case GroupControl.leave?:
+            body = GroupEventText.leaveBody(who: myName, name: group.name)
+            fields = GroupWire.encodeLeave(groupId: groupId)
+        default:
+            guard let postId = row.groupPostId.flatMap({ Data(hexString: $0) }), postId.count == GroupWire.idLength
+            else { return nil }
+            var replyFields: [MsgPackValue.IntPair] = []
+            if let replyTo = row.replyToHash.flatMap({ Data(hexString: $0) }), !replyTo.isEmpty {
+                replyFields = ReplyWire.encode(replyTo: replyTo, quote: row.replyQuote ?? "")
+            }
+            body = row.body
+            fields = replyFields + GroupWire.encodePost(groupId: groupId, postId: postId)
+        }
+        return LXMessage.create(source: identity, destinationHash: member, timestamp: timestamp,
+                                title: title, content: Data(body.utf8), fields: fields)
+    }
+
+    /// Spec §3 "Deferred copies": sends the waiting group copies addressed to `members`, then
+    /// reloads if anything went out. Used at `pathLearned`, `interfaceConnected` and the launch
+    /// seeding of reachable peers.
+    private func groupDispatchEffect(_ state: State, members: Set<String>) -> Effect<Action> {
+        guard !members.isEmpty else { return .none }
+        let identity = state.identity
+        let myName = state.myName
+        let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+        let openPeer = state.openPeerHex
+        let now = date.now
+        return .run { [database] send in
+            let sent = try await dispatchWaitingGroupCopies(database, members: members, identity: identity,
+                                                            myName: myName, alsoViaPropagation: alsoViaPropagation,
+                                                            now: now, send)
+            guard sent > 0 else { return }
+            try await reloadConversations(database, send)
+            if let openPeer { try await reloadThread(database, openPeer, send) }
+        }
+    }
+
     /// Encodes a picked item off the main thread (spec §3). One preparation at a time: a newer
     /// pick or Original toggle cancels the one in flight (`cancelInFlight`), and Remove, leaving or
     /// switching the thread, and Send cancel it too, so a late result can never replace or
@@ -2093,6 +2218,55 @@ private func reloadThread(_ database: any DatabaseWriter, _ key: String, _ send:
     await send(.groupLoaded(groupHex: key, group: loaded.4, members: loaded.5, deliveries: loaded.6))
     await send(.threadLoaded(loaded.0, reactions: loaded.1, attachments: loaded.2))
     await send(.conversationExpiryLoaded(peerHex: key, seconds: loaded.3))
+}
+
+/// Spec §3 "Deferred copies" (amendments A3, A12): every `waiting` delivery row addressed to one
+/// of `members` gets its copy built and sent, and moves to `sending` with that copy's hash. A
+/// `failed` roster copy for one of them is re-sent the same way, since the roster is what that
+/// member is behind on; a failed post is not. Each row's message gets its derived status
+/// refreshed. Returns how many copies went out.
+private func dispatchWaitingGroupCopies(_ database: any DatabaseWriter, members: Set<String>,
+                                        identity: Identity, myName: String, alsoViaPropagation: Bool,
+                                        now: Date, _ send: Send<AppFeature.Action>) async throws -> Int {
+    guard !members.isEmpty else { return 0 }
+    let memberList = Array(members)
+    let copies: [LXMessage] = try await database.write { db in
+        var copies: [LXMessage] = []
+        let waiting = try GroupDelivery
+            .where { $0.memberHex.in(memberList) && $0.status.eq(GroupDeliveryStatus.waiting) }
+            .fetchAll(db)
+        let failed = try GroupDelivery
+            .where { $0.memberHex.in(memberList) && $0.status.eq(MessageStatus.failed) }
+            .fetchAll(db)
+        for delivery in waiting + failed {
+            guard let row = try Message.where { $0.id.eq(delivery.messageId) }.fetchOne(db),
+                  let groupHex = row.groupHex,
+                  let group = try ChatGroup.fetch(groupHex, db),
+                  let member = Data(hexString: delivery.memberHex), member.count == GroupWire.idLength
+            else { continue }
+            if delivery.status == MessageStatus.failed, row.groupControl != GroupControl.roster { continue }
+            let roster = try GroupMember.members(of: groupHex, db)
+            guard let copy = AppFeature.groupCopy(of: row, to: member, group: group, members: roster,
+                                                  identity: identity, myName: myName,
+                                                  timestamp: now.timeIntervalSince1970)
+            else { continue }
+            let hashHex: String? = copy.hash.hexString
+            try GroupDelivery
+                .where { $0.messageId.eq(delivery.messageId) && $0.memberHex.eq(delivery.memberHex) }
+                .update {
+                    $0.messageHash = hashHex
+                    $0.status = MessageStatus.sending
+                }
+                .execute(db)
+            try GroupDelivery.refreshDerivedStatus(messageId: delivery.messageId, db)
+            copies.append(copy)
+        }
+        return copies
+    }
+    for copy in copies {
+        await send(.node(.client(.sendMessage(message: copy, alsoViaPropagation: alsoViaPropagation))))
+    }
+    return copies.count
 }
 
 /// First view (spec §3): every row of `peerHex` that carries a duration and has no `expiresAt`

@@ -37,6 +37,14 @@ public struct GroupDelivery: Equatable, Sendable {
     public static func byMessageId(_ rows: [GroupDelivery]) -> [UUID: [GroupDelivery]] {
         Dictionary(grouping: rows, by: \.messageId).mapValues { $0.sorted { $0.memberHex < $1.memberHex } }
     }
+
+    /// Writes the row's derived status (amendment A8) into `messages.status`, so the bubble, the
+    /// list preview and the Info sheet keep reading one column.
+    public static func refreshDerivedStatus(messageId: UUID, _ db: GRDB.Database) throws {
+        let rows = try GroupDelivery.where { $0.messageId.eq(messageId) }.fetchAll(db)
+        let status = GroupRoster.derivedStatus(rows)
+        try Message.where { $0.id.eq(messageId) }.update { $0.status = status }.execute(db)
+    }
 }
 
 public enum GroupDeliveryStatus {
