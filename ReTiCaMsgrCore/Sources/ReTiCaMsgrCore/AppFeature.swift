@@ -1654,6 +1654,8 @@ public struct AppFeature {
                         try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing && $0.storedAt.is(nil) }
                             .update { $0.storedAt = milestoneAt }
                             .execute(db)
+                        // A group copy carries its own hash in its delivery row (spec §3).
+                        try GroupDelivery.applyOutcome(hash: hex, .stored, at: milestoneAt ?? .distantPast, db)
                     }
                     try await reloadConversations(database, send)
                     if let openPeer {
@@ -1687,6 +1689,7 @@ public struct AppFeature {
                         try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing && $0.deliveredAt.is(nil) }
                             .update { $0.deliveredAt = milestoneAt }
                             .execute(db)
+                        try GroupDelivery.applyOutcome(hash: hex, .delivered, at: milestoneAt ?? .distantPast, db)
                     }
                     try await reloadConversations(database, send)
                     if let openPeer {
@@ -1975,6 +1978,8 @@ public struct AppFeature {
                 try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing && $0.failedAt.is(nil) }
                     .update { $0.failedAt = milestoneAt }
                     .execute(db)
+                try GroupDelivery.applyOutcome(hash: hex, status == MessageStatus.cancelled ? .cancelled : .failed,
+                                               at: milestoneAt ?? .distantPast, db)
             }
             try await reloadConversations(database, send)
             if let openPeer {

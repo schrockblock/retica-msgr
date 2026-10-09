@@ -45,6 +45,51 @@ public struct GroupDelivery: Equatable, Sendable {
         let status = GroupRoster.derivedStatus(rows)
         try Message.where { $0.id.eq(messageId) }.update { $0.status = status }.execute(db)
     }
+
+    public enum Outcome: Equatable, Sendable { case delivered, stored, failed, cancelled }
+
+    /// Spec §3 "Delivery delegates": applies one delegate outcome to the copy with `hash`, under
+    /// the same guards and first-milestone rules as `messages`: delivered always wins and records
+    /// the first proof time; stored never downgrades delivered and records the first acceptance;
+    /// failed or cancelled never clobber stored, delivered or cancelled and record the first
+    /// failure. Then the row's message gets its derived status. Returns the message id, or nil when
+    /// no group copy carries `hash`.
+    @discardableResult
+    public static func applyOutcome(hash: String, _ outcome: Outcome, at now: Date, _ db: GRDB.Database) throws -> UUID? {
+        guard let row = try GroupDelivery.where { $0.messageHash.eq(hash) }.fetchOne(db) else { return nil }
+        let milestone: Date? = now
+        switch outcome {
+        case .delivered:
+            try GroupDelivery.where { $0.messageHash.eq(hash) }
+                .update { $0.status = MessageStatus.delivered }
+                .execute(db)
+            try GroupDelivery.where { $0.messageHash.eq(hash) && $0.deliveredAt.is(nil) }
+                .update { $0.deliveredAt = milestone }
+                .execute(db)
+        case .stored:
+            try GroupDelivery.where { $0.messageHash.eq(hash) && $0.status.neq(MessageStatus.delivered) }
+                .update { $0.status = MessageStatus.propagated }
+                .execute(db)
+            try GroupDelivery.where { $0.messageHash.eq(hash) && $0.storedAt.is(nil) }
+                .update { $0.storedAt = milestone }
+                .execute(db)
+        case .failed, .cancelled:
+            let status = outcome == .failed ? MessageStatus.failed : MessageStatus.cancelled
+            try GroupDelivery.where {
+                $0.messageHash.eq(hash)
+                    && $0.status.neq(MessageStatus.propagated)
+                    && $0.status.neq(MessageStatus.delivered)
+                    && $0.status.neq(MessageStatus.cancelled)
+            }
+                .update { $0.status = status }
+                .execute(db)
+            try GroupDelivery.where { $0.messageHash.eq(hash) && $0.failedAt.is(nil) }
+                .update { $0.failedAt = milestone }
+                .execute(db)
+        }
+        try refreshDerivedStatus(messageId: row.messageId, db)
+        return row.messageId
+    }
 }
 
 public enum GroupDeliveryStatus {

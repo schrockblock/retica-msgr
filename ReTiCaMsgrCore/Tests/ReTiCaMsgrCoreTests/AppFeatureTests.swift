@@ -5282,3 +5282,121 @@ private func groupSends(_ store: TestStoreOf<AppFeature>, _ action: AppFeature.A
     await store.send(.reactionSelected(messageHash: String(repeating: "9", count: 64), emoji: "👍"))
     #expect(try await db.read { try Reaction.all.fetchAll($0) }.isEmpty)
 }
+
+// MARK: - Group chats: delivery delegates (Task 7)
+
+private let groupDeliverHashC = String(repeating: "a1", count: 32)
+private let groupDeliverHashD = String(repeating: "b2", count: 32)
+
+/// A post row sending to C and D, with the group open, so the thread reload is observable.
+@MainActor
+private func groupDeliverStore(_ db: any DatabaseWriter) async -> (TestStoreOf<AppFeature>, Message) {
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let post = Message(id: uuid(11), peerHex: myHex, isOutgoing: true, body: "p", timestamp: infoT0,
+                       status: MessageStatus.sending, validated: false, messageHash: String(repeating: "5e", count: 16),
+                       groupHex: groupHexA, groupPostId: String(repeating: "5e", count: 16))
+    try! await db.write { db in
+        try Message.insert { post }.execute(db)
+        try GroupDelivery.insert {
+            GroupDelivery(messageId: post.id, memberHex: memberC, messageHash: groupDeliverHashC,
+                          status: MessageStatus.sending, storedAt: nil, deliveredAt: nil, failedAt: nil)
+        }.execute(db)
+        try GroupDelivery.insert {
+            GroupDelivery(messageId: post.id, memberHex: memberD, messageHash: groupDeliverHashD,
+                          status: MessageStatus.sending, storedAt: nil, deliveredAt: nil, failedAt: nil)
+        }.execute(db)
+    }
+    let store = await groupStore(db, identity: me, members: [memberC, memberD])
+    return (store, post)
+}
+
+private func groupDeliverRows(_ db: any DatabaseWriter) async throws -> (c: GroupDelivery?, d: GroupDelivery?, post: Message?) {
+    let deliveries = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    let post = try await db.read { try Message.where { $0.id.eq(uuid(11)) }.fetchOne($0) }
+    return (deliveries.first { $0.memberHex == memberC }, deliveries.first { $0.memberHex == memberD }, post)
+}
+
+/// Spec §3 "Delivery delegates": a proof for a member's hash marks that row delivered with its
+/// first-proof time, the post stays sending until every member proved, then reads delivered.
+@MainActor @Test func groupDeliverConfirmedUpdatesMemberRowAndDerivedStatus() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let (store, _) = await groupDeliverStore(db)
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(groupDeliverHashC))))))
+    await store.skipReceivedActions(strict: false)
+    var rows = try await groupDeliverRows(db)
+    #expect(rows.c?.status == MessageStatus.delivered)
+    #expect(rows.c?.deliveredAt == infoT0)
+    #expect(rows.d?.status == MessageStatus.sending)
+    #expect(rows.post?.status == MessageStatus.sending)
+    #expect(store.state.deliveriesByMessageId[uuid(11)]?.first { $0.memberHex == memberC }?.status == MessageStatus.delivered)
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(groupDeliverHashD))))))
+    await store.skipReceivedActions(strict: false)
+    rows = try await groupDeliverRows(db)
+    #expect(rows.post?.status == MessageStatus.delivered)
+    #expect(store.state.threadMessages.first?.status == MessageStatus.delivered)
+    // A repeat proof never moves the first time.
+    store.dependencies.date = .constant(infoT0.addingTimeInterval(60))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(groupDeliverHashC))))))
+    await store.skipReceivedActions(strict: false)
+    #expect(try await groupDeliverRows(db).c?.deliveredAt == infoT0)
+}
+
+/// A propagation acceptance marks the member row stored unless it was already delivered; a post
+/// whose copies are all proved or stored reads stored.
+@MainActor @Test func groupDeliverPropagationAcceptedMarksStored() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let (store, _) = await groupDeliverStore(db)
+    await sendAndSettle(store, .node(.client(.delegate(.propagationAccepted(messageHash: hashData(groupDeliverHashC))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(groupDeliverHashD))))))
+    await sendAndSettle(store, .node(.client(.delegate(.propagationAccepted(messageHash: hashData(groupDeliverHashD))))))
+    await store.skipReceivedActions(strict: false)
+    let rows = try await groupDeliverRows(db)
+    #expect(rows.c?.status == MessageStatus.propagated)
+    #expect(rows.c?.storedAt == infoT0)
+    #expect(rows.d?.status == MessageStatus.delivered)   // delivered beats stored
+    #expect(rows.d?.storedAt == infoT0)                   // the acceptance time is still news
+    #expect(rows.post?.status == MessageStatus.propagated)
+}
+
+/// Failures: a failed, rejected or cancelled copy takes that status with its first failure time,
+/// never clobbers a delivered or stored one, and the post reads failed only when every copy did.
+@MainActor @Test func groupDeliverFailedRejectedCancelledFollowTheGuards() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let (store, _) = await groupDeliverStore(db)
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryRejected(messageHash: hashData(groupDeliverHashC))))))
+    await store.skipReceivedActions(strict: false)
+    var rows = try await groupDeliverRows(db)
+    #expect(rows.c?.status == MessageStatus.failed)
+    #expect(rows.c?.failedAt == infoT0)
+    #expect(rows.post?.status == MessageStatus.sending)
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryCancelled(messageHash: hashData(groupDeliverHashD))))))
+    await store.skipReceivedActions(strict: false)
+    rows = try await groupDeliverRows(db)
+    #expect(rows.d?.status == MessageStatus.cancelled)
+    #expect(rows.post?.status == MessageStatus.failed)
+    // A late failure for a cancelled row leaves it cancelled; a proof after a failure still wins.
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(groupDeliverHashD))))))
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(groupDeliverHashC))))))
+    await store.skipReceivedActions(strict: false)
+    rows = try await groupDeliverRows(db)
+    #expect(rows.d?.status == MessageStatus.cancelled)
+    #expect(rows.c?.status == MessageStatus.delivered)
+    #expect(rows.post?.status == MessageStatus.sent)
+    // A failure after delivery changes nothing.
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryFailed(messageHash: hashData(groupDeliverHashC))))))
+    await store.skipReceivedActions(strict: false)
+    #expect(try await groupDeliverRows(db).c?.status == MessageStatus.delivered)
+}
+
+/// A hash no group copy carries touches no delivery row (the one-to-one path handles it).
+@MainActor @Test func groupDeliverUnknownHashTouchesNothing() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let (store, _) = await groupDeliverStore(db)
+    await sendAndSettle(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: hashData(String(repeating: "c3", count: 32)))))))
+    await store.skipReceivedActions(strict: false)
+    let rows = try await groupDeliverRows(db)
+    #expect(rows.c?.status == MessageStatus.sending)
+    #expect(rows.d?.status == MessageStatus.sending)
+    #expect(rows.post?.status == MessageStatus.sending)
+}
