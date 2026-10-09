@@ -5578,3 +5578,378 @@ private func groupReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage, vali
     #expect(row.replyQuote == "sandbags at 6")
     #expect(row.fieldKeys == "0x30,0x31,0xfd")
 }
+
+// MARK: - Group chats: control messages and roster actions (Task 9)
+
+private func groupRosterWire(from sender: Identity, to me: Identity, members: [String], name: String = "Mutual Aid",
+                             revision: Int, at ts: Double = 1700000000.5) -> LXMessage {
+    wireMessage(from: sender, to: me, at: ts, title: name, content: "someone invited you to the group \(name) in ReTiCaMsgr",
+                fields: GroupWire.encodeRoster(groupId: Data(hexString: groupHexA)!, name: name,
+                                               members: members.map { Data(hexString: $0)! }, revision: revision))
+}
+
+private func groupLeaveWire(from sender: Identity, to me: Identity, at ts: Double = 1700000000.5) -> LXMessage {
+    wireMessage(from: sender, to: me, at: ts, title: "Mutual Aid", content: "someone left the group Mutual Aid",
+                fields: GroupWire.encodeLeave(groupId: Data(hexString: groupHexA)!))
+}
+
+/// Names the sender "Cy" through an announce, so lines read as a person would see them.
+@MainActor
+private func groupNameSender(_ store: TestStoreOf<AppFeature>, _ sender: Identity) async {
+    let learned = LXMFNode.LearnedPeer(displayName: "Cy", stampCost: nil, supportsCompression: false, learnedAt: infoT0)
+    await store.send(.node(.client(.rehydrateLearnedPeers([groupMemberHash(sender): learned]))))
+    await store.skipReceivedActions(strict: false)
+}
+
+private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String] {
+    try await db.read { try Message.where { $0.isGroupEvent }.order(by: \.timestamp).fetchAll($0) }.map(\.body)
+}
+
+/// Spec §3: a roster for an unknown group creates it `invited`, with its sender as creator and
+/// one invite line; nothing is stored as a bubble.
+@MainActor @Test func groupControlRosterForUnknownGroupCreatesInvitedGroupAndLine() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let store = makeStore(db, identity: me)
+    await groupNameSender(store, sender)
+    await groupReceive(store, groupRosterWire(from: sender, to: me, members: [senderHex, myHex, memberD], revision: 1))
+    let group = try #require(try await db.read { try ChatGroup.fetch(groupHexA, $0) })
+    #expect(group.name == "Mutual Aid")
+    #expect(group.creatorHex == senderHex)
+    #expect(group.revision == 1)
+    #expect(group.state == GroupState.invited)
+    #expect(group.updatedAt == infoT0)
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [senderHex, myHex, memberD].sorted())
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    let line = try #require(rows.first)
+    #expect(line.body == "Cy invited you to the group Mutual Aid")
+    #expect(line.isGroupEvent == true)
+    #expect(line.isOutgoing == false)
+    #expect(line.peerHex == senderHex)
+    #expect(line.groupHex == groupHexA)
+    #expect(line.validated == true)
+    #expect(store.state.conversations.first?.title == "Mutual Aid")
+    #expect(store.state.conversations.first?.groupState == GroupState.invited)
+    #expect(try await db.read { try SeenHashRow.all.fetchAll($0) }.count == 1)
+}
+
+/// A higher revision from the creator replaces the roster and name and says what changed, in
+/// the order added, removed, renamed.
+@MainActor @Test func groupControlHigherRevisionReplacesMembersAndInsertsLines() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let store = await groupStore(db, identity: me, creatorHex: senderHex, members: [senderHex, memberD])
+    await groupNameSender(store, sender)
+    await groupReceive(store, groupRosterWire(from: sender, to: me, members: [senderHex, myHex, memberC], name: "Block 4", revision: 2))
+    let group = try #require(try await db.read { try ChatGroup.fetch(groupHexA, $0) })
+    #expect(group.name == "Block 4")
+    #expect(group.revision == 2)
+    #expect(group.state == GroupState.active)
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [senderHex, myHex, memberC].sorted())
+    #expect(try await groupEventBodies(db) == ["Cy added cccccccc", "Cy removed dddddddd", "Cy renamed the group to Block 4"])
+    #expect(store.state.openGroup?.name == "Block 4")
+    #expect(store.state.threadMessages.count == 3)
+}
+
+/// Amendment A5: a roster from the real creator that is not newer is dropped silently.
+@MainActor @Test func groupControlStaleRosterFromCreatorIsDropped() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let store = await groupStore(db, identity: me, creatorHex: senderHex, members: [senderHex, memberD])
+    let m = groupRosterWire(from: sender, to: me, members: [senderHex, myHex], revision: 1)
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [senderHex, myHex, memberD].sorted())
+    #expect(try await db.read { try SeenHashRow.all.fetchAll($0) }.map(\.hashHex) == [m.hash.hexString])
+}
+
+/// A roster from anyone but the creator of a known group is the plain message its body is.
+@MainActor @Test func groupControlRosterFromNonCreatorIsPlainMessage() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let outsider = Identity()
+    let outsiderHex = groupMemberHash(outsider).hexString
+    let store = await groupStore(db, identity: me, creatorHex: memberC, members: [memberC])
+    let m = groupRosterWire(from: outsider, to: me, members: [outsiderHex, myHex], revision: 5)
+    await groupReceive(store, m)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(rows.first?.groupHex == nil)
+    #expect(rows.first?.isGroupEvent == false)
+    #expect(rows.first?.peerHex == outsiderHex)
+    #expect(rows.first?.messageHash == m.hash.hexString)
+    #expect(rows.first?.body == "someone invited you to the group Mutual Aid in ReTiCaMsgr")
+    #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.revision == 1)
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [memberC, myHex].sorted())
+}
+
+/// Review Focus 2: a roster that does not list its own sender does not apply.
+@MainActor @Test func groupControlRosterOmittingSenderIsPlainMessage() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let store = await groupStore(db, identity: me, creatorHex: senderHex, members: [senderHex])
+    await groupReceive(store, groupRosterWire(from: sender, to: me, members: [myHex, memberD], revision: 2))
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.map(\.groupHex) == [nil])
+    #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.revision == 1)
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [senderHex, myHex].sorted())
+}
+
+/// Being left off the roster marks the group `left` with its own line; an empty roster marks it
+/// `dissolved`, after which nothing revives it.
+@MainActor @Test func groupControlRosterRemovingMeOrEmptyClosesTheGroup() async throws {
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let removedDb = try AppDatabase.makeInMemory()
+    let removed = await groupStore(removedDb, identity: me, creatorHex: senderHex, members: [senderHex, memberD])
+    await groupNameSender(removed, sender)
+    await groupReceive(removed, groupRosterWire(from: sender, to: me, members: [senderHex, memberD], revision: 2))
+    #expect(try await removedDb.read { try ChatGroup.fetch(groupHexA, $0) }?.state == GroupState.left)
+    #expect(try await removedDb.read { try GroupMember.members(of: groupHexA, $0) } == [senderHex, memberD].sorted())
+    #expect(try await groupEventBodies(removedDb) == ["Cy removed you from the group"])
+    let dissolvedDb = try AppDatabase.makeInMemory()
+    let dissolved = await groupStore(dissolvedDb, identity: me, creatorHex: senderHex, members: [senderHex, memberD])
+    await groupNameSender(dissolved, sender)
+    await groupReceive(dissolved, groupRosterWire(from: sender, to: me, members: [], revision: 2))
+    #expect(try await dissolvedDb.read { try ChatGroup.fetch(groupHexA, $0) }?.state == GroupState.dissolved)
+    #expect(try await dissolvedDb.read { try GroupMember.members(of: groupHexA, $0) }.isEmpty)
+    #expect(try await groupEventBodies(dissolvedDb) == ["Cy deleted the group"])
+    let revive = groupRosterWire(from: sender, to: me, members: [senderHex, myHex], revision: 3, at: 1700000002)
+    await dissolved.send(.node(.client(.delegate(.messageReceived(message: revive, signatureValidated: true, method: .opportunistic)))))
+    await dissolved.skipReceivedActions(strict: false)
+    #expect(try await dissolvedDb.read { try ChatGroup.fetch(groupHexA, $0) }?.state == GroupState.dissolved)
+    #expect(try await dissolvedDb.read { try Message.all.fetchAll($0) }.count == 1)
+}
+
+/// Review Focus 5: a roster listing me again after I left brings the group back as `invited`.
+@MainActor @Test func groupControlReinviteAfterLeftBecomesInvited() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let sender = Identity()
+    let senderHex = groupMemberHash(sender).hexString
+    let store = await groupStore(db, identity: me, creatorHex: senderHex, members: [senderHex], state: GroupState.left)
+    await groupNameSender(store, sender)
+    await groupReceive(store, groupRosterWire(from: sender, to: me, members: [senderHex, myHex], revision: 2))
+    #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.state == GroupState.invited)
+    #expect(try await groupEventBodies(db) == ["Cy invited you to the group Mutual Aid"])
+}
+
+/// A leave from a member removes them with a line; from a non-member it is a plain message.
+@MainActor @Test func groupControlLeaveFromMemberRemovesAndNonMemberIsPlain() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let leaver = Identity()
+    let leaverHex = groupMemberHash(leaver).hexString
+    let outsider = Identity()
+    let store = await groupStore(db, identity: me, creatorHex: memberC, members: [memberC, leaverHex])
+    await groupNameSender(store, leaver)
+    await groupReceive(store, groupLeaveWire(from: leaver, to: me))
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [memberC, myHex].sorted())
+    #expect(try await groupEventBodies(db) == ["Cy left the group"])
+    #expect(try await db.read { try GroupDelivery.all.fetchAll($0) }.isEmpty)
+    await groupReceive(store, groupLeaveWire(from: outsider, to: me, at: 1700000002))
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 2)
+    let plain = try #require(rows.first { $0.groupHex == nil })
+    #expect(plain.isGroupEvent == false)
+    #expect(plain.body == "someone left the group Mutual Aid")
+}
+
+/// Amendment A7: when a member leaves a group I created, the leave line is mine and carries the
+/// new roster to the remaining members.
+@MainActor @Test func groupControlLeaveWhenIAmCreatorResendsRoster() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let leaver = Identity()
+    let leaverHex = groupMemberHash(leaver).hexString
+    let store = await groupStore(db, identity: me, members: [leaverHex, memberD], reachable: [memberD])
+    await groupNameSender(store, leaver)
+    let sent = await groupSends(store, .node(.client(.delegate(.messageReceived(
+        message: groupLeaveWire(from: leaver, to: me), signatureValidated: true, method: .opportunistic)))), count: 1)
+    let wire = try #require(sent.first)
+    #expect(wire.destinationHash == Data(hexString: memberD))
+    #expect(GroupWire.decode(wire.fields) == .roster(groupId: Data(hexString: groupHexA)!, name: "Mutual Aid",
+                                                     members: [memberD, myHex].sorted().map { Data(hexString: $0)! }, revision: 2))
+    #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.revision == 2)
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [memberD, myHex].sorted())
+    let line = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(line.body == "Cy left the group")
+    #expect(line.isOutgoing == true)
+    #expect(line.groupControl == "roster")
+    let deliveries = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    #expect(deliveries.map(\.memberHex) == [memberD])
+    #expect(deliveries.first?.status == MessageStatus.sending)
+    #expect(deliveries.first?.messageHash == wire.hash.hexString)
+}
+
+/// Spec §3 "Creating and editing": adding members bumps the revision, writes the line, fans the
+/// new roster to every member (the new one included) and asks for the paths it lacks.
+@MainActor @Test func groupControlAddMembersBumpsRevisionAndFansOut() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let store = await groupStore(db, identity: me, members: [memberC], reachable: [memberC]) { $0.$displayName.withLock { $0 = "Ada" } }
+    let sent = await groupSends(store, .addGroupMembers([memberD, memberC, myHex, "junk"]), count: 1)
+    let wire = try #require(sent.first)
+    #expect(wire.destinationHash == Data(hexString: memberC))
+    #expect(wire.content == Data("Ada invited you to the group Mutual Aid in ReTiCaMsgr".utf8))
+    #expect(GroupWire.decode(wire.fields) == .roster(groupId: Data(hexString: groupHexA)!, name: "Mutual Aid",
+                                                     members: [memberC, memberD, myHex].sorted().map { Data(hexString: $0)! }, revision: 2))
+    #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.revision == 2)
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [memberC, memberD, myHex].sorted())
+    #expect(try await groupEventBodies(db) == ["You added dddddddd"])
+    let deliveries = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    #expect(deliveries.first { $0.memberHex == memberC }?.status == MessageStatus.sending)
+    #expect(deliveries.first { $0.memberHex == memberD }?.status == GroupDeliveryStatus.waiting)
+    #expect(store.state.node.client.endpoint.transport.pathRequests[Data(hexString: memberD)!] != nil)
+    #expect(store.state.openGroupMembers.count == 3)
+}
+
+/// Removing a member sends the new roster to the removed member too, so their device marks the
+/// group left.
+@MainActor @Test func groupControlRemoveMemberSendsRosterToRemovedToo() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let store = await groupStore(db, identity: me, members: [memberC, memberD], reachable: [memberC, memberD])
+    let sent = await groupSends(store, .removeGroupMember(memberD), count: 2)
+    #expect(Set(sent.map(\.destinationHash)) == [Data(hexString: memberC)!, Data(hexString: memberD)!])
+    for wire in sent {
+        #expect(GroupWire.decode(wire.fields) == .roster(groupId: Data(hexString: groupHexA)!, name: "Mutual Aid",
+                                                         members: [memberC, myHex].sorted().map { Data(hexString: $0)! }, revision: 2))
+    }
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [memberC, myHex].sorted())
+    #expect(try await groupEventBodies(db) == ["You removed dddddddd"])
+}
+
+/// Renaming sends the new name; deleting sends an empty roster with the delete body and marks
+/// the group dissolved.
+@MainActor @Test func groupControlRenameThenDelete() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = await groupStore(db, identity: me, members: [memberC], reachable: [memberC]) { $0.$displayName.withLock { $0 = "Ada" } }
+    let renamed = await groupSends(store, .renameGroup("  Block 4  "), count: 1)
+    // groupSends's drain races the rename effect's later reloadThread/reloadConversations steps
+    // (several await boundaries past the one sendMessage it explicitly waits for); settle fully
+    // before reading state or sending the next action.
+    await store.skipReceivedActions(strict: false)
+    #expect(GroupWire.decode(try #require(renamed.first).fields)
+            == .roster(groupId: Data(hexString: groupHexA)!, name: "Block 4",
+                       members: [memberC, lxmfAddressHex(me)].sorted().map { Data(hexString: $0)! }, revision: 2))
+    #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.name == "Block 4")
+    #expect(store.state.openGroup?.name == "Block 4")
+    let deleted = await groupSends(store, .deleteGroup, count: 1)
+    await store.skipReceivedActions(strict: false)
+    let wire = try #require(deleted.first)
+    #expect(wire.content == Data("Ada deleted the group Block 4".utf8))
+    #expect(GroupWire.decode(wire.fields) == .roster(groupId: Data(hexString: groupHexA)!, name: "Block 4", members: [], revision: 3))
+    let group = try #require(try await db.read { try ChatGroup.fetch(groupHexA, $0) })
+    #expect(group.state == GroupState.dissolved)
+    #expect(group.revision == 3)
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) }.isEmpty)
+    #expect(try await groupEventBodies(db) == ["You renamed the group to Block 4", "You deleted the group"])
+    // Two successful sends each leave the node's own long-lived retry/debounce effect in flight
+    // (Global Constraints: never `finish()` after an action on the node's send path); clear them
+    // rather than wait, since nothing here asserts on their eventual outcome.
+    await store.skipInFlightEffects(strict: false)
+    // Re-picking the current name sends nothing.
+    store.exhaustivity = .on
+    await store.send(.renameGroup("Block 4"))
+}
+
+/// Leaving sends the leave to every member, drops me from the roster and marks the group left.
+@MainActor @Test func groupControlLeaveSendsLeaveAndMarksLeft() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = await groupStore(db, identity: me, creatorHex: memberC, members: [memberC, memberD], reachable: [memberC]) { $0.$displayName.withLock { $0 = "Ada" } }
+    let sent = await groupSends(store, .leaveGroup, count: 1)
+    let wire = try #require(sent.first)
+    #expect(wire.destinationHash == Data(hexString: memberC))
+    #expect(wire.content == Data("Ada left the group Mutual Aid".utf8))
+    #expect(GroupWire.decode(wire.fields) == .leave(groupId: Data(hexString: groupHexA)!))
+    #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.state == GroupState.left)
+    #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [memberC, memberD])
+    let line = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(line.body == "You left the group")
+    #expect(line.groupControl == "leave")
+    let deliveries = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    #expect(deliveries.first { $0.memberHex == memberD }?.status == GroupDeliveryStatus.waiting)
+    #expect(store.state.openGroup?.state == GroupState.left)
+}
+
+/// Accepting flips invited to active with no message; declining (amendment A6) marks it left,
+/// writes its line and sends the leave to the creator only.
+@MainActor @Test func groupControlAcceptAndDecline() async throws {
+    let me = Identity()
+    let acceptDb = try AppDatabase.makeInMemory()
+    let accept = await groupStore(acceptDb, identity: me, creatorHex: memberC, members: [memberC, memberD], state: GroupState.invited, reachable: [memberC, memberD])
+    await accept.send(.acceptInvite)
+    await accept.receive { if case .groupLoaded = $0 { return true }; return false }
+    await accept.skipReceivedActions(strict: false)
+    #expect(try await acceptDb.read { try ChatGroup.fetch(groupHexA, $0) }?.state == GroupState.active)
+    #expect(accept.state.openGroup?.state == GroupState.active)
+    #expect(try await acceptDb.read { try Message.all.fetchAll($0) }.isEmpty)
+    let declineDb = try AppDatabase.makeInMemory()
+    let decline = await groupStore(declineDb, identity: me, creatorHex: memberC, members: [memberC, memberD], state: GroupState.invited, reachable: [memberC, memberD])
+    let sent = await groupSends(decline, .declineInvite, count: 1)
+    // groupSends's underlying TestStore.receive(predicate:) re-examines the same already-queued
+    // action against the predicate several times while the effect's remaining await points
+    // (reloadThread/reloadConversations) are still settling, so a side-effecting predicate (as
+    // groupSends's is) can append the one real message more than once; compare the first
+    // (the established house style elsewhere in this file) rather than the whole array.
+    #expect(sent.first?.destinationHash == Data(hexString: memberC))
+    #expect(GroupWire.decode(try #require(sent.first).fields) == .leave(groupId: Data(hexString: groupHexA)!))
+    #expect(try await declineDb.read { try ChatGroup.fetch(groupHexA, $0) }?.state == GroupState.left)
+    #expect(try await groupEventBodies(declineDb) == ["You declined the invitation"])
+    #expect(try await declineDb.read { try GroupDelivery.all.fetchAll($0) }.map(\.memberHex) == [memberC])
+    #expect(try await declineDb.read { try GroupMember.members(of: groupHexA, $0) } == [memberC, memberD])
+}
+
+/// Only the creator edits, and the creator cannot leave (spec §1); an inactive group refuses edits.
+@MainActor @Test func groupControlRoleGuards() async throws {
+    let me = Identity()
+    let memberDb = try AppDatabase.makeInMemory()
+    let member = await groupStore(memberDb, identity: me, creatorHex: memberC, members: [memberC], reachable: [memberC])
+    member.exhaustivity = .on
+    await member.send(.addGroupMembers([memberD]))
+    await member.send(.removeGroupMember(memberC))
+    await member.send(.renameGroup("x"))
+    await member.send(.deleteGroup)
+    await member.send(.acceptInvite)
+    await member.send(.declineInvite)
+    #expect(try await memberDb.read { try Message.all.fetchAll($0) }.isEmpty)
+    #expect(try await memberDb.read { try ChatGroup.fetch(groupHexA, $0) }?.revision == 1)
+    let creatorDb = try AppDatabase.makeInMemory()
+    let creator = await groupStore(creatorDb, identity: me, members: [memberC], reachable: [memberC])
+    creator.exhaustivity = .on
+    await creator.send(.leaveGroup)
+    await creator.send(.removeGroupMember(lxmfAddressHex(me)))
+    await creator.send(.addGroupMembers([memberC]))   // already a member
+    #expect(try await creatorDb.read { try Message.all.fetchAll($0) }.isEmpty)
+    let leftDb = try AppDatabase.makeInMemory()
+    let left = await groupStore(leftDb, identity: me, members: [memberC], state: GroupState.left, reachable: [memberC])
+    left.exhaustivity = .on
+    await left.send(.renameGroup("x"))
+    await left.send(.addGroupMembers([memberD]))
+    #expect(try await leftDb.read { try Message.all.fetchAll($0) }.isEmpty)
+}

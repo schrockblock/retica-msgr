@@ -344,6 +344,20 @@ public struct AppFeature {
         /// "Create group" (spec §3): `name` is trimmed, `members` are the other members' addresses
         /// (me and invalid entries are dropped). Opens the new group's thread.
         case createGroup(name: String, members: [String])
+        /// Creator only, on the open group (spec §3): each bumps the revision, writes its line and
+        /// fans the new roster to every member.
+        case addGroupMembers([String])
+        case removeGroupMember(String)
+        case renameGroup(String)
+        case deleteGroup
+        /// Member only: sends the leave to every member and marks the group left.
+        case leaveGroup
+        case acceptInvite
+        /// Marks the invite left and sends the leave to the creator only (amendment A6).
+        case declineInvite
+        /// A roster was re-issued inside a receive (a member left a group I created): send the
+        /// waiting copies to the reachable members. Internal.
+        case groupRosterChanged(groupHex: String)
         case closeConversation
         case startConversation(String)
         /// ChatView's onAppear: the open thread is on screen again (back from another tab), so its
@@ -918,6 +932,95 @@ public struct AppFeature {
                 }
                 return .merge(pathRequests + [.cancel(id: CancelID.attachmentPreparation), write])
 
+            case let .addGroupMembers(hexes):
+                guard let group = state.openGroup, state.isOpenGroupCreator, group.state == GroupState.active else { return .none }
+                let current = Set(state.openGroupMembers.map(\.memberHex))
+                let added = Set(hexes.map { $0.lowercased() }.filter { isValidPeerAddress($0) }).subtracting(current)
+                guard !added.isEmpty, current.count + added.count <= GroupWire.maxMembers else { return .none }
+                let who = added.sorted().map { state.groupMemberName($0) }.joined(separator: ", ")
+                let groupHex = group.groupHex
+                return groupChange(state, groupHex: groupHex, line: GroupEventText.added(by: GroupEventText.you, who: who),
+                                   control: GroupControl.roster,
+                                   recipients: current.union(added).subtracting([state.myAddressHex])) { group, db in
+                    group.revision += 1
+                    let members = try GroupMember.members(of: groupHex, db)
+                    try GroupMember.replace(groupHex, with: members + Array(added), db)
+                }
+
+            case let .removeGroupMember(hex):
+                guard let group = state.openGroup, state.isOpenGroupCreator, group.state == GroupState.active,
+                      hex != state.myAddressHex, state.openGroupMembers.contains(where: { $0.memberHex == hex })
+                else { return .none }
+                let groupHex = group.groupHex
+                return groupChange(state, groupHex: groupHex,
+                                   line: GroupEventText.removed(by: GroupEventText.you, who: state.groupMemberName(hex)),
+                                   control: GroupControl.roster, recipients: Set(state.openGroupOthers)) { group, db in
+                    group.revision += 1
+                    try GroupMember.where { $0.groupHex.eq(groupHex) && $0.memberHex.eq(hex) }.delete().execute(db)
+                }
+
+            case let .renameGroup(name):
+                let trimmed = GroupWire.trimName(name)
+                guard let group = state.openGroup, state.isOpenGroupCreator, group.state == GroupState.active,
+                      !trimmed.isEmpty, trimmed != group.name
+                else { return .none }
+                return groupChange(state, groupHex: group.groupHex,
+                                   line: GroupEventText.renamed(by: GroupEventText.you, to: trimmed),
+                                   control: GroupControl.roster, recipients: Set(state.openGroupOthers)) { group, _ in
+                    group.revision += 1
+                    group.name = trimmed
+                }
+
+            case .deleteGroup:
+                guard let group = state.openGroup, state.isOpenGroupCreator, group.state == GroupState.active else { return .none }
+                let groupHex = group.groupHex
+                return groupChange(state, groupHex: groupHex, line: GroupEventText.deleted(by: GroupEventText.you),
+                                   control: GroupControl.roster, recipients: Set(state.openGroupOthers)) { group, db in
+                    group.revision += 1
+                    group.state = GroupState.dissolved
+                    try GroupMember.replace(groupHex, with: [], db)
+                }
+
+            case .leaveGroup:
+                guard let group = state.openGroup, !state.isOpenGroupCreator, group.isOpen else { return .none }
+                let groupHex = group.groupHex
+                let me = state.myAddressHex
+                return groupChange(state, groupHex: groupHex, line: GroupEventText.left(who: GroupEventText.you),
+                                   control: GroupControl.leave, recipients: Set(state.openGroupOthers)) { group, db in
+                    group.state = GroupState.left
+                    try GroupMember.where { $0.groupHex.eq(groupHex) && $0.memberHex.eq(me) }.delete().execute(db)
+                }
+
+            case .acceptInvite:
+                guard let group = state.openGroup, group.state == GroupState.invited else { return .none }
+                let groupHex = group.groupHex
+                let now = date.now
+                return .run { [database] send in
+                    try await database.write { db in
+                        guard var stored = try ChatGroup.fetch(groupHex, db) else { return }
+                        stored.state = GroupState.active
+                        stored.updatedAt = now
+                        try ChatGroup.upsert(stored, db)
+                    }
+                    try await reloadThread(database, groupHex, send)
+                    try await reloadConversations(database, send)
+                }
+
+            case .declineInvite:
+                guard let group = state.openGroup, group.state == GroupState.invited else { return .none }
+                let groupHex = group.groupHex
+                let me = state.myAddressHex
+                return groupChange(state, groupHex: groupHex, line: GroupEventText.declined(),
+                                   control: GroupControl.leave, recipients: [group.creatorHex]) { group, db in
+                    group.state = GroupState.left
+                    try GroupMember.where { $0.groupHex.eq(groupHex) && $0.memberHex.eq(me) }.delete().execute(db)
+                }
+
+            case .groupRosterChanged:
+                // The waiting rows were written inside the receive; the unreachable members get
+                // their copy when their path is learned (Task 5's hook).
+                return groupDispatchEffect(state, members: state.reachablePeers)
+
             case let .startConversation(hex):
                 guard let data = Data(hexString: hex), data.count == 16 else { return .none }
                 state.openPeerHex = hex
@@ -1350,6 +1453,13 @@ public struct AppFeature {
                 // `.post` is handled in the write below; `.roster` and `.leave` in their own
                 // branches; `.marker` on a non-reaction is ignored (an ordinary message).
                 let groupDecoded = validated ? GroupWire.decode(m.fields) : nil
+                switch groupDecoded {
+                case .roster?, .leave?:
+                    return .merge(state.pathRequestIfUnreachable(incomingPeer),
+                                  receiveGroupControl(state, message: m, validated: validated, method: method, control: groupDecoded!))
+                default:
+                    break
+                }
                 let isTimerChange = decodedExpiry?.isChange == true
                 // Standard LXMF attachment fields (0x05 / 0x06). Decoded here, written inside the
                 // effect: the bytes go to disk first, then the message and attachment rows land in
@@ -2195,6 +2305,99 @@ public struct AppFeature {
             try await reloadConversations(database, send)
         }
         return .merge(pathRequests + [.cancel(id: CancelID.attachmentPreparation), write])
+    }
+
+    /// Spec §3 "Receiving" for `.roster` and `.leave` (amendments A5, A7): the rules run inside
+    /// one write; an applied change reloads (and fans a creator's re-issued roster out), a stale
+    /// roster is dropped, and anything invalid is stored as the plain one-to-one message its
+    /// readable body already is. Names are resolved here, where announces live.
+    private func receiveGroupControl(_ state: State, message m: LXMessage, validated: Bool,
+                                     method: LXMFRouter.DeliveryMethod, control: GroupWire.Decoded) -> Effect<Action> {
+        let incomingPeer = m.sourceHash.hexString
+        let seenHashHex = m.hash.hexString
+        let now = date.now
+        let openPeer = state.openPeerHex
+        var byHex: [String: String] = [:]
+        if case let .roster(_, _, members, _) = control {
+            for member in members {
+                let hex = member.hexString
+                if let name = state.peerDisplayName(hex) { byHex[hex] = name }
+            }
+        }
+        let names = GroupControlApply.Names(me: state.myAddressHex, sender: state.groupMemberName(incomingPeer), byHex: byHex)
+        let plain = Message(
+            id: UUID(), peerHex: incomingPeer, isOutgoing: false,
+            body: String(decoding: m.content, as: UTF8.self), timestamp: now,
+            status: MessageStatus.received, validated: validated, messageHash: seenHashHex,
+            senderTimestamp: MessageMetadata.senderTimestamp(m.timestamp),
+            arrivalMethod: MessageMetadata.arrivalMethod(method),
+            wireSize: m.receivedBytes?.count, titleSize: m.title.count, contentSize: m.content.count,
+            fieldKeys: MessageMetadata.fieldKeys(m.fields), stampState: MessageMetadata.stampState(m))
+        return .run { [database] send in
+            let outcome = try await database.write { db -> GroupControlApply.Outcome in
+                let outcome: GroupControlApply.Outcome
+                switch control {
+                case let .roster(gid, name, members, revision):
+                    outcome = try GroupControlApply.applyRoster(
+                        groupHex: gid.hexString, name: name, members: members.map(\.hexString), revision: revision,
+                        from: incomingPeer, names: names, validated: validated, now: now, db)
+                case let .leave(gid):
+                    outcome = try GroupControlApply.applyLeave(
+                        groupHex: gid.hexString, from: incomingPeer, names: names, validated: validated, now: now, db)
+                default:
+                    outcome = .plainMessage
+                }
+                if outcome == .plainMessage { try Message.insert { plain }.execute(db) }
+                try recordSeenHash(seenHashHex, at: now, db)
+                return outcome
+            }
+            switch outcome {
+            case .dropped:
+                return
+            case .plainMessage:
+                try await reloadConversations(database, send)
+                if incomingPeer == openPeer { try await reloadThread(database, incomingPeer, send) }
+            case let .applied(groupHex, creatorResends):
+                if creatorResends { await send(.groupRosterChanged(groupHex: groupHex)) }
+                try await reloadConversations(database, send)
+                if groupHex == openPeer { try await reloadThread(database, groupHex, send) }
+            }
+        }
+    }
+
+    /// One local roster or membership change (spec §3 "Creating and editing"): `mutate` edits the
+    /// group row and its members inside the write, `line` becomes an outgoing event row carrying
+    /// `control` to `recipients` through waiting delivery rows, copies go to the reachable
+    /// recipients at once and the rest get a path request.
+    private func groupChange(_ state: State, groupHex: String, line: String, control: String,
+                             recipients: Set<String>,
+                             mutate: @escaping @Sendable (inout ChatGroup, GRDB.Database) throws -> Void) -> Effect<Action> {
+        let me = state.myAddressHex
+        let now = date.now
+        let row = Self.groupEventRow(groupHex: groupHex, me: me, body: line, control: control, now: now)
+        let deliveries = recipients.sorted().map { GroupDelivery.waiting(messageId: row.id, memberHex: $0) }
+        let reachable = recipients.intersection(state.reachablePeers)
+        let identity = state.identity
+        let myName = state.myName
+        let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+        let pathRequests = recipients.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
+        let write: Effect<Action> = .run { [database] send in
+            try await database.write { db in
+                guard var group = try ChatGroup.fetch(groupHex, db) else { return }
+                try mutate(&group, db)
+                group.updatedAt = now
+                try ChatGroup.upsert(group, db)
+                try Message.insert { row }.execute(db)
+                for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
+                try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
+            }
+            _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
+                                                     myName: myName, alsoViaPropagation: alsoViaPropagation,
+                                                     now: now, send)
+            try await reloadThread(database, groupHex, send)
+            try await reloadConversations(database, send)
+        }
+        return .merge(pathRequests + [write])
     }
 
     /// Encodes a picked item off the main thread (spec §3). One preparation at a time: a newer
