@@ -157,6 +157,51 @@ public enum AppDatabase {
             // index holds only the rows with a timer.
             try db.execute(sql: "CREATE INDEX messages_expiresAt ON messages(expiresAt) WHERE expiresAt IS NOT NULL")
         }
+        m.registerMigration("createGroups") { db in
+            // Group chats (spec 2026-10-09 §2, amendment A1). `chatGroups` holds one row per group
+            // the user created or was invited to; `groupMembers` its roster, me included, replaced
+            // whole on every applied roster; `groupDeliveries` one row per member per outgoing
+            // group row (post or event line), which is where the per-member LXMF hashes and
+            // outcomes live. The message row's own `status` is derived from those rows.
+            try db.create(table: "chatGroups") { t in
+                t.primaryKey("groupHex", .text).notNull()
+                t.column("name", .text).notNull()
+                t.column("creatorHex", .text).notNull()
+                t.column("revision", .integer).notNull()
+                t.column("state", .text).notNull()
+                t.column("updatedAt", .datetime).notNull()
+            }
+            try db.create(table: "groupMembers") { t in
+                t.column("groupHex", .text).notNull().references("chatGroups", onDelete: .cascade)
+                t.column("memberHex", .text).notNull()
+                t.primaryKey(["groupHex", "memberHex"])
+            }
+            // `groupHex` keys a row to its group (NULL = one-to-one), `groupPostId` is the 16-byte
+            // post id as hex (NULL on event lines), `isGroupEvent` marks roster/leave lines, and
+            // `groupControl` marks an outgoing line that carries a roster or leave to its members
+            // so a deferred copy can be rebuilt (amendment A3). Rows from before this migration
+            // read back NULL / NULL / false / NULL.
+            try db.alter(table: "messages") { t in
+                t.add(column: "groupHex", .text)
+                t.add(column: "groupPostId", .text)
+                t.add(column: "isGroupEvent", .boolean).notNull().defaults(to: false)
+                t.add(column: "groupControl", .text)
+            }
+            // The duplicate-post guard (spec §2): one row per post id per group. Partial, so
+            // one-to-one rows and event lines (NULL ids) never collide.
+            try db.execute(sql: "CREATE UNIQUE INDEX messages_groupPost ON messages(groupHex, groupPostId) WHERE groupHex IS NOT NULL AND groupPostId IS NOT NULL")
+            try db.create(table: "groupDeliveries") { t in
+                t.column("messageId", .text).notNull().references("messages", onDelete: .cascade)
+                t.column("memberHex", .text).notNull()
+                t.column("messageHash", .text)          // NULL while waiting
+                t.column("status", .text).notNull()
+                t.column("storedAt", .datetime)
+                t.column("deliveredAt", .datetime)
+                t.column("failedAt", .datetime)
+                t.primaryKey(["messageId", "memberHex"])
+            }
+            try db.create(indexOn: "groupDeliveries", columns: ["messageHash"])
+        }
         return m
     }
 

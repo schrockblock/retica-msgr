@@ -384,3 +384,148 @@ private func expiryTableMessage(_ id: String, hash: String, expirySeconds: Int? 
     let indexes = try db.read { try $0.indexes(on: "messages") }
     #expect(indexes.contains { $0.columns == ["expiresAt"] })
 }
+
+// MARK: - Group chats (createGroups)
+
+private let groupTableG1 = String(repeating: "1a", count: 16)
+private let groupTableG2 = String(repeating: "2b", count: 16)
+private let groupTableP1 = String(repeating: "3c", count: 16)
+private let groupTableMe = String(repeating: "e", count: 32)
+private let groupTablePeer = String(repeating: "f", count: 32)
+
+private func groupTableMessage(_ id: String, groupHex: String?, postId: String?) -> Message {
+    Message(
+        id: UUID(uuidString: id)!,
+        peerHex: groupTablePeer,
+        isOutgoing: false,
+        body: "post",
+        timestamp: Date(timeIntervalSince1970: 1700000000),
+        status: MessageStatus.received,
+        validated: true,
+        messageHash: postId ?? "",
+        groupHex: groupHex,
+        groupPostId: postId
+    )
+}
+
+@Test func groupTableGroupAndMembersRoundTrip() throws {
+    let db = try AppDatabase.makeInMemory()
+    let group = ChatGroup(groupHex: groupTableG1, name: "Mutual Aid", creatorHex: groupTableMe, revision: 1,
+                          state: GroupState.active, updatedAt: Date(timeIntervalSince1970: 1700000000))
+    try db.write { db in
+        try ChatGroup.upsert(group, db)
+        try GroupMember.replace(groupTableG1, with: [groupTablePeer, groupTableMe], db)
+    }
+    #expect(try db.read { try ChatGroup.fetch(groupTableG1, $0) } == group)
+    #expect(try db.read { try ChatGroup.fetch(groupTableG2, $0) } == nil)
+    // Sorted, so a roster compares by value regardless of insertion order.
+    #expect(try db.read { try GroupMember.members(of: groupTableG1, $0) } == [groupTableMe, groupTablePeer])
+    #expect(try db.read { try GroupMember.contains(groupTableG1, groupTablePeer, $0) } == true)
+    #expect(try db.read { try GroupMember.contains(groupTableG1, groupTableG2, $0) } == false)
+    // upsert replaces, replace replaces.
+    var renamed = group
+    renamed.name = "Block 4"
+    renamed.revision = 2
+    try db.write { db in
+        try ChatGroup.upsert(renamed, db)
+        try GroupMember.replace(groupTableG1, with: [groupTableMe], db)
+    }
+    #expect(try db.read { try ChatGroup.all.fetchAll($0) } == [renamed])
+    #expect(try db.read { try GroupMember.members(of: groupTableG1, $0) } == [groupTableMe])
+    #expect(group.isOpen == true)
+    #expect(ChatGroup(groupHex: groupTableG2, name: "x", creatorHex: groupTableMe, revision: 1,
+                      state: GroupState.left, updatedAt: Date()).isOpen == false)
+}
+
+@Test func groupTableDeletingGroupCascadesMembers() throws {
+    let db = try AppDatabase.makeInMemory()
+    try db.write { db in
+        try ChatGroup.upsert(ChatGroup(groupHex: groupTableG1, name: "g", creatorHex: groupTableMe, revision: 1,
+                                       state: GroupState.active, updatedAt: Date(timeIntervalSince1970: 1)), db)
+        try GroupMember.replace(groupTableG1, with: [groupTablePeer], db)
+        try ChatGroup.where { $0.groupHex.eq(groupTableG1) }.delete().execute(db)
+    }
+    #expect(try db.read { try GroupMember.all.fetchAll($0) }.isEmpty)
+}
+
+/// Literal expectations, not only `back == m`, so a model that drops a field on init cannot pass
+/// by dropping it on both sides.
+@Test func groupTableMessageColumnsRoundTrip() throws {
+    let db = try AppDatabase.makeInMemory()
+    var m = groupTableMessage("00000000-0000-0000-0000-000000000030", groupHex: groupTableG1, postId: groupTableP1)
+    m.isGroupEvent = true
+    m.groupControl = GroupControl.roster
+    try db.write { try Message.insert { m }.execute($0) }
+    let back = try #require(try db.read { try Message.all.fetchAll($0) }.first)
+    #expect(back.groupHex == groupTableG1)
+    #expect(back.groupPostId == groupTableP1)
+    #expect(back.isGroupEvent == true)
+    #expect(back.groupControl == "roster")
+    #expect(back == m)
+    let plain = groupTableMessage("00000000-0000-0000-0000-000000000031", groupHex: nil, postId: nil)
+    #expect(plain.groupHex == nil)
+    #expect(plain.groupPostId == nil)
+    #expect(plain.isGroupEvent == false)
+    #expect(plain.groupControl == nil)
+}
+
+/// Review Focus 3: the duplicate guard is per group.
+@Test func groupTableDuplicatePostIdRejectedWithinGroupAllowedAcross() throws {
+    let db = try AppDatabase.makeInMemory()
+    try db.write { try Message.insert { groupTableMessage("00000000-0000-0000-0000-000000000032", groupHex: groupTableG1, postId: groupTableP1) }.execute($0) }
+    #expect(throws: (any Error).self) {
+        try db.write { try Message.insert { groupTableMessage("00000000-0000-0000-0000-000000000033", groupHex: groupTableG1, postId: groupTableP1) }.execute($0) }
+    }
+    try db.write { try Message.insert { groupTableMessage("00000000-0000-0000-0000-000000000034", groupHex: groupTableG2, postId: groupTableP1) }.execute($0) }
+    // NULLs never collide: two one-to-one rows, two event lines.
+    try db.write { try Message.insert { groupTableMessage("00000000-0000-0000-0000-000000000035", groupHex: nil, postId: nil) }.execute($0) }
+    try db.write { try Message.insert { groupTableMessage("00000000-0000-0000-0000-000000000036", groupHex: nil, postId: nil) }.execute($0) }
+    try db.write { try Message.insert { groupTableMessage("00000000-0000-0000-0000-000000000037", groupHex: groupTableG1, postId: nil) }.execute($0) }
+    try db.write { try Message.insert { groupTableMessage("00000000-0000-0000-0000-000000000038", groupHex: groupTableG1, postId: nil) }.execute($0) }
+    #expect(try db.read { try Message.all.fetchAll($0) }.count == 6)
+}
+
+@Test func groupTableDeliveriesRoundTripAndCascade() throws {
+    let db = try AppDatabase.makeInMemory()
+    let m = groupTableMessage("00000000-0000-0000-0000-000000000039", groupHex: groupTableG1, postId: groupTableP1)
+    let waiting = GroupDelivery(messageId: m.id, memberHex: groupTablePeer, messageHash: nil,
+                                status: GroupDeliveryStatus.waiting, storedAt: nil, deliveredAt: nil, failedAt: nil)
+    let sent = GroupDelivery(messageId: m.id, memberHex: groupTableMe, messageHash: String(repeating: "ab", count: 32),
+                             status: MessageStatus.delivered, storedAt: nil,
+                             deliveredAt: Date(timeIntervalSince1970: 1700000005), failedAt: nil)
+    try db.write { db in
+        try Message.insert { m }.execute(db)
+        try GroupDelivery.insert { waiting }.execute(db)
+        try GroupDelivery.insert { sent }.execute(db)
+    }
+    let rows = try db.read { try GroupDelivery.all.fetchAll($0) }
+    #expect(rows.count == 2)
+    #expect(rows.contains(waiting))
+    #expect(rows.contains(sent))
+    #expect(GroupDelivery.byMessageId(rows) == [m.id: [sent, waiting]])   // sorted by memberHex: e… before f…
+    try db.write { try Message.where { $0.id.eq(m.id) }.delete().execute($0) }
+    #expect(try db.read { try GroupDelivery.all.fetchAll($0) }.isEmpty)
+}
+
+/// A row written before `createGroups` reads back as an ordinary one-to-one bubble.
+@Test func groupTableLegacyRowReadsBackWithDefaults() throws {
+    let queue = try DatabaseQueue()
+    try AppDatabase.migrator().migrate(queue, upTo: "addExpiresAtIndex")
+    try queue.write { db in
+        try db.execute(
+            sql: """
+                INSERT INTO messages (id, peerHex, isOutgoing, body, timestamp, status, validated, messageHash, isTimerChange)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: ["00000000-0000-0000-0000-00000000003a", groupTablePeer,
+                        0, "old", "2023-11-14 22:13:20.000", MessageStatus.received, 1, "", 0]
+        )
+    }
+    try AppDatabase.migrator().migrate(queue)
+    let row = try #require(try queue.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.body == "old")
+    #expect(row.groupHex == nil)
+    #expect(row.groupPostId == nil)
+    #expect(row.isGroupEvent == false)
+    #expect(row.groupControl == nil)
+}

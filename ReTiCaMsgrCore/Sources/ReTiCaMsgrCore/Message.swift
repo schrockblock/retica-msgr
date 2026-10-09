@@ -7,8 +7,8 @@ import SQLiteData
 ///
 /// The optional fields after `messageHash` are debugging metadata for the Info sheet, added by the
 /// `addMessageInfo` migration, then the reply fields, added by `addReplies`, then the disappearing
-/// messages fields, added by `addDisappearingMessages`. Rows stored before a migration read back
-/// `nil` for its fields.
+/// messages fields, added by `addDisappearingMessages`, then the group chat fields, added by
+/// `createGroups`. Rows stored before a migration read back `nil` for its fields.
 @Table
 public struct Message: Identifiable, Equatable, Sendable {
     public var id: UUID
@@ -59,6 +59,18 @@ public struct Message: Identifiable, Equatable, Sendable {
     /// A timer-change announcement ("Disappearing messages set to 1 day"): rendered as a system
     /// line, never carries an attachment or reactions, never expires.
     public var isTimerChange: Bool
+    /// Group chats (spec 2026-10-09 §2): the group this row belongs to, as hex. nil for a
+    /// one-to-one row. `peerHex` is then the sender (incoming) or my own address (outgoing).
+    public var groupHex: String?
+    /// The 16-byte post id as hex, set on every group post and nil on event lines. A group post
+    /// row also stores it in `messageHash` (amendment A2), so replies and reactions key on it.
+    public var groupPostId: String?
+    /// A roster or leave line ("Alice added Bob"): rendered as a system line, never carries an
+    /// attachment or reactions.
+    public var isGroupEvent: Bool
+    /// Outgoing event lines that carry a message to the members: `GroupControl.roster` or
+    /// `GroupControl.leave`. A deferred copy is rebuilt from this (amendment A3). nil on posts.
+    public var groupControl: String?
 
     public init(
         id: UUID,
@@ -86,7 +98,11 @@ public struct Message: Identifiable, Equatable, Sendable {
         propagationRefused: String? = nil,
         expirySeconds: Int? = nil,
         expiresAt: Date? = nil,
-        isTimerChange: Bool = false
+        isTimerChange: Bool = false,
+        groupHex: String? = nil,
+        groupPostId: String? = nil,
+        isGroupEvent: Bool = false,
+        groupControl: String? = nil
     ) {
         self.id = id
         self.peerHex = peerHex
@@ -114,6 +130,10 @@ public struct Message: Identifiable, Equatable, Sendable {
         self.expirySeconds = expirySeconds
         self.expiresAt = expiresAt
         self.isTimerChange = isTimerChange
+        self.groupHex = groupHex
+        self.groupPostId = groupPostId
+        self.isGroupEvent = isGroupEvent
+        self.groupControl = groupControl
     }
 }
 
