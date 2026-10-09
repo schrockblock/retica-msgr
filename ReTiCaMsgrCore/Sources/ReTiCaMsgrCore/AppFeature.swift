@@ -954,6 +954,7 @@ public struct AppFeature {
                 return .none
 
             case .sendTapped:
+                if state.openConversationKind == .group { return sendGroupPost(&state) }
                 let text = state.draft
                 let pending = state.pendingAttachment
                 // Text or an attachment, not while a pick is still being prepared.
@@ -1073,6 +1074,36 @@ public struct AppFeature {
                       let target = Data(hexString: messageHash),
                       let peerHex = state.openPeerHex,
                       let peer = Data(hexString: peerHex) else { return .none }
+                if state.openConversationKind == .group {
+                    // Spec §3: one reaction message per reachable member, the post id as the
+                    // standard target plus the group marker; unreachable members miss it
+                    // (amendment A9). The row keys on the post id like every group reaction.
+                    guard target.count == GroupWire.idLength else { return .none }
+                    let me = state.myAddressHex
+                    let mine = state.threadReactionRows.first { $0.messageHash == messageHash && $0.reactorHex == me }
+                    let newEmoji = mine?.emoji == emoji ? "" : emoji
+                    let sentAt = max(date.now.timeIntervalSince1970, (mine?.sentAt ?? 0) + 0.001)
+                    let recipients = state.openGroupOthers.filter { state.reachablePeers.contains($0) }
+                    let copies: [LXMessage] = recipients.compactMap { hex in
+                        guard let member = Data(hexString: hex) else { return nil }
+                        return LXMessage.create(
+                            source: state.identity, destinationHash: member, timestamp: sentAt,
+                            title: Data(), content: Data(),
+                            fields: ReactionWire.encode(target: target, emoji: newEmoji) + GroupWire.encodeMarker(groupId: peer))
+                    }
+                    let row = Reaction(messageHash: messageHash, reactorHex: me, emoji: newEmoji, sentAt: sentAt)
+                    state.setThreadReactionRows(
+                        state.threadReactionRows.filter { !($0.messageHash == messageHash && $0.reactorHex == me) } + [row]
+                    )
+                    let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+                    let sends: [Effect<Action>] = copies.map {
+                        .send(.node(.client(.sendMessage(message: $0, alsoViaPropagation: alsoViaPropagation))))
+                    }
+                    return .merge(sends + [.run { [database] send in
+                        try await database.write { try Reaction.apply(row, $0) }
+                        try await reloadThread(database, peerHex, send)
+                    }])
+                }
                 let me = state.myAddressHex
                 let mine = state.threadReactionRows.first { $0.messageHash == messageHash && $0.reactorHex == me }
                 // Same emoji again = remove (Signal/iMessage toggle).
@@ -2055,6 +2086,62 @@ public struct AppFeature {
             try await reloadConversations(database, send)
             if let openPeer { try await reloadThread(database, openPeer, send) }
         }
+    }
+
+    /// Spec §3 "Sending a post": one row with a fresh post id (in `messageHash` too, amendment A2)
+    /// and one waiting delivery per other member, then the copies to the reachable members and a
+    /// path request for the rest. Text only in v1: a pending attachment blocks the send.
+    private func sendGroupPost(_ state: inout State) -> Effect<Action> {
+        let text = state.draft
+        guard !text.isEmpty, !state.attachmentPreparing, state.pendingAttachment == nil,
+              let groupHex = state.openPeerHex, let groupId = Data(hexString: groupHex),
+              let group = state.openGroup, group.state == GroupState.active
+        else { return .none }
+        let me = state.myAddressHex
+        let others = Set(state.openGroupOthers)
+        let postId = GroupWire.randomId()
+        let now = date.now
+        var replyFields: [MsgPackValue.IntPair] = []
+        var replyToHash: String? = nil
+        var replyQuote: String? = nil
+        if let target = state.replyTarget,
+           let replyTo = Data(hexString: target.messageHash), !replyTo.isEmpty {
+            let quote = ReplyWire.trimQuote(target.body)
+            replyFields = ReplyWire.encode(replyTo: replyTo, quote: quote)
+            replyToHash = target.messageHash
+            replyQuote = quote.isEmpty ? nil : quote
+        }
+        let fields = replyFields + GroupWire.encodePost(groupId: groupId, postId: postId)
+        let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+        let row = Message(
+            id: UUID(), peerHex: me, isOutgoing: true, body: text, timestamp: now,
+            status: MessageStatus.sending, validated: false, messageHash: postId.hexString,
+            senderTimestamp: now, sentViaPropagation: alsoViaPropagation,
+            titleSize: GroupWire.trimName(group.name).utf8.count, contentSize: text.utf8.count,
+            fieldKeys: MessageMetadata.fieldKeys(fields),
+            replyToHash: replyToHash, replyQuote: replyQuote,
+            groupHex: groupHex, groupPostId: postId.hexString)
+        let deliveries = others.sorted().map { GroupDelivery.waiting(messageId: row.id, memberHex: $0) }
+        state.draft = ""
+        state.replyTarget = nil
+        state.attachmentError = nil
+        let reachable = others.intersection(state.reachablePeers)
+        let identity = state.identity
+        let myName = state.myName
+        let pathRequests = others.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
+        let write: Effect<Action> = .run { [database] send in
+            try await database.write { db in
+                try Message.insert { row }.execute(db)
+                for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
+                try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
+            }
+            _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
+                                                     myName: myName, alsoViaPropagation: alsoViaPropagation,
+                                                     now: now, send)
+            try await reloadThread(database, groupHex, send)
+            try await reloadConversations(database, send)
+        }
+        return .merge(pathRequests + [.cancel(id: CancelID.attachmentPreparation), write])
     }
 
     /// Encodes a picked item off the main thread (spec §3). One preparation at a time: a newer

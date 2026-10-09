@@ -5153,3 +5153,132 @@ private func groupSends(_ store: TestStoreOf<AppFeature>, _ action: AppFeature.A
     #expect(messages.first { $0.id == rosterLine.id }?.status == MessageStatus.sending)
     #expect(messages.first { $0.id == post.id }?.status == MessageStatus.failed)
 }
+
+// MARK: - Group chats: sending posts and reactions (Task 6)
+
+/// Spec §3 "Sending a post": one row (post id in `messageHash` too, amendment A2), one delivery
+/// per other member, the copy to the reachable member carries title, text and ids, the other
+/// member's row waits with a path request.
+@MainActor @Test func groupSendPostWritesRowDeliveriesAndSendsToReachable() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let store = await groupStore(db, identity: me, members: [memberC, memberD], reachable: [memberC]) { s in
+        s.draft = "sandbags at 6"
+        s.$propagationNodeHex.withLock { $0 = pnHex }
+    }
+    let sent = await groupSends(store, .sendTapped, count: 1)
+    #expect(store.state.draft == "")
+    let wire = try #require(sent.first)
+    #expect(wire.destinationHash == Data(hexString: memberC))
+    #expect(wire.title == Data("Mutual Aid".utf8))
+    #expect(wire.content == Data("sandbags at 6".utf8))
+    #expect(wire.fields.map(\.key) == [0xFD])
+    guard case let .post(gid, pid)? = GroupWire.decode(wire.fields) else { Issue.record("expected a post"); return }
+    #expect(gid == Data(hexString: groupHexA))
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    let row = try #require(rows.first)
+    #expect(row.groupHex == groupHexA)
+    #expect(row.groupPostId == pid.hexString)
+    #expect(row.messageHash == pid.hexString)
+    #expect(row.peerHex == myHex)
+    #expect(row.isOutgoing == true)
+    #expect(row.isGroupEvent == false)
+    #expect(row.body == "sandbags at 6")
+    #expect(row.status == MessageStatus.sending)
+    #expect(row.sentViaPropagation == true)
+    #expect(row.fieldKeys == "0xfd")
+    #expect(row.titleSize == 10)
+    #expect(row.contentSize == 13)
+    let deliveries = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    #expect(deliveries.map(\.memberHex).sorted() == [memberC, memberD])
+    #expect(deliveries.first { $0.memberHex == memberC }?.status == MessageStatus.sending)
+    #expect(deliveries.first { $0.memberHex == memberC }?.messageHash == wire.hash.hexString)
+    #expect(deliveries.first { $0.memberHex == memberD }?.status == GroupDeliveryStatus.waiting)
+    #expect(store.state.node.client.endpoint.transport.pathRequests[Data(hexString: memberD)!] != nil)
+    #expect(store.state.threadMessages.map(\.body) == ["sandbags at 6"])
+    #expect(store.state.deliveriesByMessageId[row.id]?.count == 2)
+    #expect(store.state.conversations.first?.lastBody == "sandbags at 6")
+}
+
+/// A reply in a group targets the original's post id in the standard reply fields (spec §1).
+@MainActor @Test func groupSendReplyCarriesPostIdTarget() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let original = String(repeating: "7b", count: 16)
+    let store = await groupStore(db, identity: me, members: [memberC], reachable: [memberC]) { s in
+        s.draft = "yes"
+        s.replyTarget = AppFeature.ReplyTarget(messageHash: original, body: "sandbags at 6", isOutgoing: false)
+    }
+    let sent = await groupSends(store, .sendTapped, count: 1)
+    let wire = try #require(sent.first)
+    #expect(wire.fields.map(\.key) == [0x30, 0x31, 0xFD])
+    #expect(ReplyWire.decode(wire.fields)?.replyTo == Data(hexString: original))
+    #expect(ReplyWire.decode(wire.fields)?.quote == "sandbags at 6")
+    #expect(store.state.replyTarget == nil)
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.replyToHash == original)
+    #expect(row.replyQuote == "sandbags at 6")
+    #expect(row.fieldKeys == "0x30,0x31,0xfd")
+}
+
+/// Only an active group accepts a post: invited, left and dissolved groups, an empty draft and a
+/// pending attachment all send nothing.
+@MainActor @Test func groupSendRefusedUnlessGroupActive() async throws {
+    for state in [GroupState.invited, GroupState.left, GroupState.dissolved] {
+        let db = try AppDatabase.makeInMemory()
+        let store = await groupStore(db, identity: Identity(), members: [memberC], state: state, reachable: [memberC]) { $0.draft = "hi" }
+        store.exhaustivity = .on
+        await store.send(.sendTapped)
+        #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty, Comment(rawValue: state))
+        #expect(store.state.draft == "hi", Comment(rawValue: state))
+    }
+    let db = try AppDatabase.makeInMemory()
+    let store = await groupStore(db, identity: Identity(), members: [memberC], reachable: [memberC]) { s in
+        s.draft = "cap"
+        s.pendingAttachment = pendingImage()
+    }
+    store.exhaustivity = .on
+    await store.send(.sendTapped)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+}
+
+/// Spec §3: a reaction fans out to the reachable members only, each copy carrying the standard
+/// reaction with the 16-byte post id as target plus the group marker; the row keys on the post id.
+@MainActor @Test func groupSendReactionFansOutToReachableMembersWithMarker() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let postId = String(repeating: "5e", count: 16)
+    let store = await groupStore(db, identity: me, members: [memberC, memberD, peerA], reachable: [memberC, memberD])
+    // A backing row for the post, as every other reaction test seeds one for its target hash
+    // (e.g. reactionSelectedSetsSendsAndShowsBadge): reloadThread's reactions query is scoped to
+    // the thread's known messages, so without this the post-reload `.threadLoaded` would wipe the
+    // optimistic reaction this test checks for below.
+    let post = Message(id: UUID(), peerHex: myHex, isOutgoing: true, body: "the post", timestamp: infoT0,
+                       status: MessageStatus.sending, validated: false, messageHash: postId,
+                       groupHex: groupHexA, groupPostId: postId)
+    try await db.write { try Message.insert { post }.execute($0) }
+    let sent = await groupSends(store, .reactionSelected(messageHash: postId, emoji: "👍"), count: 2)
+    #expect(Set(sent.map(\.destinationHash)) == [Data(hexString: memberC)!, Data(hexString: memberD)!])
+    for wire in sent {
+        #expect(wire.fields.map(\.key) == [0x40, 0xFD])
+        #expect(ReactionWire.decode(wire.fields) == .reaction(target: Data(hexString: postId)!, emoji: "👍"))
+        #expect(GroupWire.decode(wire.fields) == .marker(groupId: Data(hexString: groupHexA)!))
+        #expect(wire.content.isEmpty)
+        #expect(wire.title.isEmpty)
+    }
+    let rows = try await db.read { try Reaction.all.fetchAll($0) }
+    #expect(rows == [Reaction(messageHash: postId, reactorHex: myHex, emoji: "👍", sentAt: infoT0.timeIntervalSince1970)])
+    #expect(store.state.threadReactions[postId]?.first?.includesMe == true)
+}
+
+/// A reaction in a group whose target is not a 16-byte post id sends nothing.
+@MainActor @Test func groupSendReactionRejectsNonPostTarget() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = await groupStore(db, identity: Identity(), members: [memberC], reachable: [memberC])
+    store.exhaustivity = .on
+    await store.send(.reactionSelected(messageHash: String(repeating: "9", count: 64), emoji: "👍"))
+    #expect(try await db.read { try Reaction.all.fetchAll($0) }.isEmpty)
+}
