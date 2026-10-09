@@ -81,6 +81,10 @@ public struct AppFeature {
     /// An inbound transfer that stops reporting for this long is dropped from the UI.
     public static let inboundTransferTimeout: Duration = .seconds(60)
 
+    /// What the open thread is (spec 2026-10-09 §3): `openPeerHex` holds a peer's address or a
+    /// group's id accordingly.
+    public enum ConversationKind: Equatable, Sendable { case peer, group }
+
     @ObservableState
     public struct State: Equatable {
         public var node: LXMFServiceNode.State
@@ -163,6 +167,13 @@ public struct AppFeature {
         public var threadReactions: [String: [ReactionSummary.Item]] = [:]
         /// The open thread's attachments by message id, loaded with the thread. Session-only.
         public var attachmentsByMessageId: [UUID: Attachment] = [:]
+        /// Whether `openPeerHex` is a peer or a group. Set by the open actions, reset by close.
+        public var openConversationKind: ConversationKind = .peer
+        /// The open group's row, members (sorted by address, me included) and the delivery rows of
+        /// its outgoing messages, loaded with the thread (`groupLoaded`). Session-only.
+        public var openGroup: ChatGroup? = nil
+        public var openGroupMembers: [GroupMember] = []
+        public var deliveriesByMessageId: [UUID: [GroupDelivery]] = [:]
         /// The open conversation's disappearing-messages timer in seconds, nil when off. Loaded with
         /// the thread (`conversationExpiryLoaded`), set by `expirySelected`. Session-only.
         public var openConversationExpiry: Int? = nil
@@ -273,6 +284,39 @@ public struct AppFeature {
             else { return nil }
             return name
         }
+
+        /// My name as other members see it in lines and wire bodies: the trimmed display name,
+        /// else the first eight hex characters of my address.
+        public var myName: String {
+            let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? GroupEventText.fallbackName(myAddressHex) : trimmed
+        }
+
+        public var isOpenGroupCreator: Bool { openGroup?.creatorHex == myAddressHex }
+
+        /// The open group's members other than me, sorted.
+        public var openGroupOthers: [String] {
+            openGroupMembers.map(\.memberHex).filter { $0 != myAddressHex }
+        }
+
+        /// The group Send gate (spec §3): at least one other member would route right now.
+        public var anyGroupMemberReachable: Bool {
+            openGroupOthers.contains { reachablePeers.contains($0) }
+        }
+
+        /// A member's name for a line: "You", the announce display name, else a short hex.
+        public func groupMemberName(_ hex: String) -> String {
+            if hex == myAddressHex { return GroupEventText.you }
+            return peerDisplayName(hex) ?? GroupEventText.fallbackName(hex)
+        }
+
+        /// Display names of the open group's announced members, by address, for reply labels and
+        /// the Info sheet.
+        public var threadSenderNames: [String: String] {
+            Dictionary(uniqueKeysWithValues: openGroupMembers.compactMap { member in
+                peerDisplayName(member.memberHex).map { (member.memberHex, $0) }
+            })
+        }
     }
 
     public enum Action: Equatable, BindableAction {
@@ -295,6 +339,8 @@ public struct AppFeature {
         case connectTapped
         case disconnectTapped
         case openConversation(String)
+        /// A tap on a group row: opens it as a group thread.
+        case openGroupConversation(String)
         case closeConversation
         case startConversation(String)
         /// ChatView's onAppear: the open thread is on screen again (back from another tab), so its
@@ -313,6 +359,9 @@ public struct AppFeature {
         case sendTapped
         case conversationsLoaded([Conversation])
         case threadLoaded([Message], reactions: [Reaction] = [], attachments: [Attachment] = [])
+        /// The open thread's group, members and delivery rows, sent by `reloadThread` before
+        /// `threadLoaded` (nil group for a peer thread) and guarded on the open key.
+        case groupLoaded(groupHex: String, group: ChatGroup?, members: [GroupMember], deliveries: [GroupDelivery])
         /// The user picked a disappearing-messages duration (0 = off) from the chat toolbar menu.
         case expirySelected(seconds: Int)
         /// The open conversation's stored timer, sent by `reloadThread` beside `threadLoaded`.
@@ -736,6 +785,10 @@ public struct AppFeature {
             case let .openConversation(peerHex):
                 state.openPeerHex = peerHex
                 state.chatVisible = true
+                state.openConversationKind = .peer
+                state.openGroup = nil
+                state.openGroupMembers = []
+                state.deliveriesByMessageId = [:]
                 // The new thread's timer is unknown until `conversationExpiryLoaded` (A16).
                 state.openConversationExpiryLoaded = false
                 // Review fix: a target from the previous conversation must not survive the switch —
@@ -766,6 +819,10 @@ public struct AppFeature {
                 state.threadMessages = []
                 state.setThreadReactionRows([])
                 state.attachmentsByMessageId = [:]
+                state.openConversationKind = .peer
+                state.openGroup = nil
+                state.openGroupMembers = []
+                state.deliveriesByMessageId = [:]
                 state.openConversationExpiry = nil
                 state.openConversationExpiryLoaded = false
                 state.draft = ""
@@ -776,10 +833,46 @@ public struct AppFeature {
                 state.attachmentOriginalRequested = nil
                 return .cancel(id: CancelID.attachmentPreparation)
 
+            case let .openGroupConversation(groupHex):
+                guard let data = Data(hexString: groupHex), data.count == GroupWire.idLength else { return .none }
+                state.openPeerHex = groupHex
+                state.openConversationKind = .group
+                state.chatVisible = true
+                state.openGroup = nil
+                state.openGroupMembers = []
+                state.deliveriesByMessageId = [:]
+                state.openConversationExpiryLoaded = false
+                state.replyTarget = nil
+                state.pendingAttachment = nil
+                state.attachmentPreparing = false
+                state.attachmentError = nil
+                state.attachmentOriginalRequested = nil
+                // No first-view stamp and no purge: timers are one-to-one only in v1.
+                return .merge(
+                    .cancel(id: CancelID.attachmentPreparation),
+                    .run { [database] send in try await reloadThread(database, groupHex, send) }
+                )
+
+            case let .groupLoaded(groupHex, group, members, deliveries):
+                // Guarded like reactions and attachments: a late load for a thread the user has
+                // left must not label the next conversation with the previous group.
+                guard groupHex == state.openPeerHex else { return .none }
+                state.openGroup = group
+                state.openGroupMembers = members.sorted { $0.memberHex < $1.memberHex }
+                state.deliveriesByMessageId = GroupDelivery.byMessageId(deliveries)
+                guard group != nil else { return .none }
+                // Spec §3: a group thread asks for the paths of the members it cannot reach, so
+                // the Send gate unlocks when they answer (the one-to-one open does the same).
+                return .merge(state.openGroupOthers.map { state.pathRequestIfUnreachable($0) })
+
             case let .startConversation(hex):
                 guard let data = Data(hexString: hex), data.count == 16 else { return .none }
                 state.openPeerHex = hex
                 state.chatVisible = true
+                state.openConversationKind = .peer
+                state.openGroup = nil
+                state.openGroupMembers = []
+                state.deliveriesByMessageId = [:]
                 state.openConversationExpiryLoaded = false
                 // Review fix: same as `openConversation` — clear any stale target from before.
                 state.replyTarget = nil
@@ -1299,7 +1392,11 @@ public struct AppFeature {
 
             case let .threadLoaded(rows, reactions, attachments):
                 state.threadMessages = rows
-                let allowed: Set<String> = [state.myAddressHex, state.openPeerHex ?? ""]
+                // Spec §2: in a group thread the reactor must be me or a current member; in a peer
+                // thread me or the open peer. `groupLoaded` lands first, so the members are known.
+                let allowed: Set<String> = state.openConversationKind == .group
+                    ? Set(state.openGroupMembers.map(\.memberHex)).union([state.myAddressHex])
+                    : [state.myAddressHex, state.openPeerHex ?? ""]
                 state.setThreadReactionRows(reactions.filter { allowed.contains($0.reactorHex) })
                 state.attachmentsByMessageId = Attachment.byMessageId(attachments)
                 return .none
@@ -1961,29 +2058,41 @@ private func seedReachablePeers(_ state: inout AppFeature.State,
 
 // Reload helpers (file-scope free functions — no self capture in @Sendable effects).
 private func reloadConversations(_ database: any DatabaseWriter, _ send: Send<AppFeature.Action>) async throws {
-    let (all, attachments) = try await database.read { db -> ([Message], [Attachment]) in
+    let (all, attachments, groups) = try await database.read { db -> ([Message], [Attachment], [ChatGroup]) in
         let all = try Message.fetchAll(db)
         // Only a message with no text needs its attachment for the preview placeholder.
         let ids = all.filter { $0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.map(\.id)
         let attachments = ids.isEmpty ? [] : try Attachment.where { $0.messageId.in(ids) }.fetchAll(db)
-        return (all, attachments)
+        let groups = try ChatGroup.all.fetchAll(db)
+        return (all, attachments, groups)
     }
     let byMessage = Attachment.byMessageId(attachments)
-    await send(.conversationsLoaded(Conversation.list(from: all, attachments: byMessage)))
+    let byGroup = Dictionary(uniqueKeysWithValues: groups.map { ($0.groupHex, $0) })
+    await send(.conversationsLoaded(Conversation.list(from: all, attachments: byMessage, groups: byGroup)))
 }
 
-private func reloadThread(_ database: any DatabaseWriter, _ peerHex: String, _ send: Send<AppFeature.Action>) async throws {
-    let (rows, reactions, attachments, expiry) = try await database.read { db -> ([Message], [Reaction], [Attachment], Int?) in
-        let rows = try Message.where { $0.peerHex.eq(peerHex) }.order(by: \.timestamp).fetchAll(db)
+/// Loads one thread by its key: a peer's address or a group's id. Sends `groupLoaded` first (nil
+/// group for a peer thread), then `threadLoaded`, then the conversation's timer.
+private func reloadThread(_ database: any DatabaseWriter, _ key: String, _ send: Send<AppFeature.Action>) async throws {
+    let loaded = try await database.read { db -> ([Message], [Reaction], [Attachment], Int?, ChatGroup?, [GroupMember], [GroupDelivery]) in
+        // Amendment A13: a group thread is its rows, a peer thread is the rows with no group.
+        let rows = try Message
+            .where { $0.groupHex.eq(key) || ($0.groupHex.is(nil) && $0.peerHex.eq(key)) }
+            .order(by: \.timestamp).fetchAll(db)
         let hashes = rows.map(\.messageHash).filter { !$0.isEmpty }
         let reactions = hashes.isEmpty ? [] : try Reaction.where { $0.messageHash.in(hashes) }.fetchAll(db)
         let ids = rows.map(\.id)
         let attachments = ids.isEmpty ? [] : try Attachment.where { $0.messageId.in(ids) }.fetchAll(db)
-        let expiry = try ConversationSetting.expiry(for: peerHex, db)
-        return (rows, reactions, attachments, expiry)
+        let expiry = try ConversationSetting.expiry(for: key, db)
+        let group = try ChatGroup.fetch(key, db)
+        let members = group == nil ? [] : try GroupMember.where { $0.groupHex.eq(key) }.fetchAll(db)
+        let outgoingIds = rows.filter(\.isOutgoing).map(\.id)
+        let deliveries = (group == nil || outgoingIds.isEmpty) ? [] : try GroupDelivery.where { $0.messageId.in(outgoingIds) }.fetchAll(db)
+        return (rows, reactions, attachments, expiry, group, members, deliveries)
     }
-    await send(.threadLoaded(rows, reactions: reactions, attachments: attachments))
-    await send(.conversationExpiryLoaded(peerHex: peerHex, seconds: expiry))
+    await send(.groupLoaded(groupHex: key, group: loaded.4, members: loaded.5, deliveries: loaded.6))
+    await send(.threadLoaded(loaded.0, reactions: loaded.1, attachments: loaded.2))
+    await send(.conversationExpiryLoaded(peerHex: key, seconds: loaded.3))
 }
 
 /// First view (spec §3): every row of `peerHex` that carries a duration and has no `expiresAt`

@@ -3440,7 +3440,9 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
         store.exhaustivity = .on
         // The new thread's load is the one action allowed (the preparation's sleep has not been
         // advanced yet, so nothing else can have arrived before it). `reloadThread` now also
-        // carries the (absent) conversation timer alongside the thread's messages.
+        // carries the (absent) conversation timer alongside the thread's messages, and leads with
+        // the (nil, for a peer) group load (Task 4).
+        await store.receive(.groupLoaded(groupHex: peerB, group: nil, members: [], deliveries: []))
         await store.receive(.threadLoaded([], reactions: [], attachments: []))
         await store.receive(.conversationExpiryLoaded(peerHex: peerB, seconds: nil)) {
             $0.openConversationExpiryLoaded = true
@@ -4757,4 +4759,183 @@ private func expiryFollowupArm(_ db: any DatabaseWriter, clock: TestClock<Durati
     let rows = try await db.read { try Message.all.order(by: \.timestamp).fetchAll($0) }
     #expect(rows.count == 2)
     #expect(rows.first?.body == "Ada set disappearing messages to 10 minutes")
+}
+
+// MARK: - Group chats: shared helpers (spec 2026-10-09)
+
+private let groupHexA = String(repeating: "1a", count: 16)
+private let memberC = String(repeating: "c", count: 32)
+private let memberD = String(repeating: "d", count: 32)
+
+private func groupMemberHash(_ identity: Identity) -> Data { LXMessage.deliveryHash(identityHash: identity.hash) }
+
+/// Seeds `groupHexA` with `members` plus me and returns a store with it open as a group thread.
+/// `creatorHex` nil means I created it.
+@MainActor
+private func groupStore(_ db: any DatabaseWriter, identity: Identity, name: String = "Mutual Aid",
+                        creatorHex: String? = nil, members: [String],
+                        state groupState: String = GroupState.active,
+                        reachable: Set<String> = [],
+                        configure: ((inout AppFeature.State) -> Void)? = nil) async -> TestStoreOf<AppFeature> {
+    let me = lxmfAddressHex(identity)
+    let group = ChatGroup(groupHex: groupHexA, name: name, creatorHex: creatorHex ?? me, revision: 1,
+                          state: groupState, updatedAt: infoT0)
+    let roster = Set(members + [me]).sorted()
+    try! await db.write { db in
+        try ChatGroup.upsert(group, db)
+        try GroupMember.replace(groupHexA, with: roster, db)
+    }
+    return makeStore(db, identity: identity) { s in
+        s.openPeerHex = groupHexA
+        s.openConversationKind = .group
+        s.chatVisible = true
+        s.openGroup = group
+        s.openGroupMembers = roster.map { GroupMember(groupHex: groupHexA, memberHex: $0) }
+        s.reachablePeers = reachable
+        configure?(&s)
+    }
+}
+
+/// The LXMessages handed to the node after `action`: exactly `count` sendMessage actions are
+/// awaited, then the rest are drained. Never `finish()` here (Global Constraints).
+@MainActor
+private func groupSends(_ store: TestStoreOf<AppFeature>, _ action: AppFeature.Action, count: Int) async -> [LXMessage] {
+    var sent: [LXMessage] = []
+    await store.send(action)
+    for _ in 0..<count {
+        await store.receive { a in
+            if case let .node(.client(.sendMessage(m, _))) = a { sent.append(m); return true }
+            return false
+        }
+    }
+    await store.skipReceivedActions(strict: false)
+    return sent
+}
+
+// MARK: - Group chats: conversation kinds and loading (Task 4)
+
+/// Opening a group loads its row, members and the outgoing rows' deliveries, and the thread holds
+/// only that group's rows: a one-to-one message from a member stays in the member's own thread.
+@MainActor @Test func groupConvOpenGroupLoadsGroupMembersDeliveriesAndThread() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let store = await groupStore(db, identity: me, members: [memberC, memberD])
+    let post = Message(id: uuid(1), peerHex: myHex, isOutgoing: true, body: "to the group", timestamp: infoT0,
+                       status: MessageStatus.sending, validated: false, messageHash: String(repeating: "3c", count: 16),
+                       groupHex: groupHexA, groupPostId: String(repeating: "3c", count: 16))
+    let direct = msg(2, memberC, "just to me", 1700000001, outgoing: false, status: MessageStatus.received)
+    let fromC = Message(id: uuid(3), peerHex: memberC, isOutgoing: false, body: "C in group", timestamp: infoT0.addingTimeInterval(2),
+                        status: MessageStatus.received, validated: true, messageHash: String(repeating: "4d", count: 16),
+                        groupHex: groupHexA, groupPostId: String(repeating: "4d", count: 16))
+    try await db.write { db in
+        for row in [post, direct, fromC] { try Message.insert { row }.execute(db) }
+        try GroupDelivery.insert { GroupDelivery.waiting(messageId: post.id, memberHex: memberD) }.execute(db)
+        try GroupDelivery.insert { GroupDelivery.waiting(messageId: post.id, memberHex: memberC) }.execute(db)
+    }
+    await store.send(.closeConversation)
+    #expect(store.state.openGroup == nil)
+    #expect(store.state.openConversationKind == .peer)
+    await store.send(.openGroupConversation(groupHexA))
+    #expect(store.state.openConversationKind == .group)
+    await store.receive { if case .groupLoaded = $0 { return true }; return false }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.openGroup?.name == "Mutual Aid")
+    #expect(store.state.openGroupMembers.map(\.memberHex) == [memberC, memberD, myHex].sorted())
+    #expect(store.state.deliveriesByMessageId[post.id]?.map(\.memberHex) == [memberC, memberD])
+    #expect(store.state.threadMessages.map(\.body) == ["to the group", "C in group"])
+    #expect(store.state.openGroupOthers == [memberC, memberD])
+    #expect(store.state.isOpenGroupCreator == true)
+    await store.skipReceivedActions(strict: false)
+    // The member's own thread holds only the one-to-one row.
+    await store.send(.openConversation(memberC))
+    #expect(store.state.openConversationKind == .peer)
+    await store.receive { if case .groupLoaded = $0 { return true }; return false }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.openGroup == nil)
+    #expect(store.state.openGroupMembers.isEmpty)
+    #expect(store.state.threadMessages.map(\.body) == ["just to me"])
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Spec §3: a group thread asks for the paths of the members it cannot reach, so Send unlocks
+/// when they answer; a reachable member gets no request.
+@MainActor @Test func groupConvOpenGroupRequestsPathsForUnreachableMembers() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = await groupStore(db, identity: me, members: [memberC, memberD], reachable: [memberC])
+    await store.send(.openGroupConversation(groupHexA))
+    await store.receive { a in
+        if case let .node(.client(.endpoint(.requestPath(dest)))) = a { return dest == Data(hexString: memberD)! }
+        return false
+    }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.transport.pathRequests[Data(hexString: memberD)!] != nil)
+    #expect(store.state.node.client.endpoint.transport.pathRequests[Data(hexString: memberC)!] == nil)
+    #expect(store.state.anyGroupMemberReachable == true)
+}
+
+/// Reactions in a group thread are kept for me and current members only (spec §2).
+@MainActor @Test func groupConvThreadReactionsFilteredToMembers() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let postId = String(repeating: "5e", count: 16)
+    let store = await groupStore(db, identity: me, members: [memberC])
+    try await db.write { db in
+        try Message.insert {
+            Message(id: uuid(1), peerHex: memberC, isOutgoing: false, body: "p", timestamp: infoT0,
+                    status: MessageStatus.received, validated: true, messageHash: postId,
+                    groupHex: groupHexA, groupPostId: postId)
+        }.execute(db)
+        try Reaction.apply(Reaction(messageHash: postId, reactorHex: memberC, emoji: "👍", sentAt: 1), db)
+        try Reaction.apply(Reaction(messageHash: postId, reactorHex: myHex, emoji: "❤️", sentAt: 2), db)
+        try Reaction.apply(Reaction(messageHash: postId, reactorHex: memberD, emoji: "😂", sentAt: 3), db)   // not a member
+    }
+    await store.send(.openGroupConversation(groupHexA))
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    #expect(store.state.threadReactions[postId]?.map(\.emoji) == ["👍", "❤️"])
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func groupConvCloseResetsGroupState() async throws {
+    let store = await groupStore(try AppDatabase.makeInMemory(), identity: Identity(), members: [memberC]) { s in
+        s.deliveriesByMessageId = [uuid(1): [GroupDelivery.waiting(messageId: uuid(1), memberHex: memberC)]]
+    }
+    await store.send(.closeConversation)
+    #expect(store.state.openConversationKind == .peer)
+    #expect(store.state.openGroup == nil)
+    #expect(store.state.openGroupMembers.isEmpty)
+    #expect(store.state.deliveriesByMessageId.isEmpty)
+}
+
+/// Names: me is "You", an announced member its display name, anyone else a short hex. The
+/// sender-name map covers announced members only.
+@MainActor @Test func groupConvMemberNamesFallBack() async throws {
+    let me = Identity()
+    let store = await groupStore(try AppDatabase.makeInMemory(), identity: me, members: [memberC, memberD]) { s in
+        s.$displayName.withLock { $0 = "  Ada  " }
+    }
+    let learned = LXMFNode.LearnedPeer(displayName: "Cy", stampCost: nil, supportsCompression: false, learnedAt: infoT0)
+    await store.send(.node(.client(.rehydrateLearnedPeers([Data(hexString: memberC)!: learned]))))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.myName == "Ada")
+    #expect(store.state.groupMemberName(lxmfAddressHex(me)) == "You")
+    #expect(store.state.groupMemberName(memberC) == "Cy")
+    #expect(store.state.groupMemberName(memberD) == "dddddddd")
+    #expect(store.state.threadSenderNames == [memberC: "Cy"])
+    // Explicit, like every other case in this file (`displayName`'s appStorage backing is shared
+    // process-wide under swift-testing, which has no per-test XCTestObservation reset): relying on
+    // the struct default "" here would read whatever the last test left.
+    let unnamed = makeStore(try AppDatabase.makeInMemory(), identity: me) { $0.$displayName.withLock { $0 = "" } }
+    #expect(unnamed.state.myName == String(lxmfAddressHex(me).prefix(8)))
+}
+
+/// A late `groupLoaded` for a thread the user has left changes nothing.
+@MainActor @Test func groupConvLateGroupLoadIsIgnored() async throws {
+    let store = makeStore(try AppDatabase.makeInMemory(), identity: Identity()) { $0.openPeerHex = peerA }
+    let group = ChatGroup(groupHex: groupHexA, name: "g", creatorHex: memberC, revision: 1, state: GroupState.active, updatedAt: infoT0)
+    await store.send(.groupLoaded(groupHex: groupHexA, group: group, members: [GroupMember(groupHex: groupHexA, memberHex: memberC)], deliveries: []))
+    #expect(store.state.openGroup == nil)
+    #expect(store.state.openGroupMembers.isEmpty)
 }
