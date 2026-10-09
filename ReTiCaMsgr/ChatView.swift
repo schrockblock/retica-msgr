@@ -27,8 +27,13 @@ struct ChatView: View {
     /// Bumped per quote tap, so only the latest tap's timer clears the highlight.
     @State private var highlightGeneration = 0
     @FocusState private var draftFocused: Bool
+    @State private var showingGroupInfo = false
 
+    private var isGroup: Bool { store.openConversationKind == .group }
+
+    /// The Send gate: the peer routes now, or for a group at least one member does (spec §3).
     private var peerReachable: Bool {
+        if isGroup { return store.anyGroupMemberReachable }
         guard let peer = store.openPeerHex else { return false }
         return store.reachablePeers.contains(peer)
     }
@@ -47,15 +52,17 @@ struct ChatView: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 List(store.threadMessages) { message in
-                    if message.isTimerChange {
-                        TimerChangeLine(text: message.body, status: message.isOutgoing ? message.status : nil)
+                    if message.isTimerChange || message.isGroupEvent {
+                        TimerChangeLine(text: message.body,
+                                        status: message.isOutgoing ? statusText(for: message) : nil)
                             .id(message.id)
                             .listRowSeparator(.hidden)
                     } else {
                         let reactions = store.threadReactions[message.messageHash] ?? []
                         // A reply to a caption-less photo or file in the thread quotes its placeholder.
                         let replyPreview = ReplyPreview.resolve(for: message, in: store.threadMessages, peerName: peerName,
-                                                                attachments: store.attachmentsByMessageId)
+                                                                attachments: store.attachmentsByMessageId,
+                                                                names: store.threadSenderNames)
                         let attachment = store.attachmentsByMessageId[message.id]
                         // A sending message shows the bar from the start: 0 until the first report,
                         // which the bar draws as indeterminate ("waiting for link").
@@ -63,6 +70,9 @@ struct ChatView: View {
                             ? store.outgoingProgress[message.messageHash] ?? 0 : nil
                         MessageBubble(
                             message: message,
+                            senderName: isGroup && !message.isOutgoing
+                                ? store.state.groupMemberName(message.peerHex) : nil,
+                            statusText: statusText(for: message),
                             reactions: reactions,
                             replyPreview: replyPreview,
                             attachment: attachment,
@@ -91,7 +101,7 @@ struct ChatView: View {
                                     draftFocused = true
                                 }
                             }
-                            if message.isOutgoing, message.status == MessageStatus.sending, !message.messageHash.isEmpty {
+                            if !isGroup, message.isOutgoing, message.status == MessageStatus.sending, !message.messageHash.isEmpty {
                                 Button("Cancel Send", systemImage: "xmark.circle", role: .destructive) {
                                     store.send(.cancelSendTapped(message.id))
                                 }
@@ -141,23 +151,33 @@ struct ChatView: View {
                 )
             }
 
-            HStack(spacing: 4) {
-                AttachmentPickerButton(
-                    peerHex: store.openPeerHex ?? "",
-                    onLoadStarted: { store.send(.attachmentLoadStarted(peerHex: $0)) },
-                    onPicked: { store.send(.attachmentPicked($0)) },
-                    onFailed: { store.send(.attachmentFailed($0)) }
-                )
-                TextField("Message", text: $store.draft)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($draftFocused)
-                Button("Send") { store.send(.sendTapped) }
-                    .disabled(!canSend)
-                    .padding(.leading, 4)
+            if isGroup, store.openGroup?.state == GroupState.invited {
+                InviteBar(groupName: store.openGroup?.name ?? "the group",
+                          onAccept: { store.send(.acceptInvite) },
+                          onDecline: { store.send(.declineInvite) })
+            } else if isGroup, let state = store.openGroup?.state, state != GroupState.active {
+                ClosedGroupLine(state: state)
+            } else {
+                HStack(spacing: 4) {
+                    if !isGroup {
+                        AttachmentPickerButton(
+                            peerHex: store.openPeerHex ?? "",
+                            onLoadStarted: { store.send(.attachmentLoadStarted(peerHex: $0)) },
+                            onPicked: { store.send(.attachmentPicked($0)) },
+                            onFailed: { store.send(.attachmentFailed($0)) }
+                        )
+                    }
+                    TextField("Message", text: $store.draft)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($draftFocused)
+                    Button("Send") { store.send(.sendTapped) }
+                        .disabled(!canSend)
+                        .padding(.leading, 4)
+                }
+                .padding(.vertical)
+                .padding(.trailing)
+                .padding(.leading, 8)
             }
-            .padding(.vertical)
-            .padding(.trailing)
-            .padding(.leading, 8)
         }
         // Amendment A11: a message is "viewed" only while this screen is actually showing.
         .onAppear { store.send(.chatAppeared) }
@@ -170,14 +190,30 @@ struct ChatView: View {
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                ChatTitle(title: store.openPeerHex.map(shortHex) ?? "Chat", expiry: store.openConversationExpiry)
+                if isGroup {
+                    Button { showingGroupInfo = true } label: {
+                        ChatTitle(title: store.openGroup?.name ?? "Group", expiry: nil)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Shows the group's members and settings")
+                } else {
+                    ChatTitle(title: store.openPeerHex.map(shortHex) ?? "Chat", expiry: store.openConversationExpiry)
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                // Not gated on reachability (amendment A17): the pick applies here at once, the
-                // change line shows if its message failed, and every later message carries the
-                // timer, so the peer converges even when the change itself never arrived.
-                ExpiryMenu(current: store.openConversationExpiry) { store.send(.expirySelected(seconds: $0)) }
+                if isGroup {
+                    Button { showingGroupInfo = true } label: { Image(systemName: "info.circle") }
+                        .accessibilityLabel("Group info")
+                } else {
+                    // Not gated on reachability (amendment A17): the pick applies here at once, the
+                    // change line shows if its message failed, and every later message carries the
+                    // timer, so the peer converges even when the change itself never arrived.
+                    ExpiryMenu(current: store.openConversationExpiry) { store.send(.expirySelected(seconds: $0)) }
+                }
             }
+        }
+        .sheet(isPresented: $showingGroupInfo) {
+            GroupInfoView(store: store)
         }
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $pickerTarget) { target in
@@ -215,6 +251,12 @@ struct ChatView: View {
             withAnimation(.easeOut(duration: 1)) { highlightedMessageID = nil }
         }
     }
+
+    /// A group row's status comes from its delivery rows (spec §4); a peer row's from its column.
+    private func statusText(for message: Message) -> String {
+        guard isGroup, message.isOutgoing, let rows = store.deliveriesByMessageId[message.id] else { return message.status }
+        return GroupRoster.statusLabel(rows)
+    }
 }
 
 private struct PickerTarget: Identifiable {
@@ -236,6 +278,10 @@ private struct ViewerTarget: Identifiable {
 
 struct MessageBubble: View {
     let message: Message
+    /// In a group thread, the incoming sender's name above the bubble (spec §4).
+    var senderName: String? = nil
+    /// What the status area shows; a group post passes its "Delivered to d of n" label.
+    var statusText: String? = nil
     var reactions: [ReactionSummary.Item] = []
     var replyPreview: ReplyPreview.Resolved? = nil
     var attachment: Attachment? = nil
@@ -250,6 +296,12 @@ struct MessageBubble: View {
         HStack {
             if message.isOutgoing { Spacer() }
             VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 2) {
+                if let senderName {
+                    Text(senderName)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+                }
                 BubbleText(message: message, replyPreview: replyPreview,
                            attachment: attachment, attachmentURL: attachmentURL, progress: progress,
                            onQuoteTap: onQuoteTap, onImageTap: onImageTap, onFileTap: onFileTap)
@@ -274,7 +326,7 @@ struct MessageBubble: View {
                                 .accessibilityLabel("Disappearing message")
                         }
                         if message.isOutgoing {
-                            Text(message.status)
+                            Text(statusText ?? message.status)
                         }
                     }
                     .font(.caption2)

@@ -18,6 +18,7 @@ func shortHex(_ hex: String) -> String {
 struct ConversationListView: View {
     @Bindable var store: StoreOf<AppFeature>
     @State private var showingCompose = false
+    @State private var showingNewGroup = false
 
     var connectionColor: Color {
         switch store.connection {
@@ -31,12 +32,25 @@ struct ConversationListView: View {
         NavigationStack {
             List(store.conversations) { convo in
                 Button {
-                    store.send(.openConversation(convo.peerHex))
+                    store.send(convo.kind == .group ? .openGroupConversation(convo.peerHex) : .openConversation(convo.peerHex))
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
-                            Text(shortHex(convo.peerHex))
-                                .font(.system(.headline, design: .monospaced))
+                            if let title = convo.title {
+                                Label(title, systemImage: "person.3")
+                                    .font(.headline)
+                                    .lineLimit(1)
+                            } else {
+                                Text(shortHex(convo.peerHex))
+                                    .font(.system(.headline, design: .monospaced))
+                            }
+                            if convo.groupState == GroupState.invited {
+                                Text("Invited")
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.accentColor.opacity(0.2)))
+                            }
                             Spacer()
                             Text(convo.lastTimestamp, style: .relative)
                                 .font(.caption2)
@@ -71,7 +85,12 @@ struct ConversationListView: View {
                     Button { store.send(.syncTapped) } label: { Image(systemName: "arrow.clockwise") }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showingCompose = true } label: { Image(systemName: "plus") }
+                    Menu {
+                        Button { showingCompose = true } label: { Label("New conversation", systemImage: "bubble.left") }
+                        Button { showingNewGroup = true } label: { Label("New group", systemImage: "person.3") }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
                 }
             }
             .navigationDestination(
@@ -84,6 +103,9 @@ struct ConversationListView: View {
             }
             .sheet(isPresented: $showingCompose) {
                 ComposeSheet(store: store, isPresented: $showingCompose)
+            }
+            .sheet(isPresented: $showingNewGroup) {
+                NewGroupView(store: store, isPresented: $showingNewGroup)
             }
         }
     }

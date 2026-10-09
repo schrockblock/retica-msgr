@@ -28,7 +28,9 @@ struct MessageInfoSheet: View {
                 if let message {
                     List {
                         ForEach(Array(MessageInfo.sections(for: message,
-                                                           attachment: store.attachmentsByMessageId[message.id]).enumerated()),
+                                                           attachment: store.attachmentsByMessageId[message.id],
+                                                           deliveries: store.deliveriesByMessageId[message.id] ?? [],
+                                                           memberNames: store.threadSenderNames).enumerated()),
                                 id: \.offset) { _, section in
                             Section {
                                 ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
