@@ -100,7 +100,9 @@ public enum GroupControlApply {
 
     /// A leave from `senderHex`: a current member of a known open group is removed with a line.
     /// When I am the creator, the line is mine and carries the bumped roster to the remaining
-    /// members through waiting delivery rows (amendment A7).
+    /// members through waiting delivery rows (amendment A7), and to the leaver as well (amendment
+    /// A15): if their leave crossed a roster change in flight, that roster re-marked them invited,
+    /// and this one, which omits them, is what settles their device back to left.
     public static func applyLeave(groupHex: String, from senderHex: String, names: Names, validated: Bool,
                                   now: Date, _ db: GRDB.Database) throws -> Outcome {
         guard let stored = try ChatGroup.fetch(groupHex, db), stored.isOpen, senderHex != names.me,
@@ -125,6 +127,8 @@ public enum GroupControlApply {
         for member in try GroupMember.members(of: groupHex, db) where member != names.me {
             try GroupDelivery.insert { GroupDelivery.waiting(messageId: line.id, memberHex: member) }.execute(db)
         }
+        // Amendment A15: the leaver gets the roster that omits them too.
+        try GroupDelivery.insert { GroupDelivery.waiting(messageId: line.id, memberHex: senderHex) }.execute(db)
         try GroupDelivery.refreshDerivedStatus(messageId: line.id, db)
         return .applied(groupHex: groupHex, creatorResends: true)
     }

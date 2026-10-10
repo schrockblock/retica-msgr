@@ -315,8 +315,16 @@ while turning §1–§5 into code. Where they differ from the text above, these 
 - **A11. `Conversation.peerHex` is the list key:** the peer's address, or a group's id. `kind`,
   `title` and `groupState` are added.
 - **A12. Re-sends.** A `failed` roster delivery is re-armed and re-sent when the member's path is
-  learned; a failed post delivery is not.
+  learned; a failed post delivery is not. (Extended to leave rows by A16.)
 - **A13. Thread query.** A thread's rows are those with `groupHex = key`, or `groupHex IS NULL
   AND peerHex = key`.
 - **A14. Event lines from a diff** are inserted 1 ms apart in the order added, removed, renamed,
   naming members by their announce display name or the first eight hex characters.
+
+## Amendments at final review (2026-10-10)
+
+- **A15. The leaver gets the re-issued roster.** When a member's leave reaches the creator, the
+  re-issued roster also goes to the leaver, so a device whose leave crossed a roster change (and
+  was re-marked invited) settles to left.
+- **A16. Failed leave copies are re-sent.** A12 extends to leave rows: a failed leave copy is
+  re-sent when the member's path is learned again; a failed post is not.

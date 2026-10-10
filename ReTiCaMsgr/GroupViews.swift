@@ -244,7 +244,7 @@ struct GroupInfoView: View {
                         }
                         Button("Delete group", role: .destructive) { confirmingDelete = true }
                     }
-                } else if !isCreator, group?.isOpen == true {
+                } else if !isCreator, group?.state == GroupState.active {
                     Section {
                         Button("Leave group", role: .destructive) { confirmingLeave = true }
                     }

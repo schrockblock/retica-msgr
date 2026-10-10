@@ -201,6 +201,8 @@ public enum AppDatabase {
                 t.primaryKey(["messageId", "memberHex"])
             }
             try db.create(indexOn: "groupDeliveries", columns: ["messageHash"])
+            // The dispatcher's `memberHex IN … AND status = …` scans run on every announce.
+            try db.create(indexOn: "groupDeliveries", columns: ["memberHex", "status"])
         }
         return m
     }

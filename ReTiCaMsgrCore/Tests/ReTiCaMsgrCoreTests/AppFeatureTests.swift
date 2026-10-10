@@ -5842,10 +5842,13 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     #expect(line.body == "Cy left the group")
     #expect(line.isOutgoing == true)
     #expect(line.groupControl == "roster")
+    // Amendment A15: the unreachable leaver's copy waits for their path.
     let deliveries = try await db.read { try GroupDelivery.all.fetchAll($0) }
-    #expect(deliveries.map(\.memberHex) == [memberD])
-    #expect(deliveries.first?.status == MessageStatus.sending)
-    #expect(deliveries.first?.messageHash == wire.hash.hexString)
+    #expect(deliveries.map(\.memberHex).sorted() == [leaverHex, memberD].sorted())
+    let toD = deliveries.first { $0.memberHex == memberD }
+    #expect(toD?.status == MessageStatus.sending)
+    #expect(toD?.messageHash == wire.hash.hexString)
+    #expect(deliveries.first { $0.memberHex == leaverHex }?.status == GroupDeliveryStatus.waiting)
 }
 
 /// Spec §3 "Creating and editing": adding members bumps the revision, writes the line, fans the
@@ -5998,4 +6001,130 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     await left.send(.renameGroup("x"))
     await left.send(.addGroupMembers([memberD]))
     #expect(try await leftDb.read { try Message.all.fetchAll($0) }.isEmpty)
+    // An invited group is declined, not left (final review cleanup).
+    let invitedDb = try AppDatabase.makeInMemory()
+    let invited = await groupStore(invitedDb, identity: me, creatorHex: memberC, members: [memberC],
+                                   state: GroupState.invited, reachable: [memberC])
+    invited.exhaustivity = .on
+    await invited.send(.leaveGroup)
+    #expect(try await invitedDb.read { try Message.all.fetchAll($0) }.isEmpty)
+    #expect(try await invitedDb.read { try ChatGroup.fetch(groupHexA, $0) }?.state == GroupState.invited)
+}
+
+// MARK: - Group chats: final review fixes (2026-10-10)
+
+/// Final review I1: an open group asks for its unreachable members' paths on the first load only,
+/// not on every reload that follows a delegate, arrival, dispatch or reaction.
+@MainActor @Test func groupFinalSecondGroupLoadSendsNoPathRequests() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let store = await groupStore(db, identity: me, members: [memberC, memberD]) { $0.openGroup = nil }
+    let group = ChatGroup(groupHex: groupHexA, name: "Mutual Aid", creatorHex: myHex, revision: 1,
+                          state: GroupState.active, updatedAt: infoT0)
+    let members = [memberC, memberD, myHex].map { GroupMember(groupHex: groupHexA, memberHex: $0) }
+    await store.send(.groupLoaded(groupHex: groupHexA, group: group, members: members, deliveries: []))
+    await store.receive { a in
+        if case let .node(.client(.endpoint(.requestPath(dest)))) = a { return dest == Data(hexString: memberC)! }
+        return false
+    }
+    await store.receive { a in
+        if case let .node(.client(.endpoint(.requestPath(dest)))) = a { return dest == Data(hexString: memberD)! }
+        return false
+    }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.transport.pathRequests.count == 2)
+    store.exhaustivity = .on
+    await store.send(.groupLoaded(groupHex: groupHexA, group: group, members: members, deliveries: []))
+    // Exhaustive: a third identical send fails if the second one queued any action (a path request).
+    await store.send(.groupLoaded(groupHex: groupHexA, group: group, members: members, deliveries: []))
+    #expect(store.state.node.client.endpoint.transport.pathRequests.count == 2)
+}
+
+/// Final review I2: when a member's leave reaches me as creator, the re-issued roster also goes
+/// to the leaver, so a device whose leave crossed a roster change settles to left.
+@MainActor @Test func groupFinalCreatorLeaveRosterGoesToLeaverToo() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let leaver = Identity()
+    let leaverHex = groupMemberHash(leaver).hexString
+    let store = await groupStore(db, identity: me, members: [leaverHex, memberD], reachable: [leaverHex, memberD])
+    await groupNameSender(store, leaver)
+    let sent = await groupSends(store, .node(.client(.delegate(.messageReceived(
+        message: groupLeaveWire(from: leaver, to: me), signatureValidated: true, method: .opportunistic)))), count: 2)
+    // `groupSends` can record one message more than once (its predicate is re-run), so count destinations.
+    #expect(Set(sent.map(\.destinationHash)) == [Data(hexString: leaverHex)!, Data(hexString: memberD)!])
+    let roster = GroupWire.Decoded.roster(groupId: Data(hexString: groupHexA)!, name: "Mutual Aid",
+                                          members: [memberD, myHex].sorted().map { Data(hexString: $0)! }, revision: 2)
+    let toLeaver = try #require(sent.first { $0.destinationHash == Data(hexString: leaverHex) })
+    #expect(GroupWire.decode(toLeaver.fields) == roster)
+    let toD = try #require(sent.first { $0.destinationHash == Data(hexString: memberD) })
+    #expect(GroupWire.decode(toD.fields) == roster)
+    let deliveries = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    #expect(deliveries.map(\.memberHex).sorted() == [leaverHex, memberD].sorted())
+    #expect(deliveries.allSatisfy { $0.status == MessageStatus.sending })
+}
+
+/// Final review I3 (amendment A16): a failed leave copy is re-sent when the member's path is
+/// learned again, as a failed roster is; a failed post is not.
+@MainActor @Test func groupFinalFailedLeaveIsResentOnPathLearned() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let store = await groupStore(db, identity: me, creatorHex: memberC, members: [memberC], state: GroupState.left)
+    let leaveLine = AppFeature.groupEventRow(groupHex: groupHexA, me: myHex, body: "You left the group",
+                                             control: GroupControl.leave, now: infoT0)
+    let post = Message(id: uuid(7), peerHex: myHex, isOutgoing: true, body: "hi", timestamp: infoT0,
+                       status: MessageStatus.failed, validated: false, messageHash: String(repeating: "6f", count: 16),
+                       groupHex: groupHexA, groupPostId: String(repeating: "6f", count: 16))
+    let failedLeave = GroupDelivery(messageId: leaveLine.id, memberHex: memberC, messageHash: String(repeating: "77", count: 32),
+                                    status: MessageStatus.failed, storedAt: nil, deliveredAt: nil, failedAt: infoT0)
+    let failedPost = GroupDelivery(messageId: post.id, memberHex: memberC, messageHash: String(repeating: "78", count: 32),
+                                   status: MessageStatus.failed, storedAt: nil, deliveredAt: nil, failedAt: infoT0)
+    try await db.write { db in
+        try Message.insert { leaveLine }.execute(db)
+        try Message.insert { post }.execute(db)
+        try GroupDelivery.insert { failedLeave }.execute(db)
+        try GroupDelivery.insert { failedPost }.execute(db)
+    }
+    let sent = await groupSends(store, .node(.client(.endpoint(.delegate(.pathLearned(destinationHash: Data(hexString: memberC)!, hops: 1))))), count: 1)
+    #expect(GroupWire.decode(try #require(sent.first).fields) == .leave(groupId: Data(hexString: groupHexA)!))
+    let rows = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    #expect(rows.first { $0.messageId == leaveLine.id }?.status == MessageStatus.sending)
+    #expect(rows.first { $0.messageId == leaveLine.id }?.messageHash == sent[0].hash.hexString)
+    #expect(rows.first { $0.messageId == post.id }?.status == MessageStatus.failed)
+}
+
+/// Final review M2: a roster change in one group dispatches that group's waiting copies only.
+@MainActor @Test func groupFinalRosterChangedDispatchesOnlyItsGroup() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let groupHexB = String(repeating: "2b", count: 16)
+    let store = await groupStore(db, identity: me, members: [memberC], reachable: [memberC])
+    let groupB = ChatGroup(groupHex: groupHexB, name: "Book Club", creatorHex: myHex, revision: 1,
+                           state: GroupState.active, updatedAt: infoT0)
+    let lineA = AppFeature.groupEventRow(groupHex: groupHexA, me: myHex, body: "You added Cy",
+                                         control: GroupControl.roster, now: infoT0)
+    let lineB = AppFeature.groupEventRow(groupHex: groupHexB, me: myHex, body: "You added Cy",
+                                         control: GroupControl.roster, now: infoT0)
+    let rosterB = [memberC, myHex].sorted()
+    try await db.write { db in
+        try ChatGroup.upsert(groupB, db)
+        try GroupMember.replace(groupHexB, with: rosterB, db)
+        try Message.insert { lineA }.execute(db)
+        try Message.insert { lineB }.execute(db)
+        try GroupDelivery.insert { GroupDelivery.waiting(messageId: lineA.id, memberHex: memberC) }.execute(db)
+        try GroupDelivery.insert { GroupDelivery.waiting(messageId: lineB.id, memberHex: memberC) }.execute(db)
+    }
+    // "Exactly one send" is read from the rows: the other group's copy must still be waiting.
+    let sent = await groupSends(store, .groupRosterChanged(groupHex: groupHexA), count: 1)
+    guard case let .roster(groupId, _, _, _)? = GroupWire.decode(try #require(sent.first).fields) else {
+        Issue.record("expected a roster"); return
+    }
+    #expect(groupId == Data(hexString: groupHexA)!)
+    let rows = try await db.read { try GroupDelivery.all.fetchAll($0) }
+    #expect(rows.first { $0.messageId == lineA.id }?.status == MessageStatus.sending)
+    #expect(rows.first { $0.messageId == lineB.id }?.status == GroupDeliveryStatus.waiting)
 }

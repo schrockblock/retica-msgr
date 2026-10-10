@@ -56,7 +56,8 @@ public struct GroupDelivery: Equatable, Sendable {
     /// no group copy carries `hash`.
     @discardableResult
     public static func applyOutcome(hash: String, _ outcome: Outcome, at now: Date, _ db: GRDB.Database) throws -> UUID? {
-        guard let row = try GroupDelivery.where { $0.messageHash.eq(hash) }.fetchOne(db) else { return nil }
+        let fetched = try GroupDelivery.where { $0.messageHash.eq(hash) }.fetchOne(db)
+        guard let row = fetched else { return nil }
         let milestone: Date? = now
         switch outcome {
         case .delivered:

@@ -210,3 +210,15 @@ Follow-ups noticed while implementing:
 - A leave sent by a group's creator is applied like any member's (`GroupControlApply.applyLeave` does not check `senderHex != stored.creatorHex`); the spec says the creator cannot leave.
 - `.leaveGroup` is accepted on an `invited` group and sends the leave to every member, whereas decline sends it to the creator only; `groupChange` checks its guards against state that may be stale by the time its write runs (a dissolve roster landing before the reload).
 - Three same-shaped lines (`guard let row = try T.where { ... }.fetchOne(db)` in the dispatcher and in `GroupDelivery.applyOutcome`, and the duplicate-post check in the receive path) emit a "trailing closure confusable with the body" compiler warning; bind the fetch to a `let` first.
+- Several failed roster rows for one member are all re-sent when their path is learned; only the newest needs re-arming.
+- `addGroupMembers` checks the member cap against `openGroupMembers`, which may be stale by the time the write runs.
+- Group reactions are not gated on the group's state (a left, dissolved or invited group still sends them).
+- `cancelSendTapped` has no reducer guard for group rows (the UI hides it, amendment A10, but the action would run).
+- Reply labels in groups mis-infer "You" / "Them" when the original is missing from the thread or its sender never announced.
+- The Info payload section does not name the 0xFD map keys (the spec §4 line was dropped and needs a decision).
+- Waiting post copies outlive membership: a member removed before their path is learned still gets the post later.
+- The open-thread reset block is duplicated across the open and create cases, and the reaction branches repeat the same optimistic-update lines.
+- `AppFeature.swift` is about 2,700 lines; move the group helpers to `AppFeature+Groups.swift`.
+- The `groupSends` test helper appends inside a `receive` predicate, which can run more than once per action, so `sent` may hold duplicates.
+- A duplicate group post carrying an attachment leaves its saved file orphaned.
+- A group post carrying an expiry "change" entry takes the timer sentence as its body.

@@ -30,6 +30,10 @@ public enum ReplyPreview {
     /// a file, its placeholder from `attachments`, keyed by message id), else the carried quote,
     /// else "Original message not available". In a group thread `names` (sender address → display
     /// name) labels the original by its own sender; `peerName` is the fallback.
+    ///
+    /// When the original IS found but its trimmed text is empty (a whitespace-only body with no
+    /// attachment), `text` still falls back to `unavailable` — but `originalID` stays set, so the
+    /// quote block still scrolls to that (blank) original.
     public static func resolve(for message: Message, in thread: [Message], peerName: String?,
                                attachments: [UUID: Attachment] = [:], names: [String: String] = [:]) -> Resolved? {
         guard let hash = message.replyToHash else { return nil }

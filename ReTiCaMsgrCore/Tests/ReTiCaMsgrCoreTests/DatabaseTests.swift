@@ -537,3 +537,11 @@ private func groupTableMessage(_ id: String, groupHex: String?, postId: String?,
     #expect(row.isGroupEvent == false)
     #expect(row.groupControl == nil)
 }
+
+/// Final review I4: the dispatcher's `memberHex IN … AND status = …` scans (run on every announce
+/// through `pathLearned`) have an index to use.
+@Test func groupFinalDeliveriesMemberStatusIndexExists() throws {
+    let db = try AppDatabase.makeInMemory()
+    let indexes = try db.read { try $0.indexes(on: "groupDeliveries") }
+    #expect(indexes.contains { $0.columns == ["memberHex", "status"] })
+}
