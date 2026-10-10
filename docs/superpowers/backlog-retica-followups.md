@@ -186,3 +186,27 @@ Follow-ups noticed while implementing:
 - Still open: a sheet presented over ChatView keeps `chatVisible` true, so an arrival while a sheet
   is up counts as viewed. ChatView's onAppear double-stamps right after `.openConversation`
   (harmless: the second stamp finds nothing).
+
+## Group chats (2026-10-09)
+
+Left out by design (spec "Out of scope"): attachments and disappearing timers in groups, member
+public keys in invites (a ReTiCA change: seed a recipient key without a path so a copy can be
+encrypted before the member's announce is heard), app-layer pacing of the fan-out burst for LoRa,
+re-fanning replies from members on other clients, reading Retichat's group fields, creator
+transfer, history for late joiners, an age limit on waiting copies, group reactions to members
+unreachable at the tap.
+Follow-ups noticed while implementing:
+
+- A deferred copy is re-stamped with the dispatch time, so a receiver's "Written" row shows when
+  the copy went out, not when the post was typed.
+- A member's path learned while the app holds many waiting copies sends them all in one burst
+  (the dispatcher has no pacing); the RNode firmware queues them.
+- A post arriving before its group's first roster lands as a one-to-one message and is never
+  re-homed into the group when the roster arrives.
+- Event lines use announce display names at write time; a later announce with a new name does
+  not rewrite earlier lines.
+- `interfaceConnected` and the launch seeding call the dispatcher but have no test of their own
+  (a live interface registration cannot be simulated in the TestStore today).
+- A leave sent by a group's creator is applied like any member's (`GroupControlApply.applyLeave` does not check `senderHex != stored.creatorHex`); the spec says the creator cannot leave.
+- `.leaveGroup` is accepted on an `invited` group and sends the leave to every member, whereas decline sends it to the creator only; `groupChange` checks its guards against state that may be stale by the time its write runs (a dissolve roster landing before the reload).
+- Three same-shaped lines (`guard let row = try T.where { ... }.fetchOne(db)` in the dispatcher and in `GroupDelivery.applyOutcome`, and the duplicate-post check in the receive path) emit a "trailing closure confusable with the body" compiler warning; bind the fetch to a `let` first.
