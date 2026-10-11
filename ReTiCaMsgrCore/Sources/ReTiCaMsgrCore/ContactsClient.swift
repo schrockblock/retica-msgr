@@ -143,10 +143,8 @@ extension ContactsAuthorization {
         case .authorized: self = .full
         case .notDetermined: self = .notDetermined
         case .denied, .restricted: self = .denied
-        default:
-            // `.limited` (iOS 18) is the only other case; named through `default` so the
-            // package still compiles on SDKs without it.
-            self = .limited
+        case .limited: self = .limited
+        @unknown default: self = .denied
         }
     }
     #endif

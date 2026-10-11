@@ -304,9 +304,10 @@ public struct AppFeature {
             threadReactions = ReactionSummary.byMessage(rows, me: myAddressHex)
         }
 
-        /// The open peer's display name from its LXMF delivery announce (`learnedPeers`, the table
-        /// the Announces list shows), trimmed. nil when no conversation is open, no announce was
-        /// heard, or the name is blank, so labels fall back to "Them" rather than "".
+        /// The open peer's display name (spec 2026-10-11 §4): the linked contact's name wins,
+        /// else the display name from its LXMF delivery announce (`learnedPeers`, the table the
+        /// Announces list shows), trimmed. nil when no conversation is open, there is no link and
+        /// no announce was heard, or the name is blank, so labels fall back to "Them" rather than "".
         public var openPeerDisplayName: String? {
             openPeerHex.flatMap(peerDisplayName)
         }
@@ -318,9 +319,11 @@ public struct AppFeature {
             contactName(hex) ?? peerAnnounceName(hex)
         }
 
-        /// The linked contact's cached name, or nil when the peer is not linked.
+        /// The linked contact's cached name, or nil when the peer is not linked or the cached
+        /// name is empty (an unnamed card must not blank out a title that already has one).
         public func contactName(_ hex: String) -> String? {
-            contactLinks[hex]?.cachedName
+            guard let name = contactLinks[hex]?.cachedName, !name.isEmpty else { return nil }
+            return name
         }
 
         /// The display name from `hex`'s LXMF delivery announce only (`learnedPeers`), trimmed;
@@ -353,7 +356,8 @@ public struct AppFeature {
             openGroupOthers.contains { reachablePeers.contains($0) }
         }
 
-        /// A member's name for a line: "You", the announce display name, else a short hex.
+        /// A member's name for a line: "You", the linked contact's name, else the announce
+        /// display name, else a short hex.
         public func groupMemberName(_ hex: String) -> String {
             if hex == myAddressHex { return GroupEventText.you }
             return peerDisplayName(hex) ?? GroupEventText.fallbackName(hex)
@@ -2197,11 +2201,15 @@ public struct AppFeature {
                 }
                 let link = ContactLinking.newLink(peerHex: peerHex, identifier: identifier, name: name,
                                                   source: source, now: date.now)
-                return writeLinkEffects(state, link: link, replacing: nil, contacts: contactsClient)
+                return writeLinkEffects(state, link: link, replacing: [], contacts: contactsClient)
 
             case .replaceLinkConfirmed:
                 guard let collision = state.pendingLinkCollision else { return .none }
                 state.pendingLinkCollision = nil
+                // Every row Replace is about to delete (spec 2026-10-11 Review Focus F2): a
+                // double collision can name two peers, and a stale verify prompt for either one
+                // must not outlive the row it was about.
+                for existing in collision.existing { state.pendingVerifyPrompts.remove(existing.peerHex) }
                 let link = ContactLinking.newLink(peerHex: collision.peerHex, identifier: collision.identifier,
                                                   name: collision.name, source: collision.source, now: date.now)
                 return writeLinkEffects(state, link: link, replacing: collision.existing, contacts: contactsClient)
@@ -2279,6 +2287,9 @@ public struct AppFeature {
                 }
 
             case .contactLinkSheetAppeared:
+                // Refresh first (Review Focus F3): the Info sheet can reopen after the user
+                // changed Contacts access in Settings, and the row must not show stale access.
+                state.contactsAuthorization = contactsClient.authorizationStatus()
                 guard state.contactMirrorEnabled else { return .none }
                 let known = state.contactLinks
                 return .run { [contactsClient] send in
@@ -3115,16 +3126,17 @@ private func reloadContactLinks(_ database: any DatabaseWriter, _ send: Send<App
 }
 
 /// Writes a new or replacing link, mirrors it to the card when the mirror is on with full
-/// access (clearing the replaced row's card first when it was a different contact), reloads.
-private func writeLinkEffects(_ state: AppFeature.State, link: ContactLink, replacing: ContactLink?,
+/// access (clearing every replaced row's card first, except one that is this same contact,
+/// since that card is about to be rewritten with the new address instead of lost), reloads.
+private func writeLinkEffects(_ state: AppFeature.State, link: ContactLink, replacing: [ContactLink],
                               contacts: ContactsClient) -> Effect<AppFeature.Action> {
     @Dependency(\.defaultDatabase) var database
     let mirror = state.contactMirrorEnabled && contacts.authorizationStatus() == .full
     return .run { send in
         try await database.write { try ContactLink.insertReplacing(link, $0) }
         if mirror {
-            if let replacing, replacing.contactIdentifier != link.contactIdentifier {
-                try? await contacts.clearAddress(replacing.contactIdentifier)
+            for old in replacing where old.contactIdentifier != link.contactIdentifier {
+                try? await contacts.clearAddress(old.contactIdentifier)
             }
             try? await contacts.writeAddress(link.contactIdentifier, link.peerHex)
         }

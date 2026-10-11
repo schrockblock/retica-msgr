@@ -144,8 +144,8 @@ private func rows(_ db: any DatabaseWriter) throws -> [ContactLink] {
     try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
     await pick(store, linkPeerA, bob)
     let collision = store.state.pendingLinkCollision
-    #expect(collision?.kind == .peerAlreadyLinked)
-    #expect(collision?.existing == linkRow(linkPeerA, jane))
+    #expect(collision?.kinds == [.peerAlreadyLinked])
+    #expect(collision?.existing == [linkRow(linkPeerA, jane)])
     #expect(collision?.identifier == "CN-2")
     #expect(try rows(db) == [linkRow(linkPeerA, jane)], "nothing is written until Replace")
     await store.finish()
@@ -156,8 +156,8 @@ private func rows(_ db: any DatabaseWriter) throws -> [ContactLink] {
     let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane]))
     try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
     await pick(store, linkPeerB, jane)
-    #expect(store.state.pendingLinkCollision?.kind == .contactAlreadyLinked)
-    #expect(store.state.pendingLinkCollision?.existing.peerHex == linkPeerA)
+    #expect(store.state.pendingLinkCollision?.kinds == [.contactAlreadyLinked])
+    #expect(store.state.pendingLinkCollision?.existing.map(\.peerHex) == [linkPeerA])
     #expect(try rows(db).count == 1)
     await store.finish()
 }
@@ -441,7 +441,9 @@ private func mirrorStore(_ db: any DatabaseWriter, fake: FakeContacts, on: Bool 
     let fake = FakeContacts(contacts: [jane, bob], addresses: ["CN-1": "zzz", "CN-2": String(linkPeerB.dropLast())])
     let store = mirrorStore(db, fake: fake)
     store.exhaustivity = .on
-    await store.send(.contactLinkSheetAppeared)
+    // `.contactLinkSheetAppeared` also refreshes `contactsAuthorization` now (Review Focus F3);
+    // the fake's default is `.full`.
+    await store.send(.contactLinkSheetAppeared) { $0.contactsAuthorization = .full }
     await store.receive(.importCandidatesFound([]))
 }
 
@@ -450,5 +452,81 @@ private func mirrorStore(_ db: any DatabaseWriter, fake: FakeContacts, on: Bool 
     let fake = FakeContacts(contacts: [bob], addresses: ["CN-2": linkPeerB])
     let store = mirrorStore(db, fake: fake, on: false)
     store.exhaustivity = .on
-    await store.send(.contactLinkSheetAppeared)   // exhaustive: nothing happens with the mirror off
+    // `.contactLinkSheetAppeared` also refreshes `contactsAuthorization` now (Review Focus F3);
+    // the mirror stays off, so still no scan.
+    await store.send(.contactLinkSheetAppeared) { $0.contactsAuthorization = .full }
+}
+
+// MARK: - Final fix wave (whole-branch review, spec 2026-10-11)
+
+@MainActor @Test func linkFinalDoubleCollisionNamesBothAndReplaceLeavesOneRow() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane, bob]))
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane), linkRow(linkPeerB, bob)])
+    await pick(store, linkPeerA, bob)
+    let collision = store.state.pendingLinkCollision
+    #expect(collision?.existing.map(\.peerHex) == [linkPeerA, linkPeerB])
+    #expect(collision?.kinds == [.peerAlreadyLinked, .contactAlreadyLinked])
+    await store.send(.replaceLinkConfirmed) { $0.pendingLinkCollision = nil }
+    await receiveLinks(store)
+    #expect(try rows(db) == [linkRow(linkPeerA, bob)])
+    await store.finish()
+}
+
+@MainActor @Test func linkFinalReplaceClearsPromptsForEveryDeletedPeer() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane, bob])) {
+        $0.pendingVerifyPrompts = [linkPeerB]
+    }
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane), linkRow(linkPeerB, bob)])
+    await pick(store, linkPeerA, bob)
+    await store.send(.replaceLinkConfirmed) {
+        $0.pendingLinkCollision = nil
+        $0.pendingVerifyPrompts = []
+    }
+    await receiveLinks(store)
+    #expect(store.state.pendingVerifyPrompts.isEmpty)
+    await store.finish()
+}
+
+@MainActor @Test func linkFinalMirrorReplaceClearsEveryReplacedCard() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [jane, bob])
+    let store = mirrorStore(db, fake: fake)
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane), linkRow(linkPeerB, bob)])
+    await pick(store, linkPeerA, bob)
+    await store.send(.replaceLinkConfirmed) { $0.pendingLinkCollision = nil }
+    await receiveLinks(store)
+    await store.finish()
+    #expect(Set(fake.clears) == ["CN-1"])
+    #expect(fake.writes.last == FakeContacts.Write(identifier: "CN-2", peerHex: linkPeerA))
+}
+
+@MainActor @Test func linkFinalSheetAppearedRefreshesAuthorization() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(authorization: .limited)
+    let store = mirrorStore(db, fake: fake, on: false)
+    store.exhaustivity = .on
+    await store.send(.contactLinkSheetAppeared) { $0.contactsAuthorization = .limited }
+}
+
+@MainActor @Test func linkFinalEmptyCachedNameDoesNotBlankTheName() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts())
+    await announce(store, linkPeerA, "jane_on_the_mesh")
+    var blankNamed = linkRow(linkPeerA, jane)
+    blankNamed.cachedName = ""
+    try await seedLinks(db, store, [blankNamed])
+    #expect(store.state.contactName(linkPeerA) == nil)
+    #expect(store.state.peerDisplayName(linkPeerA) == "jane_on_the_mesh")
+}
+
+@MainActor @Test func linkFinalImportLowercasesAddresses() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [bob], addresses: ["CN-2": linkPeerB.uppercased()])
+    let store = mirrorStore(db, fake: fake)
+    await store.send(.contactLinkSheetAppeared)
+    await store.receive(.importCandidatesFound([ImportCandidate(identifier: "CN-2", name: "Bob Ray", peerHex: linkPeerB)])) {
+        $0.importCandidates = [ImportCandidate(identifier: "CN-2", name: "Bob Ray", peerHex: linkPeerB)]
+    }
 }

@@ -5,6 +5,7 @@
 
 import SwiftUI
 import UIKit
+import ContactsUI
 import ComposableArchitecture
 import ReTiCaMsgrCore
 
@@ -31,6 +32,13 @@ struct PeerInfoView: View {
                 }
                 Section("Contact") {
                     ContactLinkRow(store: store, peerHex: peerHex)
+                    // Its own row, not per group member (Review Focus F3 item 4): the button
+                    // imports every candidate at once, so it belongs here once, not repeated.
+                    if !store.state.importCandidates.isEmpty {
+                        Button("Import \(store.state.importCandidates.count) addresses found in Contacts") {
+                            store.send(.importContactLinks)
+                        }
+                    }
                 }
             }
             .navigationTitle("Chat info")
@@ -51,6 +59,7 @@ struct ContactLinkRow: View {
     @Dependency(\.contactsClient) private var contacts
     @State private var thumbnail: Data?
     @State private var missing = false
+    @State private var managingAccess = false
 
     private var link: ContactLink? { store.state.contactLinks[peerHex] }
 
@@ -74,7 +83,9 @@ struct ContactLinkRow: View {
                             }
                         }
                         Text(sourceText(link)).font(.caption).foregroundStyle(.secondary)
-                        if missing {
+                        // Not when access is merely denied: the contact itself is not gone, only
+                        // unreadable, and that case already gets its own explanation below.
+                        if missing, store.state.contactsAuthorization != .denied {
                             Text("Contact not available").font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -114,6 +125,9 @@ struct ContactLinkRow: View {
                     missing = true
                 }
             }
+            // The denied/limited affordance is the same whether or not a link already exists
+            // (Review Focus F3 item 3): access, not the contact, is what's missing.
+            accessRows
         } else {
             Button {
                 store.send(.linkContactTapped(peerHex: peerHex, source: ContactLinkSource.manual))
@@ -123,26 +137,28 @@ struct ContactLinkRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if store.state.contactsAuthorization == .denied {
-                Text("Contacts access is off for ReTiCaMsgr. Allow it in Settings to link a contact.")
+            accessRows
+        }
+    }
+
+    @ViewBuilder
+    private var accessRows: some View {
+        if store.state.contactsAuthorization == .denied {
+            Text("Contacts access is off for ReTiCaMsgr. Allow it in Settings to link a contact.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            }
+        }
+        if store.state.contactsAuthorization == .limited {
+            Text("Only the contacts you selected are available.")
+                .font(.caption).foregroundStyle(.secondary)
+            if store.state.contactMirrorEnabled {
+                Text("The contact card cannot be updated with limited access.")
                     .font(.caption).foregroundStyle(.secondary)
-                Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-                }
             }
-            if store.state.contactsAuthorization == .limited {
-                Text("Only the contacts you selected are available.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if store.state.contactMirrorEnabled {
-                    Text("The contact card cannot be updated with limited access.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if !store.state.importCandidates.isEmpty {
-                Button("Import \(store.state.importCandidates.count) addresses found in Contacts") {
-                    store.send(.importContactLinks)
-                }
-            }
+            Button("Manage selected contacts") { managingAccess = true }
+                .modifier(ManageAccessPickerModifier(isPresented: $managingAccess))
         }
     }
 
@@ -155,6 +171,22 @@ struct ContactLinkRow: View {
             let when = link.discoveredAt.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? ""
             return "Found via \(via) on \(when)"
         default: return "You linked this"
+        }
+    }
+}
+
+/// The system "manage selected contacts" picker, applied to the button that opens it (iOS 18+;
+/// `contactAccessPicker` does not exist before that). Below iOS 18 the button it's applied to
+/// disappears instead of sitting there doing nothing — the one place this feature checks
+/// `#available`.
+private struct ManageAccessPickerModifier: ViewModifier {
+    @Binding var isPresented: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content.contactAccessPicker(isPresented: $isPresented) { _ in }
+        } else {
+            EmptyView()
         }
     }
 }
@@ -192,9 +224,11 @@ struct LinkPromptsModifier: ViewModifier {
 
     private var collisionTitle: String {
         guard let c = store.pendingLinkCollision else { return "" }
-        switch c.kind {
-        case .peerAlreadyLinked: return "This address is linked to \(c.existing.cachedName)"
-        case .contactAlreadyLinked: return "\(c.existing.cachedName) is linked to \(shortHex(c.existing.peerHex))"
-        }
+        return zip(c.existing, c.kinds).map { row, kind -> String in
+            switch kind {
+            case .peerAlreadyLinked: return "This address is linked to \(row.cachedName)"
+            case .contactAlreadyLinked: return "\(row.cachedName) is linked to \(shortHex(row.peerHex))"
+            }
+        }.joined(separator: ", and ")
     }
 }

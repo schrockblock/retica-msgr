@@ -256,6 +256,10 @@ struct GroupInfoView: View {
                     }
                 }
             }
+            // Refreshes `contactsAuthorization` and re-scans for import candidates (spec
+            // 2026-10-11 Review Focus F3), as `PeerInfoView` already does — a group member's
+            // Contact row needs the same up-to-date access state.
+            .onAppear { store.send(.contactLinkSheetAppeared) }
             .navigationTitle("Group info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

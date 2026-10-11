@@ -10,7 +10,9 @@ public struct LinkPickerTarget: Equatable, Sendable {
     }
 }
 
-/// A pick that would break the 1:1 rule, awaiting Replace or Cancel (spec 2026-10-11 §3).
+/// A pick that would break the 1:1 rule, awaiting Replace or Cancel (spec 2026-10-11 §3). Up to
+/// two existing rows can be in the way at once (a peer-side row and a different contact-side
+/// row); `existing`/`kinds` carry both, peer-side first, so nothing is overwritten unnamed.
 public struct LinkCollision: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         /// This peer is already linked to another contact.
@@ -22,16 +24,16 @@ public struct LinkCollision: Equatable, Sendable {
     public var identifier: String
     public var name: String
     public var source: String
-    public var existing: ContactLink
-    public var kind: Kind
+    public var existing: [ContactLink]
+    public var kinds: [Kind]
 
-    public init(peerHex: String, identifier: String, name: String, source: String, existing: ContactLink, kind: Kind) {
+    public init(peerHex: String, identifier: String, name: String, source: String, existing: [ContactLink], kinds: [Kind]) {
         self.peerHex = peerHex
         self.identifier = identifier
         self.name = name
         self.source = source
         self.existing = existing
-        self.kind = kind
+        self.kinds = kinds
     }
 }
 
@@ -46,18 +48,24 @@ public enum ContactLinking {
                     conflictedAt: nil, conflictPeerHex: nil, createdAt: now, updatedAt: now)
     }
 
-    /// The collision a pick causes, if any: the peer side is checked first, then the contact side.
+    /// The collision(s) a pick causes, if any: the peer side is checked, then the contact side —
+    /// both independently, since a double collision (peer P linked to Jane, contact Bob linked
+    /// to peer Q) must name and clear both rows, not just the first one found.
     public static func collision(peerHex: String, identifier: String, name: String, source: String,
                                  in links: [String: ContactLink]) -> LinkCollision? {
-        if let existing = links[peerHex], existing.contactIdentifier != identifier {
-            return LinkCollision(peerHex: peerHex, identifier: identifier, name: name, source: source,
-                                 existing: existing, kind: .peerAlreadyLinked)
+        var existing: [ContactLink] = []
+        var kinds: [LinkCollision.Kind] = []
+        if let peerSide = links[peerHex], peerSide.contactIdentifier != identifier {
+            existing.append(peerSide)
+            kinds.append(.peerAlreadyLinked)
         }
-        if let existing = links.values.first(where: { $0.contactIdentifier == identifier && $0.peerHex != peerHex }) {
-            return LinkCollision(peerHex: peerHex, identifier: identifier, name: name, source: source,
-                                 existing: existing, kind: .contactAlreadyLinked)
+        if let contactSide = links.values.first(where: { $0.contactIdentifier == identifier && $0.peerHex != peerHex }) {
+            existing.append(contactSide)
+            kinds.append(.contactAlreadyLinked)
         }
-        return nil
+        guard !existing.isEmpty else { return nil }
+        return LinkCollision(peerHex: peerHex, identifier: identifier, name: name, source: source,
+                             existing: existing, kinds: kinds)
     }
 
     /// The cards worth offering for import: a well-formed 32-hex address, not already linked by
@@ -68,6 +76,11 @@ public enum ContactLinking {
         var seenContacts = Set<String>()
         var seenAddresses = Set<String>()
         return found
+            .map { candidate -> ImportCandidate in
+                var candidate = candidate
+                candidate.peerHex = candidate.peerHex.lowercased()
+                return candidate
+            }
             .sorted { $0.identifier < $1.identifier }
             .filter { candidate in
                 guard isValidPeerAddress(candidate.peerHex),
