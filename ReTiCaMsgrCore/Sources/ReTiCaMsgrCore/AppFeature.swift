@@ -236,6 +236,18 @@ public struct AppFeature {
         /// inject.
         @Shared(.appStorage("bleEnabled")) public var bleEnabled: Bool = false
 
+        /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
+        /// link write. The one source for "what do we call this peer" when a link exists.
+        public var contactLinks: [String: ContactLink] = [:]
+        /// What Contacts last reported. Session-only; drives the denied explanation.
+        public var contactsAuthorization: ContactsAuthorization = .notDetermined
+        /// Non-nil while the system contact picker should be up (presented at the root).
+        public var linkPickerTarget: LinkPickerTarget? = nil
+        /// A pick that collides with an existing link, awaiting Replace or Cancel.
+        public var pendingLinkCollision: LinkCollision? = nil
+        /// Peers whose unverified link received a confirmation: the info sheet asks to verify.
+        public var pendingVerifyPrompts: Set<String> = []
+
         public init(identity: Identity,
                     pushStorage: PushStorage = .temporary(),
                     bundleID: String = Bundle.main.bundleIdentifier ?? "",
@@ -294,9 +306,21 @@ public struct AppFeature {
             openPeerHex.flatMap(peerDisplayName)
         }
 
-        /// `peerHex`'s display name from its LXMF delivery announce (`learnedPeers`), trimmed; nil
-        /// when no announce was heard or the name is blank, so labels fall back to "Them".
+        /// What we call `hex`: the linked contact's name when a link exists (spec 2026-10-11 §4),
+        /// else the display name from its LXMF delivery announce, trimmed; nil when neither, so
+        /// labels fall back to "Them".
         public func peerDisplayName(_ hex: String) -> String? {
+            contactName(hex) ?? peerAnnounceName(hex)
+        }
+
+        /// The linked contact's cached name, or nil when the peer is not linked.
+        public func contactName(_ hex: String) -> String? {
+            contactLinks[hex]?.cachedName
+        }
+
+        /// The display name from `hex`'s LXMF delivery announce only (`learnedPeers`), trimmed;
+        /// nil when no announce was heard or the name is blank.
+        public func peerAnnounceName(_ hex: String) -> String? {
             guard let hash = Data(hexString: hex),
                   let name = node.client.learnedPeers[hash]?.displayName?
                       .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -397,6 +421,25 @@ public struct AppFeature {
         case setNodeEnabled(id: UUID, enabled: Bool)
         /// "Use the default node's propagation node". Takes effect only while a default exists.
         case setUsePropagationDefault(Bool)
+        /// Contact links (spec 2026-10-11 §5).
+        case linkContactTapped(peerHex: String, source: String)
+        case contactsAccessResolved(ContactsAuthorization, peerHex: String, source: String)
+        case linkPickerDismissed
+        case contactPicked(peerHex: String, identifier: String, name: String, source: String)
+        case replaceLinkConfirmed
+        case cancelLinkCollision
+        case unlinkContact(peerHex: String)
+        case markContactVerified(peerHex: String)
+        /// A later exchange returned the same identity for this contact; the app asks the user
+        /// whether to mark the link verified. Sent by the exchange (a later feature).
+        case confirmationReceived(peerHex: String, confirmation: ContactConfirmation)
+        case dismissVerifyPrompt(peerHex: String)
+        /// A later exchange returned a different identity for this contact. Ignored when the
+        /// reported contact no longer matches the link (the link changed since).
+        case conflictReported(peerHex: String, contactIdentifier: String, otherPeerHex: String, at: Date)
+        case resolveConflict(peerHex: String)
+        case contactNameRefreshed(peerHex: String, name: String)
+        case contactLinksLoaded([ContactLink])
         case setDisplayName(String)
         case syncTapped
         case announceTapped
@@ -481,6 +524,7 @@ public struct AppFeature {
     @Dependency(\.defaultDatabase) var database
     @Dependency(\.date) var date
     @Dependency(\.uuid) var uuid
+    @Dependency(\.contactsClient) var contactsClient
     @Dependency(\.continuousClock) var clock
     @Dependency(\.attachmentStore) var attachmentStore
     @Dependency(\.attachmentCacheEvictor) var attachmentCacheEvictor
@@ -546,6 +590,7 @@ public struct AppFeature {
                     pushSyncEffects(state),
                     .send(.push(.appLaunched)),
                     .run { [database] send in try await reloadConversations(database, send) },
+                    .run { [database] send in try await reloadContactLinks(database, send) },
                     .run { [database] send in
                         // ORDER BY storedAt so eviction during rehydration is deterministic across
                         // launches: the oldest entries are ingested first, matching the order in which
@@ -2100,6 +2145,108 @@ public struct AppFeature {
                 state.inboundTransfers[linkID] = nil
                 return .none
 
+            // MARK: Contact links (spec 2026-10-11 §3, §5)
+
+            case let .linkContactTapped(peerHex, source):
+                let status = contactsClient.authorizationStatus()
+                state.contactsAuthorization = status
+                switch status {
+                case .full, .limited:
+                    state.linkPickerTarget = LinkPickerTarget(peerHex: peerHex, source: source)
+                    return .none
+                case .denied:
+                    return .none
+                case .notDetermined:
+                    return .run { [contactsClient] send in
+                        let granted = await contactsClient.requestAccess()
+                        await send(.contactsAccessResolved(granted, peerHex: peerHex, source: source))
+                    }
+                }
+
+            case let .contactsAccessResolved(status, peerHex, source):
+                state.contactsAuthorization = status
+                if status == .full || status == .limited {
+                    state.linkPickerTarget = LinkPickerTarget(peerHex: peerHex, source: source)
+                }
+                return .none
+
+            case .linkPickerDismissed:
+                state.linkPickerTarget = nil
+                return .none
+
+            case let .contactPicked(peerHex, identifier, name, source):
+                state.linkPickerTarget = nil
+                // Re-picking the contact a peer already has changes nothing (Review Focus 2).
+                if let existing = state.contactLinks[peerHex], existing.contactIdentifier == identifier {
+                    return .none
+                }
+                if let collision = ContactLinking.collision(peerHex: peerHex, identifier: identifier, name: name,
+                                                            source: source, in: state.contactLinks) {
+                    state.pendingLinkCollision = collision
+                    return .none
+                }
+                let link = ContactLinking.newLink(peerHex: peerHex, identifier: identifier, name: name,
+                                                  source: source, now: date.now)
+                return writeLinkEffects(state, link: link, replacing: nil, contacts: contactsClient)
+
+            case .replaceLinkConfirmed:
+                guard let collision = state.pendingLinkCollision else { return .none }
+                state.pendingLinkCollision = nil
+                let link = ContactLinking.newLink(peerHex: collision.peerHex, identifier: collision.identifier,
+                                                  name: collision.name, source: collision.source, now: date.now)
+                return writeLinkEffects(state, link: link, replacing: collision.existing, contacts: contactsClient)
+
+            case .cancelLinkCollision:
+                state.pendingLinkCollision = nil
+                return .none
+
+            case let .unlinkContact(peerHex):
+                guard let link = state.contactLinks[peerHex] else { return .none }
+                state.pendingVerifyPrompts.remove(peerHex)
+                return unlinkEffects(state, link: link, contacts: contactsClient)
+
+            case let .markContactVerified(peerHex):
+                guard state.contactLinks[peerHex] != nil else { return .none }
+                state.pendingVerifyPrompts.remove(peerHex)
+                return updateContactLink(database, peerHex: peerHex, now: date.now) { $0.verified = true }
+
+            case let .confirmationReceived(peerHex, confirmation):
+                guard let link = state.contactLinks[peerHex] else { return .none }
+                if !link.verified { state.pendingVerifyPrompts.insert(peerHex) }
+                return updateContactLink(database, peerHex: peerHex, now: date.now) {
+                    $0.confirmations.append(confirmation)
+                }
+
+            case let .dismissVerifyPrompt(peerHex):
+                state.pendingVerifyPrompts.remove(peerHex)
+                return .none
+
+            case let .conflictReported(peerHex, contactIdentifier, otherPeerHex, at):
+                guard let link = state.contactLinks[peerHex], link.contactIdentifier == contactIdentifier else {
+                    return .none
+                }
+                return updateContactLink(database, peerHex: peerHex, now: date.now) {
+                    $0.conflictedAt = at
+                    $0.conflictPeerHex = otherPeerHex
+                }
+
+            case let .resolveConflict(peerHex):
+                guard state.contactLinks[peerHex] != nil else { return .none }
+                return updateContactLink(database, peerHex: peerHex, now: date.now) {
+                    $0.conflictedAt = nil
+                    $0.conflictPeerHex = nil
+                }
+
+            case let .contactNameRefreshed(peerHex, name):
+                guard let link = state.contactLinks[peerHex], !name.isEmpty, link.cachedName != name else {
+                    return .none
+                }
+                return updateContactLink(database, peerHex: peerHex, now: date.now) { $0.cachedName = name }
+
+            case let .contactLinksLoaded(rows):
+                state.contactLinks = Dictionary(uniqueKeysWithValues: rows.map { ($0.peerHex, $0) })
+                return .none
+
             case .node, .binding, .pushRegistrationTimedOut:
                 return .none
             }
@@ -2897,4 +3044,48 @@ private func recordSeenHash(_ hashHex: String, at now: Date, _ db: GRDB.Database
     try SeenHashRow.where { $0.hashHex.eq(hashHex) }.delete().execute(db)
     try SeenHashRow.insert { SeenHashRow(hashHex: hashHex, storedAt: now) }.execute(db)
     try pruneSeenHashes(db)
+}
+
+// MARK: - Contact links → database (spec 2026-10-11)
+
+/// Reads every link and hands them to the reducer, as a launch and every write do.
+private func reloadContactLinks(_ database: any DatabaseWriter, _ send: Send<AppFeature.Action>) async throws {
+    let rows = try await database.read { try ContactLink.all($0) }
+    await send(.contactLinksLoaded(rows))
+}
+
+/// Writes a new or replacing link and reloads. `replacing` is the row a Replace discards; Task 4
+/// uses it and `contacts` for the card mirror.
+private func writeLinkEffects(_ state: AppFeature.State, link: ContactLink, replacing: ContactLink?,
+                              contacts: ContactsClient) -> Effect<AppFeature.Action> {
+    @Dependency(\.defaultDatabase) var database
+    return .run { send in
+        try await database.write { try ContactLink.insertReplacing(link, $0) }
+        try await reloadContactLinks(database, send)
+    }
+}
+
+/// Deletes a link and reloads. Task 4 adds the card clear.
+private func unlinkEffects(_ state: AppFeature.State, link: ContactLink,
+                           contacts: ContactsClient) -> Effect<AppFeature.Action> {
+    @Dependency(\.defaultDatabase) var database
+    return .run { send in
+        try await database.write { try ContactLink.delete(peerHex: link.peerHex, $0) }
+        try await reloadContactLinks(database, send)
+    }
+}
+
+/// Applies `mutate` to one row (stamping `updatedAt`), then reloads. A missing row is a no-op.
+private func updateContactLink(_ database: any DatabaseWriter, peerHex: String, now: Date,
+                               _ mutate: @escaping @Sendable (inout ContactLink) -> Void) -> Effect<AppFeature.Action> {
+    .run { send in
+        try await database.write { db in
+            guard var row = try ContactLink.fetch(peerHex: peerHex, db) else { return }
+            mutate(&row)
+            row.updatedAt = now
+            try ContactLink.delete(peerHex: peerHex, db)
+            try ContactLink.insert { row }.execute(db)
+        }
+        try await reloadContactLinks(database, send)
+    }
 }
