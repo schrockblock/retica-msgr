@@ -315,8 +315,6 @@ private func announce(_ store: TestStoreOf<AppFeature>, _ hex: String, _ name: S
 
 // MARK: - Contact-card mirror and import (spec §3)
 
-private let linkPeerC = String(repeating: "c", count: 32)
-
 @MainActor
 private func mirrorStore(_ db: any DatabaseWriter, fake: FakeContacts, on: Bool = true) -> TestStoreOf<AppFeature> {
     makeLinkStore(db, fake: fake) { $0.$contactMirrorEnabled.withLock { $0 = on } }
@@ -420,6 +418,22 @@ private func mirrorStore(_ db: any DatabaseWriter, fake: FakeContacts, on: Bool 
     #expect(store.state.contactLinks[linkPeerB] == linkRow(linkPeerB, bob, source: ContactLinkSource.imported, verified: false))
     #expect(store.state.contactLinks[linkPeerA] == linkRow(linkPeerA, jane), "the existing link is untouched")
     #expect(fake.writes.isEmpty, "an imported address is already on its card")
+}
+
+@MainActor @Test func linkMirrorImportKeepsOneCandidatePerAddress() async throws {
+    let db = try AppDatabase.makeInMemory()
+    // Two cards (CN-1, CN-2) carry the same reticulum: address; only the lowest identifier imports.
+    let fake = FakeContacts(contacts: [jane, bob], addresses: ["CN-1": linkPeerB, "CN-2": linkPeerB])
+    let store = mirrorStore(db, fake: fake)
+    await store.send(.contactLinkSheetAppeared)
+    await store.receive(.importCandidatesFound([ImportCandidate(identifier: "CN-1", name: "Jane Doe", peerHex: linkPeerB)])) {
+        $0.importCandidates = [ImportCandidate(identifier: "CN-1", name: "Jane Doe", peerHex: linkPeerB)]
+    }
+    await store.send(.importContactLinks) { $0.importCandidates = [] }
+    await receiveLinks(store)
+    await store.finish()
+    #expect(store.state.contactLinks[linkPeerB]?.contactIdentifier == "CN-1")
+    #expect(try rows(db).count == 1)
 }
 
 @MainActor @Test func linkMirrorImportDropsMalformedAddresses() async throws {
