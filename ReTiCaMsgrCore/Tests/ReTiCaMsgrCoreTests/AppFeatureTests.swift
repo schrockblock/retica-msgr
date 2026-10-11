@@ -6494,6 +6494,8 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     let a = userNode("node.example", id: 11)
     let store = nodeStore(db, nodes: [DefaultNode.entry, a]) { state in
         state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }   // already pointed at Gaefu
+        state.push.$enabled.withLock { $0 = true }
+        state.push.status = .registered(Date(timeIntervalSince1970: 1700000000))
     }
     await connectNodes(store)
     var renamed = a
@@ -6509,6 +6511,9 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     // constraints). Under `.on` the deinit check reports those as "still running"; every other
     // test in this file that calls `connectNodes` stays `.off` for the same reason.
     store.exhaustivity = .off
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.push.status == .registered(Date(timeIntervalSince1970: 1700000000)),
+            "a name-only edit must not re-point push: setHubHex would flip the status to hub-changed")
     #expect(store.state.node.client.endpoint.tcpClients.ids == [gaefuID, a.interfaceID])
 }
 
