@@ -20,6 +20,7 @@ private func makePushStore(_ db: any DatabaseWriter, identity: Identity,
                            configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity, pushStorage: storage,
                                    bundleID: "co.example.app", pushEnvironment: .sandbox)
+    initial.$nodes.withLock { $0 = [DefaultNode.entry] }
     configure?(&initial)
     let store = TestStore(initialState: initial) {
         AppFeature()
@@ -51,7 +52,7 @@ private func pushedPacket(from sender: Identity, to me: Identity, text: String) 
     return (try! packet.packed(), message)
 }
 
-private let tcpID = InterfaceID("tcp")
+private let tcpID = DefaultNode.entry.interfaceID
 
 // MARK: - Tests
 
@@ -79,6 +80,8 @@ private let tcpID = InterfaceID("tcp")
     let db = try AppDatabase.makeInMemory()
     let me = Identity()
     let store = makePushStore(db, identity: me)
+    await store.send(.connectTapped)
+    await store.skipReceivedActions(strict: false)
     // C1: inject now holds packets back until the delivery destination exists.
     await store.send(.node(.client(.registerDelivery)))
     await store.skipReceivedActions(strict: false)
@@ -86,7 +89,7 @@ private let tcpID = InterfaceID("tcp")
     await store.send(.push(.delegate(.inject(packets: [raw]))))
     await store.receive { action in
         if case .node(.client(.endpoint(.transport(.received(let id, let bytes))))) = action {
-            return id == store.state.node.client.endpoint.tcpClients.first?.interfaceID && bytes == raw
+            return id == tcpID && bytes == raw
         }
         return false
     }
@@ -151,11 +154,11 @@ private let tcpID = InterfaceID("tcp")
 @MainActor @Test func pushAppWakeReDialsAndDrains() async throws {
     let db = try AppDatabase.makeInMemory()
     let store = makePushStore(db, identity: Identity()) { state in
-        state.$host.withLock { $0 = "node.example" }
-        state.$port.withLock { $0 = 4243 }
+        state.$nodes.withLock { $0 = [NodeEntry(id: UUID(), name: "node.example", host: "node.example",
+                                                port: 4243, pushHubHex: String(repeating: "c1", count: 16))] }
     }
     await store.send(.pushWake) { $0.connection = .connecting }
-    await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
+    await store.receive { if case .node(.client(.endpoint(.tcpClients(.element(_, .connect))))) = $0 { return true }; return false }
     await store.receive { if case .push(.hubChanged(host: "node.example", port: 4243)) = $0 { return true }; return false }
     await store.receive { if case .push(.drainInbox) = $0 { return true }; return false }
 }
@@ -173,8 +176,8 @@ private let tcpID = InterfaceID("tcp")
 @MainActor @Test func pushAppLaunchForegroundAndConnectForwardToPush() async throws {
     let db = try AppDatabase.makeInMemory()
     let store = makePushStore(db, identity: Identity()) { state in
-        state.$host.withLock { $0 = "node.example" }
-        state.$port.withLock { $0 = 4243 }
+        state.$nodes.withLock { $0 = [NodeEntry(id: UUID(), name: "node.example", host: "node.example",
+                                                port: 4243, pushHubHex: String(repeating: "c1", count: 16))] }
     }
     await store.send(.onLaunch)
     await store.receive { if case .push(.hubChanged(host: "node.example", port: 4243)) = $0 { return true }; return false }

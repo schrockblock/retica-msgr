@@ -99,8 +99,16 @@ public struct AppFeature {
         /// A registration the push feature asked for before the hub socket was up. Started from
         /// `interfaceConnected`, after `registerDelivery`, so the announce precedes it.
         public var pendingPushRegistration: PendingPushRegistration? = nil
-        @Shared(.appStorage("host")) public var host: String = "127.0.0.1"
-        @Shared(.appStorage("port")) public var port: Int = 4242
+        /// The TCP nodes the app dials (spec 2026-10-10 §2), persisted as JSON. Empty only before
+        /// the first launch's migration; afterwards it always holds the built-in entry.
+        @Shared(.fileStorage(AppFeature.nodesFileURL)) public var nodes: [NodeEntry] = []
+        /// Use the default node's propagation node while one is known (`\.defaultPropagationHex`);
+        /// the stored `propagationNodeHex` is ignored meanwhile.
+        @Shared(.appStorage("usePropagationDefault")) public var usePropagationDefault: Bool = true
+        /// The pre-nodes dial target. Read ONLY by the one-time migration (amendment A6); the
+        /// keys are never written again.
+        @Shared(.appStorage("host")) var legacyHost: String = NodeMigration.legacyDefaultHost
+        @Shared(.appStorage("port")) var legacyPort: Int = NodeMigration.legacyDefaultPort
         public var connection: Connection = .disconnected
         /// The set of currently-connected Transport interfaces (TCP client, each accepted server
         /// connection, each BLE peer). `connection` is derived from this: the app is `.connected`
@@ -223,30 +231,42 @@ public struct AppFeature {
         /// Opt-in: also run a BLE interface so this device connects directly to nearby Reticulum
         /// devices (other iPhones, Raspberry Pis) to send and relay over Bluetooth. OFF by default.
         /// Gates whether the `ble` driver slot is present; decided at connect time in
-        /// `syncEndpointHostPort` (like `listenEnabled`), so toggling takes effect on the next
+        /// `syncEndpointNodes` (like `listenEnabled`), so toggling takes effect on the next
         /// Connect. The live FCB/CoreBluetooth driver is auto-wired via `\.bleDriver` — nothing to
         /// inject.
         @Shared(.appStorage("bleEnabled")) public var bleEnabled: Bool = false
 
-        public init(identity: Identity, host: String = "127.0.0.1", port: Int = 4242,
+        public init(identity: Identity,
                     pushStorage: PushStorage = .temporary(),
                     bundleID: String = Bundle.main.bundleIdentifier ?? "",
                     pushEnvironment: PushEnvironment = AppFeature.defaultPushEnvironment) {
             self.identity = identity
             self.myAddressHex = lxmfAddressHex(identity)
-            // Use the LXMF library default — one constant that is both advertised in the
-            // node announce and enforced on inbound propagation offers.
+            // No TCP client yet: `syncEndpointNodes` builds one slot per enabled node entry at
+            // launch and connect (amendment A8). Use the LXMF library default stamp cost — one
+            // constant that is both advertised in the node announce and enforced on inbound offers.
             self.node = LXMFServiceNode.State(
                 identity: identity,
-                endpoint: TCPEndpoint.State(host: host, port: UInt16(port), reconnectOnDrop: true),
+                endpoint: TransportEndpoint.State(),
                 minStampCost: LXMFPropagation.defaultPropagationStampCost
             )
             self.push = PushFeature.State(
                 identity: identity, bundleID: bundleID, environment: pushEnvironment, storage: pushStorage,
                 keychainService: SharedIdentityLocation.service,
                 keychainAccessGroup: SharedIdentityLocation.accessGroup)
-            _host = Shared(wrappedValue: host, .appStorage("host"))
-            _port = Shared(wrappedValue: port, .appStorage("port"))
+        }
+
+        /// The push node (spec §2): the enabled entry that carries a push hex.
+        public var pushNode: NodeEntry? { NodeRules.pushNode(in: nodes) }
+
+        public var enabledNodes: [NodeEntry] { nodes.filter(\.enabled) }
+
+        /// The propagation node to use: the default's while one exists and the toggle is on, else
+        /// the stored hex ("" when none). Read through the dependency so tests can supply a default.
+        public var effectivePropagationNodeHex: String {
+            @Dependency(\.defaultPropagationHex) var defaultHex
+            if usePropagationDefault, let defaultHex { return defaultHex }
+            return propagationNodeHex
         }
 
         /// A path request for `hex` when the Send gate does not admit it yet, else `.none`.
@@ -451,6 +471,7 @@ public struct AppFeature {
 
     @Dependency(\.defaultDatabase) var database
     @Dependency(\.date) var date
+    @Dependency(\.uuid) var uuid
     @Dependency(\.continuousClock) var clock
     @Dependency(\.attachmentStore) var attachmentStore
     @Dependency(\.attachmentCacheEvictor) var attachmentCacheEvictor
@@ -482,6 +503,9 @@ public struct AppFeature {
     /// Where pushed packets are injected when the endpoint has no TCP client slot.
     static let pushFallbackInterface = InterfaceID("push")
 
+    /// Where the node list lives: `<Application Support>/nodes.json`.
+    public static let nodesFileURL = URL.applicationSupportDirectory.appending(path: "nodes.json")
+
     /// How long one registration attempt may take, path request to response.
     static let pushRegistrationTimeout: Duration = .seconds(20)
 
@@ -499,11 +523,13 @@ public struct AppFeature {
             switch action {
             case .onLaunch:
                 state.connection = .connecting
-                syncEndpointHostPort(&state)
-                let hub = (host: state.host, port: state.port)
+                migrateNodesIfNeeded(&state, makeID: { uuid() })
+                let sync = syncEndpointNodes(&state)
                 return .merge(
-                    .send(.node(.client(.endpoint(.start)))),
-                    .send(.push(.hubChanged(host: hub.host, port: hub.port))),
+                    // Removals first (`.concatenate`): a departing slot must be gone before
+                    // `.start` could dial it.
+                    .concatenate(sync.removals, .send(.node(.client(.endpoint(.start))))),
+                    pushSyncEffects(state),
                     .send(.push(.appLaunched)),
                     .run { [database] send in try await reloadConversations(database, send) },
                     .run { [database] send in
@@ -614,10 +640,10 @@ public struct AppFeature {
                 // rows that arrived while suspended), and rows that fell due meanwhile go now.
                 state.isForeground = true
                 let expiryCatchUp = viewOpenThreadEffect(state)
-                return .merge(redialIfTCPDown(&state), .send(.push(.drainInbox)), expiryCatchUp)
+                return .merge(redialDownNodes(&state), .send(.push(.drainInbox)), expiryCatchUp)
 
             case .pushWake:
-                return .merge(redialIfTCPDown(&state), .send(.push(.drainInbox)))
+                return .merge(redialDownNodes(&state), .send(.push(.drainInbox)))
 
             case let .pushDeviceToken(token):
                 return .send(.push(.deviceTokenReceived(token)))
@@ -641,7 +667,11 @@ public struct AppFeature {
                 // destination, and LXMFNode proves (a no-op when the interface is down) and routes.
                 // A second proof for a packet the extension already proved is dropped by the
                 // sender's transport because the receipt is gone.
-                let interfaceID = state.node.client.endpoint.tcpClients.first?.interfaceID ?? AppFeature.pushFallbackInterface
+                // Inject on the push node's interface when its slot exists (the hub proved the
+                // packet over that socket), else the fallback id.
+                let pushID = state.pushNode?.interfaceID
+                let interfaceID = pushID.flatMap { state.node.client.endpoint.tcpClients[id: $0] != nil ? $0 : nil }
+                    ?? AppFeature.pushFallbackInterface
                 return .merge(packets.map { raw in
                     .send(.node(.client(.endpoint(.transport(.received(interfaceID, raw))))))
                 })
@@ -673,7 +703,7 @@ public struct AppFeature {
                 // never goes dormant — no pushes for as long as the socket survives, which on
                 // cellular was 2–15 minutes (2026-10-02 hub investigation). A clean FIN makes the
                 // hub's interface dormant at once, and `.foregrounded` re-dials on return.
-                // Only the TCP client: BLE peers keep running in the background on their own terms.
+                // Only the TCP clients: BLE peers keep running in the background on their own terms.
                 let closeHubSocket: Effect<Action> = .merge(
                     state.node.client.endpoint.tcpClients.ids.map {
                         .send(.node(.client(.endpoint(.tcpClients(.element(id: $0, action: .disconnect))))))
@@ -697,11 +727,10 @@ public struct AppFeature {
 
             case .connectTapped:
                 state.connection = .connecting
-                syncEndpointHostPort(&state)
-                let hub = (host: state.host, port: state.port)
+                let sync = syncEndpointNodes(&state)
                 return .merge(
-                    .send(.node(.client(.endpoint(.start)))),
-                    .send(.push(.hubChanged(host: hub.host, port: hub.port)))
+                    .concatenate(sync.removals, .send(.node(.client(.endpoint(.start))))),
+                    pushSyncEffects(state)
                 )
 
             case .disconnectTapped:
@@ -749,16 +778,16 @@ public struct AppFeature {
                 // Group copies waiting on members whose persisted path just became usable.
                 effects.append(groupDispatchEffect(state, members: state.reachablePeers))
                 // I1: a registration the push feature asked for before the hub socket was up is
-                // resumed now — only for the TCP interface (the hub always sits behind it), and
+                // resumed now — only for the push node's interface (the hub sits behind it), and
                 // only after registerDelivery/the announce above, so the hub sees the registration
                 // once this device is actually reachable.
-                if interfaceID == state.node.client.endpoint.tcpClients.first?.interfaceID,
+                if interfaceID == state.pushNode?.interfaceID,
                    let pending = state.pendingPushRegistration {
                     state.pendingPushRegistration = nil
                     effects.append(.send(.push(.delegate(.sendRegistration(
                         hub: pending.hub, path: pending.path, data: pending.data)))))
                 }
-                if let pn = Data(hexString: state.propagationNodeHex), pn.count == 16 {
+                if let pn = Data(hexString: state.effectivePropagationNodeHex), pn.count == 16 {
                     effects.append(.send(.node(.client(.setPropagationNode(destinationHash: pn)))))
                     effects.append(.send(.node(.client(.syncFromPropagationNode))))
                 }
@@ -916,7 +945,7 @@ public struct AppFeature {
                 let reachable = others.intersection(state.reachablePeers)
                 let identity = state.identity
                 let myName = state.myName
-                let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+                let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
                 // Spec §3: members with no path get a request now; their copies wait.
                 let pathRequests = others.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
                 let write: Effect<Action> = .run { [database] send in
@@ -1092,7 +1121,7 @@ public struct AppFeature {
                 let knownExpiry: Int?? = state.openConversationExpiryLoaded ? .some(state.openConversationExpiry) : nil
                 let identity = state.identity
                 let now = date.now
-                let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+                let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
                 let attachmentStore = self.attachmentStore
                 let attachmentCacheEvictor = self.attachmentCacheEvictor
                 state.draft = ""
@@ -1202,7 +1231,7 @@ public struct AppFeature {
                     state.setThreadReactionRows(
                         state.threadReactionRows.filter { !($0.messageHash == messageHash && $0.reactorHex == me) } + [row]
                     )
-                    let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+                    let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
                     let sends: [Effect<Action>] = copies.map {
                         .send(.node(.client(.sendMessage(message: $0, alsoViaPropagation: alsoViaPropagation))))
                     }
@@ -1231,7 +1260,7 @@ public struct AppFeature {
                 state.setThreadReactionRows(
                     state.threadReactionRows.filter { !($0.messageHash == messageHash && $0.reactorHex == me) } + [row]
                 )
-                let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+                let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
                 return .merge(
                     .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
                     .run { [database] send in
@@ -1668,7 +1697,7 @@ public struct AppFeature {
                 // The user's pick is the truth from here on, ahead of the database write below.
                 state.openConversationExpiryLoaded = true
                 let now = date.now
-                let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+                let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
                 // The change goes out as a message with a readable body (spec §1): other LXMF
                 // clients show the sentence, ReTiCaMsgr peers adopt the timer from the field.
                 let (msg, row) = Self.outgoing(
@@ -2018,10 +2047,10 @@ public struct AppFeature {
                 // I1: `sendRegistration` fired at launch races the socket — `learned[hub]` can
                 // exist (rehydrated from the previous session) while the interface itself is not
                 // up yet, so `openLink` would fail `.pathStale` at once; an unknown hub would send
-                // a path request nothing can answer. Buffer until the TCP interface actually
+                // a path request nothing can answer. Buffer until the push node's interface actually
                 // connects, then `interfaceConnected` resumes this with the real check below.
-                let tcpID = state.node.client.endpoint.tcpClients.first?.interfaceID
-                guard let tcpID, state.connectedInterfaces.contains(tcpID) else {
+                let hubID = state.pushNode?.interfaceID
+                guard let hubID, state.connectedInterfaces.contains(hubID) else {
                     state.pendingPushRegistration = PendingPushRegistration(hub: hub, path: path, data: data)
                     event = nil
                     break
@@ -2244,7 +2273,7 @@ public struct AppFeature {
         guard !members.isEmpty else { return .none }
         let identity = state.identity
         let myName = state.myName
-        let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+        let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
         let openPeer = state.openPeerHex
         let now = date.now
         return .run { [database] send in
@@ -2281,7 +2310,7 @@ public struct AppFeature {
             replyQuote = quote.isEmpty ? nil : quote
         }
         let fields = replyFields + GroupWire.encodePost(groupId: groupId, postId: postId)
-        let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+        let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
         let row = Message(
             id: UUID(), peerHex: me, isOutgoing: true, body: text, timestamp: now,
             status: MessageStatus.sending, validated: false, messageHash: postId.hexString,
@@ -2403,7 +2432,7 @@ public struct AppFeature {
         let reachable = recipients.intersection(state.reachablePeers)
         let identity = state.identity
         let myName = state.myName
-        let alsoViaPropagation = !state.propagationNodeHex.isEmpty
+        let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
         let pathRequests = recipients.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
         let write: Effect<Action> = .run { [database] send in
             try await database.write { db in
@@ -2454,55 +2483,48 @@ public struct AppFeature {
     }
 }
 
-// The TransportEndpoint is built once at init with the host/port passed to State.init (defaults to
-// 127.0.0.1:4242). The Settings fields bind to separate @Shared values, so without this the app
-// would always dial those init defaults regardless of what the user configured. Copy the current
-// Settings values into the endpoint immediately before dialing (onLaunch / connectTapped).
+// MARK: - Node list → endpoint (spec 2026-10-10 §3)
 //
-// The endpoint is now a STRUCT product (Task 1b/2): one shared `transport`/`linkPlane`, plus
-// optional per-KIND driver slots. The dial host/port live on the `tcpClient` slot's interface, so
-// we mutate that slot IN PLACE — never `state.node.client.endpoint = .tcp(...)`, which would
-// rebuild the container and reset the shared `transport`/`linkPlane` (learned paths, live links).
-//
-// This is also where the opt-in listener is applied: `listenEnabled` gates whether the `tcpServer`
-// slot is present, and it is decided at connect time here (not at State.init) because the endpoint
-// is constructed before the persisted Settings are read in. Toggling the setting takes effect on
-// the next connect (onLaunch / connectTapped / foregrounded), matching how host/port already work.
-/// The `.foregrounded` re-dial: nothing when the TCP interface is up, otherwise sync the hub
-/// settings and start the endpoint. Returns the effects to merge (the hub forward rides along).
-private func redialIfTCPDown(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
-    let tcpID = state.node.client.endpoint.tcpClients.first?.interfaceID
-    if let tcpID, state.connectedInterfaces.contains(tcpID) { return .none }
-    state.connection = .connecting
-    syncEndpointHostPort(&state)
-    let hub = (host: state.host, port: state.port)
-    return .merge(
-        .send(.node(.client(.endpoint(.start)))),
-        .send(.push(.hubChanged(host: hub.host, port: hub.port)))
-    )
+// The endpoint is a STRUCT product: one shared `transport`/`linkPlane`, a SET of TCP client slots,
+// and optional listener/BLE slots. Slots are mutated IN PLACE — never `state.node.client.endpoint =
+// …`, which would rebuild the container and reset the shared router (learned paths, live links).
+
+/// Runs the one-time migration from the old host/port/hex keys when the list has never been
+/// written (it is empty only then: every written list holds the built-in entry).
+private func migrateNodesIfNeeded(_ state: inout AppFeature.State, makeID: () -> UUID) {
+    guard state.nodes.isEmpty else { return }
+    let migrated = NodeMigration.migrate(legacyHost: state.legacyHost, legacyPort: state.legacyPort,
+                                         legacyPushHex: state.push.hubHex, makeID: makeID)
+    state.$nodes.withLock { $0 = migrated }
 }
 
-private func syncEndpointHostPort(_ state: inout AppFeature.State) {
-    guard let tcpID = state.node.client.endpoint.tcpClients.ids.first else { return }
-    // Read the @Shared Settings into locals first: mutating `state.node…` while reading
-    // `state.host`/`state.port` in the same statement is an exclusive-access violation.
-    let host = state.host
-    let dialPort = UInt16(exactly: state.port)
+/// Makes the endpoint's TCP client set match the enabled entries: a slot per enabled entry's
+/// `interfaceID` (built here, `reconnectOnDrop: true`), `removeTCPClient` for every slot whose
+/// entry is gone, disabled or edited (an edit of host or port changes the id), and a slot that
+/// still has an enabled entry kept as it is, so a re-dial never tears down a live socket. The
+/// listener and BLE slots follow their settings exactly as before. Returns the removal effects
+/// (callers `.concatenate` them before any dial) and the ids of the slots added.
+private func syncEndpointNodes(_ state: inout AppFeature.State) -> (removals: Effect<AppFeature.Action>, added: [InterfaceID]) {
+    let wanted = state.enabledNodes
+    let wantedIDs = Set(wanted.map(\.interfaceID))
+    let stale = state.node.client.endpoint.tcpClients.ids.filter { !wantedIDs.contains($0) }
+    var added: [InterfaceID] = []
+    for entry in wanted where state.node.client.endpoint.tcpClients[id: entry.interfaceID] == nil {
+        guard let port = UInt16(exactly: entry.port) else { continue }
+        state.node.client.endpoint.tcpClients.append(
+            TCPEndpoint.State(host: entry.host, port: port, reconnectOnDrop: true, interfaceID: entry.interfaceID))
+        added.append(entry.interfaceID)
+    }
+
+    // Read the @Shared settings into locals first: mutating `state.node…` while reading a shared
+    // value in the same statement is an exclusive-access violation.
     let listenEnabled = state.listenEnabled
     let listenPort = UInt16(exactly: state.listenPort)
     let bleEnabled = state.bleEnabled
 
-    state.node.client.endpoint.tcpClients[id: tcpID]?.interface.host = host
-    if let dialPort {
-        state.node.client.endpoint.tcpClients[id: tcpID]?.interface.port = dialPort
-    }
-
-    // Add or remove the listener slot to match the current setting. Rebuilding only the OPTIONAL
-    // slot leaves the shared transport/linkPlane untouched.
+    // Add or remove the listener slot to match the current setting. Preserve an already-running
+    // listener on the same port rather than re-binding on every re-dial.
     if listenEnabled, let listenPort {
-        // Preserve an already-running listener on the same port rather than tearing it down and
-        // re-binding on every re-dial (foreground/reconnect would otherwise drop live accepted
-        // connections). Only build a fresh slot when there is none or the port changed.
         if state.node.client.endpoint.tcpServer?.interface.port != listenPort {
             state.node.client.endpoint.tcpServer = TCPServerEndpoint.State(port: listenPort)
         }
@@ -2510,25 +2532,67 @@ private func syncEndpointHostPort(_ state: inout AppFeature.State) {
         state.node.client.endpoint.tcpServer = nil
     }
 
-    // A fresh connect attempt clears any stale Bluetooth alert (A5): the user may have resolved the
-    // permission and is retrying. If the adapter is still unavailable, the library re-emits and the
-    // alert re-appears; if it now works, the denial correctly disappears.
+    // A fresh connect attempt clears any stale Bluetooth alert (A5): the user may have resolved
+    // the permission and is retrying; the library re-emits if the adapter is still unavailable.
     state.bluetoothAlert = nil
 
-    // Add or remove the BLE driver slot to match the current setting (A1). Same in-place, optional-
-    // slot pattern as the listener: rebuilding only the OPTIONAL slot leaves the shared
-    // transport/linkPlane untouched. PRESERVE an already-running slot rather than rebuilding it on
-    // every re-dial — a fresh BLEEndpoint.State would reset `peerInterfaces` and drop every live
-    // BLE peer on each foreground/reconnect. Build a slot only when there is none.
+    // Add or remove the BLE slot to match the current setting (A1). PRESERVE a running slot: a
+    // fresh BLEEndpoint.State would reset `peerInterfaces` and drop every live BLE peer.
     if bleEnabled {
         if state.node.client.endpoint.ble == nil {
-            // ble-reticulum v2.2 identifies this device to peers by its 16-byte identity hash —
-            // the same identity the LXMF node was built with (`State.init`).
             state.node.client.endpoint.ble = BLEEndpoint.State(localIdentity: state.identity.hash)
         }
     } else {
         state.node.client.endpoint.ble = nil
     }
+
+    let removals: Effect<AppFeature.Action> = .merge(stale.map {
+        .send(.node(.client(.endpoint(.removeTCPClient($0)))))
+    })
+    return (removals, added)
+}
+
+/// `.connect` for each of `ids` (slots `syncEndpointNodes` just added, or nodes found down).
+private func connectEffects(_ ids: [InterfaceID]) -> Effect<AppFeature.Action> {
+    .merge(ids.map { .send(.node(.client(.endpoint(.tcpClients(.element(id: $0, action: .connect)))))) })
+}
+
+/// Points the push feature at the push node (spec §3 "Push", amendment A7): host and port
+/// always (`""`/`0` when there is no push node, so the extension never proves to a stale hub),
+/// the hex only when it differs from what the push feature holds, because the push feature
+/// treats every `setHubHex` as a hub change (it forgets the registration).
+private func pushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature.Action> {
+    let node = state.pushNode
+    let hex = node?.pushHubHex ?? ""
+    var effects: [Effect<AppFeature.Action>] = [
+        .send(.push(.hubChanged(host: node?.host ?? "", port: node?.port ?? 0))),
+    ]
+    if state.push.hubHex != hex {
+        effects.append(.send(.push(.setHubHex(hex))))
+    }
+    // Concatenated, not merged: the tests (and the push feature's own bookkeeping) rely on
+    // `hubChanged` landing before `setHubHex`.
+    return .concatenate(effects)
+}
+
+/// The `.foregrounded`/`.pushWake` re-dial (spec §3): iOS tears sockets down while suspended,
+/// so every enabled node whose interface is not connected is dialed again; a live node is left
+/// alone (re-dialling it would tear down its links on every app switch). The listener and BLE
+/// slots restart as the old `.start` did. `connection` goes to connecting only when nothing is
+/// up (amendment A10).
+private func redialDownNodes(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
+    let sync = syncEndpointNodes(&state)
+    let down = state.node.client.endpoint.tcpClients.ids.filter { !state.connectedInterfaces.contains($0) }
+    guard !down.isEmpty else { return sync.removals }
+    if state.connectedInterfaces.isEmpty { state.connection = .connecting }
+    var dials: [Effect<AppFeature.Action>] = [connectEffects(Array(down))]
+    if state.node.client.endpoint.tcpServer != nil {
+        dials.append(.send(.node(.client(.endpoint(.tcpServer(.start))))))
+    }
+    if state.node.client.endpoint.ble != nil {
+        dials.append(.send(.node(.client(.endpoint(.ble(.start))))))
+    }
+    return .concatenate(sync.removals, .merge(dials), pushSyncEffects(state))
 }
 
 // Seed `reachablePeers` (the Send gate, "a send would route now") from learned destinations that

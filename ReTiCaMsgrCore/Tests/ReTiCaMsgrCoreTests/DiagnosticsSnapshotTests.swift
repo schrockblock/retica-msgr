@@ -10,6 +10,7 @@ import ReTiCATransport
 // MARK: - Fixtures
 
 private let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+private let gaefuID = DefaultNode.entry.interfaceID
 
 /// A state whose SOCKET layer is healthy: app connected, interface online, interface registered.
 /// Fixtures here are built COHERENTLY on purpose — seeding `learned` without `interfaces`
@@ -19,31 +20,21 @@ private let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
 private func healthyState() -> AppFeature.State {
     var state = AppFeature.State(identity: Identity())
     state.connection = .connected
-    guard !state.node.client.endpoint.tcpClients.isEmpty else {
-        fatalError("fixture assumes a TCP-client endpoint slot")
-    }
-    state.node.client.endpoint.tcpClients[0].interface.status = .online
-    // `transport` is now SHARED at the container level (Task 1b), no longer owned by the tcpClient
-    // driver. Register the interface directly on the shared router.
-    let interfaceID = state.node.client.endpoint.tcpClients[0].interfaceID
-    state.node.client.endpoint.transport.interfaces[interfaceID] = .tcp
+    // One slot, the default node's, as `syncEndpointNodes` would build it; its socket online and
+    // its interface registered on the shared router.
+    state.node.client.endpoint.tcpClients.append(
+        TCPEndpoint.State(host: DefaultNode.host, port: UInt16(DefaultNode.port), reconnectOnDrop: true,
+                          interfaceID: gaefuID))
+    state.node.client.endpoint.tcpClients[id: gaefuID]?.interface.status = .online
+    state.node.client.endpoint.transport.interfaces[gaefuID] = .tcp
     state.node.client.deliveryDestinationHash = Data(repeating: 0xAA, count: 16)
     return state
 }
 
-/// Mutate the shared `TransportEndpoint` of a state in place.
-///
-/// Since Task 1b the endpoint is a STRUCT product: the router (`transport`) and link plane
-/// (`linkPlane`, whose `links` are surfaced as `endpoint.links`) are SHARED at the container level,
-/// while the TCP-client `interface`/`interfaceID` live on the optional `tcpClient` slot. This helper
-/// hands the whole endpoint to the closure so a fixture can set `transport`/`linkPlane` fields and
-/// the tcpClient interface in one place.
+/// Mutate the shared `TransportEndpoint` of a state in place (router, link plane, client slots).
 @MainActor
 private func withTCP(_ state: inout AppFeature.State,
                      _ body: (inout TransportEndpoint.State) -> Void) {
-    guard !state.node.client.endpoint.tcpClients.isEmpty else {
-        fatalError("fixture assumes a TCP-client endpoint slot")
-    }
     body(&state.node.client.endpoint)
 }
 
@@ -67,7 +58,7 @@ private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> Diagnost
 // Reported as a DISAGREEMENT, not masked by the milder "connecting" rule beneath it.
 @MainActor @Test func socketIsAProblemWhenAppSaysConnectedButInterfaceIsNot() {
     var state = healthyState()
-    withTCP(&state) { $0.tcpClients[0].interface.status = .connecting }
+    withTCP(&state) { $0.tcpClients[id: gaefuID]?.interface.status = .connecting }
     let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
     #expect(socket.health == .problem)
     #expect(socket.reason == "app reports connected, interface reports connecting")
@@ -84,7 +75,7 @@ private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> Diagnost
 @MainActor @Test func socketWarnsWhileBothAgreeConnecting() {
     var state = healthyState()
     state.connection = .connecting
-    withTCP(&state) { $0.tcpClients[0].interface.status = .connecting }
+    withTCP(&state) { $0.tcpClients[id: gaefuID]?.interface.status = .connecting }
     let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
     #expect(socket.health == .warn)
     #expect(socket.reason == "connecting")
@@ -144,7 +135,7 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     withTCP(&state) { tcp in
         tcp.transport.learned[peerHash] = LearnedDestination(
             identity: Identity(), appData: nil, ratchet: nil,
-            interfaceID: tcp.tcpClients[0].interfaceID, hops: 0, nextHop: nil, announceEmitted: 0)
+            interfaceID: gaefuID, hops: 0, nextHop: nil, announceEmitted: 0)
     }
     let paths = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Paths")
     #expect(paths.health == .ok)
@@ -162,10 +153,10 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     var state = healthyState()
     state.connection = .disconnected
     withTCP(&state) { tcp in
-        tcp.tcpClients[0].interface.status = .disconnected
+        tcp.tcpClients[id: gaefuID]?.interface.status = .disconnected
         tcp.transport.learned[peerHash] = LearnedDestination(
             identity: Identity(), appData: nil, ratchet: nil,
-            interfaceID: tcp.tcpClients[0].interfaceID, hops: 0, nextHop: nil, announceEmitted: 0)
+            interfaceID: gaefuID, hops: 0, nextHop: nil, announceEmitted: 0)
         tcp.transport.interfaces = [:]
     }
     let snapshot = DiagnosticsSnapshot(from: state, at: fixedDate)
@@ -189,7 +180,7 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     var state = healthyState()
     state.connection = .disconnected
     withTCP(&state) { tcp in
-        tcp.tcpClients[0].interface.status = .disconnected
+        tcp.tcpClients[id: gaefuID]?.interface.status = .disconnected
         tcp.transport.interfaces = [:]
     }
     let paths = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Paths")
@@ -218,7 +209,7 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     withTCP(&state) { tcp in
         tcp.transport.learned[peerHash] = LearnedDestination(
             identity: Identity(), appData: nil, ratchet: nil,
-            interfaceID: tcp.tcpClients[0].interfaceID, hops: 0, nextHop: nil, announceEmitted: 0)
+            interfaceID: gaefuID, hops: 0, nextHop: nil, announceEmitted: 0)
     }
     let peers = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Peers")
     #expect(peers.health == .ok)
@@ -454,7 +445,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
     var state = healthyState()
     withTCP(&state) { tcp in
         var link = LinkSession.State(
-            initiatorTo: Identity(), destinationHash: peerHash, interfaceID: tcp.tcpClients[0].interfaceID)
+            initiatorTo: Identity(), destinationHash: peerHash, interfaceID: gaefuID)
         link.linkID = Data(repeating: 0x0C, count: 16)
         link.requestedAt = fixedDate.addingTimeInterval(-12).timeIntervalSince1970
         tcp.linkPlane.links.append(link)
@@ -476,11 +467,11 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
     var state = healthyState()
     withTCP(&state) { tcp in
         var link1 = LinkSession.State(
-            initiatorTo: Identity(), destinationHash: peerHash, interfaceID: tcp.tcpClients[0].interfaceID)
+            initiatorTo: Identity(), destinationHash: peerHash, interfaceID: gaefuID)
         link1.linkID = Data(repeating: 0x0C, count: 16)
         link1.requestedAt = fixedDate.addingTimeInterval(-5).timeIntervalSince1970
         var link2 = LinkSession.State(
-            initiatorTo: Identity(), destinationHash: otherPeerHash, interfaceID: tcp.tcpClients[0].interfaceID)
+            initiatorTo: Identity(), destinationHash: otherPeerHash, interfaceID: gaefuID)
         link2.linkID = Data(repeating: 0x0E, count: 16)
         link2.requestedAt = fixedDate.addingTimeInterval(-8).timeIntervalSince1970
         tcp.linkPlane.links.append(contentsOf: [link1, link2])
@@ -497,7 +488,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
     var state = healthyState()
     withTCP(&state) { tcp in
         var link = LinkSession.State(
-            responderFor: Identity(), destinationHash: peerHash, interfaceID: tcp.tcpClients[0].interfaceID)
+            responderFor: Identity(), destinationHash: peerHash, interfaceID: gaefuID)
         link.linkID = Data(repeating: 0x0D, count: 16)
         tcp.linkPlane.links.append(link)
     }
@@ -513,7 +504,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 
 @MainActor @Test func textIncludesTheTimestampLayerTitlesAndHealthMarkers() {
     var state = healthyState()
-    withTCP(&state) { $0.tcpClients[0].interface.status = .connecting }
+    withTCP(&state) { $0.tcpClients[id: gaefuID]?.interface.status = .connecting }
     let text = DiagnosticsSnapshot(from: state, at: fixedDate).text
 
     #expect(text.contains("ReTiCaMsgr diagnostics"))
@@ -582,7 +573,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
         var link = LinkSession.State(
             responderFor: owning,
             destinationHash: peerHash,
-            interfaceID: tcp.tcpClients[0].interfaceID,
+            interfaceID: gaefuID,
             ephemeral: ephemeral)
         link.sessionKey = sessionKey
         link.status = .active
@@ -591,7 +582,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 
         var profile = InterfaceProfile.tcp
         profile.ifac = ifac
-        tcp.transport.interfaces[tcp.tcpClients[0].interfaceID] = profile
+        tcp.transport.interfaces[gaefuID] = profile
     }
 
     let snapshot = DiagnosticsSnapshot(from: state, at: fixedDate)

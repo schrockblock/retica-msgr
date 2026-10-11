@@ -82,6 +82,58 @@ private func msg(_ id: Int, _ peer: String, _ body: String, _ ts: TimeInterval,
 private let peerA = String(repeating: "a", count: 32)   // 16-byte hex
 private let peerB = String(repeating: "b", count: 32)
 
+// MARK: - Node helpers (default nodes, spec 2026-10-10)
+
+private let gaefuID = DefaultNode.entry.interfaceID
+private let nodeHexA = String(repeating: "a1", count: 16)
+private let nodeHexP = String(repeating: "c3", count: 16)
+private let nodeHexQ = String(repeating: "d4", count: 16)
+
+private func userNode(_ host: String = "node.example", port: Int = 4243, enabled: Bool = true,
+                      hex: String? = nil, id: Int = 7) -> NodeEntry {
+    NodeEntry(id: uuid(id), name: host, host: host, port: port, enabled: enabled, pushHubHex: hex)
+}
+
+private func disabled(_ entry: NodeEntry) -> NodeEntry {
+    var entry = entry
+    entry.enabled = false
+    return entry
+}
+
+private func withoutHex(_ entry: NodeEntry) -> NodeEntry {
+    var entry = entry
+    entry.pushHubHex = nil
+    return entry
+}
+
+/// A store whose node list is `nodes` (written through the shared reference, as the reducer does).
+@MainActor
+private func nodeStore(_ db: any DatabaseWriter, nodes: [NodeEntry],
+                       configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
+    makeStore(db, identity: Identity()) { state in
+        state.$nodes.withLock { $0 = nodes }
+        configure?(&state)
+    }
+}
+
+/// `connectTapped` and settle, so the enabled nodes have slots.
+@MainActor
+private func connectNodes(_ store: TestStoreOf<AppFeature>) async {
+    await store.send(.connectTapped)
+    await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
+private func isConnect(_ id: InterfaceID, _ action: AppFeature.Action) -> Bool {
+    if case .node(.client(.endpoint(.tcpClients(.element(id: id, action: .connect))))) = action { return true }
+    return false
+}
+
+private func isRemove(_ id: InterfaceID, _ action: AppFeature.Action) -> Bool {
+    if case .node(.client(.endpoint(.removeTCPClient(id)))) = action { return true }
+    return false
+}
+
 // MARK: - Tests
 
 @MainActor
@@ -96,27 +148,6 @@ private let peerB = String(repeating: "b", count: 32)
     #expect(store.state.conversations.first?.peerHex == peerB)   // ts 2000 newest
 }
 
-/// The TCP endpoint is built once at init with the host/port passed to State.init (defaults to
-/// 127.0.0.1:4242). The Settings fields bind to separate @Shared values, so without the sync the
-/// app would always dial those init defaults regardless of what the user configured. This pins the
-/// fix: on launch, the current Settings host/port are copied into the endpoint before dialing.
-@MainActor @Test func onLaunchSyncsSettingsHostPortIntoEndpoint() async {
-    let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity()) { state in
-        state.$host.withLock { $0 = "gaefu.ddns.net" }
-        state.$port.withLock { $0 = 4243 }
-    }
-    await store.send(.onLaunch)
-    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
-    #expect(store.state.connection == .connecting)
-    guard let tcp = store.state.node.client.endpoint.tcpClients.first else {
-        Issue.record("expected a TCP-client endpoint slot")
-        return
-    }
-    #expect(tcp.interface.host == "gaefu.ddns.net")
-    #expect(tcp.interface.port == 4243)
-}
-
 /// The listener is OPT-IN and OFF by default: a fresh state that has never toggled it must not
 /// grow a `tcpServer` slot on connect. The dialling-only client never listened, and that default
 /// is the mitigation for the unbounded-listener LAN surface (no admission control yet — Tier 7).
@@ -128,15 +159,14 @@ private let peerB = String(repeating: "b", count: 32)
     #expect(store.state.node.client.endpoint.tcpServer == nil)
 }
 
-/// Enabling the listener adds a `tcpServer` slot bound to the DEDICATED `listenPort` (not the dial
-/// `port`) when Settings are synced at connect time. The slot is what lets other LAN nodes dial
-/// THIS device directly.
+/// Enabling the listener adds a `tcpServer` slot bound to the DEDICATED `listenPort` (not any
+/// node's dial port) when Settings are synced at connect time. The slot is what lets other LAN
+/// nodes dial THIS device directly.
 @MainActor @Test func enablingListenAddsListenerSlotOnDedicatedPortAtConnect() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity()) { state in
         state.$listenEnabled.withLock { $0 = true }
-        state.$listenPort.withLock { $0 = 5151 }
-        state.$port.withLock { $0 = 4243 }   // dial port is DIFFERENT — must not be reused
+        state.$listenPort.withLock { $0 = 5151 }   // the default node's dial port (4242) is DIFFERENT
     }
     await store.send(.onLaunch)
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
@@ -262,7 +292,7 @@ private let peerB = String(repeating: "b", count: 32)
     let store = makeStore(db, identity: Identity())
     let blePeer = bleInterfaceID(Data(repeating: 0xAB, count: 16))
 
-    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(blePeer, .ble))))))
     #expect(store.state.connection == .connected)
 
@@ -280,30 +310,29 @@ private let peerB = String(repeating: "b", count: 32)
 @MainActor @Test func lastInterfaceDropMarksDisconnected() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
-    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     #expect(store.state.connection == .connected)
-    await store.send(.node(.client(.endpoint(.transport(.interfaceDisconnected(InterfaceID("tcp")))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceDisconnected(gaefuID))))))
     #expect(store.state.connection == .disconnected,
             "the last interface dropping must mark the app disconnected")
     await store.finish()
     await store.skipReceivedActions(strict: false)
 }
 
-/// Foreground re-dial keys on the TCP interface specifically, not "any interface up". A live BLE
-/// peer must NOT suppress the TCP re-dial: iOS tears the TCP socket down while suspended, and if a
-/// BLE peer held `connection == .connected` the socket would never be rebuilt.
+/// Foreground re-dial keys on each node's interface, not "any interface up". A live BLE peer
+/// must NOT suppress the re-dial of a node whose socket died in the background — and, since the
+/// app is still connected through that peer, the status stays connected while the node re-dials.
 @MainActor @Test func foregroundReDialsWhenTCPDownEvenWithBLEPeerUp() async {
     let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity()) { $0.$bleEnabled.withLock { $0 = true } }
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { $0.$bleEnabled.withLock { $0 = true } }
     let blePeer = bleInterfaceID(Data(repeating: 0xCD, count: 16))
-    // Only a BLE peer is up; TCP is not in the connected set.
     await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(blePeer, .ble))))))
     #expect(store.state.connection == .connected)
     await store.skipReceivedActions(strict: false)
 
-    await store.send(.foregrounded) { $0.connection = .connecting }
-    await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
-    await store.finish()
+    await store.send(.foregrounded)
+    await store.receive { isConnect(gaefuID, $0) }
+    #expect(store.state.connection == .connected, "the BLE peer keeps the app connected during the re-dial")
     await store.skipReceivedActions(strict: false)
 }
 
@@ -311,8 +340,8 @@ private let peerB = String(repeating: "b", count: 32)
 /// down every live link on each app switch (the original reason `.foregrounded` guards).
 @MainActor @Test func foregroundDoesNotReDialWhenTCPIsUp() async {
     let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity())
-    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    let store = nodeStore(db, nodes: [DefaultNode.entry])
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     #expect(store.state.connection == .connected)
     await store.skipReceivedActions(strict: false)
 
@@ -489,7 +518,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store = makeStore(db, identity: Identity()) { s in
         s.$propagationNodeHex.withLock { $0 = pnHex }
     }
-    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
     await store.receive { if case .node(.client(.setPropagationNode)) = $0 { return true }; return false }
     await store.receive { if case .node(.client(.syncFromPropagationNode)) = $0 { return true }; return false }
@@ -534,7 +563,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store = makeStore(db, identity: Identity()) { state in
         state.$displayName.withLock { $0 = "" }
     }
-    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store.receive { action in
         if case let .node(.client(.setDisplayName(name, stampCost))) = action {
             #expect(name == nil)           // empty displayName → nil, not ""
@@ -552,7 +581,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store2 = makeStore(db, identity: Identity()) { state in
         state.$displayName.withLock { $0 = "Alice" }
     }
-    await store2.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store2.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store2.receive { action in
         if case let .node(.client(.setDisplayName(name, stampCost))) = action {
             #expect(name == "Alice")
@@ -571,7 +600,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store3 = makeStore(db, identity: Identity()) { state in
         state.$displayName.withLock { $0 = "   " }
     }
-    await store3.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store3.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store3.receive { action in
         if case let .node(.client(.setDisplayName(name, stampCost))) = action {
             #expect(name == nil)
@@ -654,7 +683,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 @MainActor @Test func interfaceConnectedWithoutPNDoesNotConfigure() async {
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
-    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
     await store.finish()
     await store.skipReceivedActions(strict: false)
@@ -697,7 +726,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 @MainActor @Test func persistedNodeModeIsAppliedOnConnect() async throws {
     let db = try AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity()) { $0.$nodeModeEnabled.withLock { $0 = true } }
-    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store.receive { if case .node(.setNodeMode(true)) = $0 { return true }; return false }
 }
 
@@ -756,7 +785,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let db = try AppDatabase.makeInMemory()
     let identity = Identity()
     let store = makeStore(db, identity: identity) { $0.$relayEnabled.withLock { $0 = true } }
-    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store.receive { action in
         if case let .node(.client(.endpoint(.enableRelay(id)))) = action {
             #expect(id == identity)
@@ -777,7 +806,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 @MainActor @Test func relayNotAppliedOnConnectWhenDisabled() async throws {
     let db = try AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity()) { $0.$relayEnabled.withLock { $0 = false } }
-    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
     await store.finish()
     await store.skipReceivedActions(strict: false)
@@ -1356,7 +1385,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store = makeStore(db, identity: Identity())
     await store.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations([
         peerHash: LearnedDestination(identity: peer, appData: nil, ratchet: nil,
-                                     interfaceID: InterfaceID("tcp"), hops: 1, nextHop: nil,
+                                     interfaceID: gaefuID, hops: 1, nextHop: nil,
                                      announceEmitted: 1700000000,
                                      learnedAt: Date(timeIntervalSince1970: 1700000000))
     ]))))))
@@ -1392,7 +1421,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let db = try! AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
     await store.send(.node(.client(.endpoint(
-        .transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+        .transport(.interfaceConnected(gaefuID, .tcp))))))
     await store.receive { action in
         if case let .node(.client(.endpoint(.registerRequestHandler(path: p, policy: pol)))) = action {
             #expect(p == AppFeature.publicKeyRequestPath)
@@ -1410,34 +1439,11 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 // while the process is suspended. Before `.foregrounded` existed, the only recovery from a
 // background/foreground cycle was killing the app.
 
-@MainActor @Test func foregroundingWhileDisconnectedReDialsTheEndpoint() async {
-    let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity()) { state in
-        state.$host.withLock { $0 = "node.example" }
-        state.$port.withLock { $0 = 4243 }
-    }
-    #expect(store.state.connection == .disconnected)
-
-    await store.send(.foregrounded) { $0.connection = .connecting }
-    await store.receive { action in
-        if case .node(.client(.endpoint(.start))) = action { return true }
-        return false
-    }
-    // The dial must use the CURRENT settings, not whatever State.init was built with — the same
-    // reason `.onLaunch` and `.connectTapped` sync them.
-    guard let tcp = store.state.node.client.endpoint.tcpClients.first else {
-        Issue.record("expected a TCP-client endpoint slot")
-        return
-    }
-    #expect(tcp.interface.host == "node.example")
-    #expect(tcp.interface.port == 4243)
-}
-
 @MainActor @Test func foregroundingWhileConnectedDoesNotReDial() async {
     let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity())
+    let store = nodeStore(db, nodes: [DefaultNode.entry])
     await store.send(.node(.client(.endpoint(
-        .transport(.interfaceConnected(InterfaceID("tcp"), .tcp))))))
+        .transport(.interfaceConnected(gaefuID, .tcp))))))
     #expect(store.state.connection == .connected)
 
     // Re-dialling a healthy connection would tear down every live link on each app switch.
@@ -1505,7 +1511,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         identity: peer,
         appData: nil,
         ratchet: nil,
-        interfaceID: InterfaceID("tcp"),
+        interfaceID: gaefuID,
         hops: 1,
         nextHop: nil,
         announceEmitted: 1700000000,
@@ -1619,7 +1625,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let peer = Identity()
     let peerHash = LXMessage.deliveryHash(identityHash: peer.hash)
     let destination = LearnedDestination(
-        identity: peer, appData: nil, ratchet: nil, interfaceID: InterfaceID("tcp"),
+        identity: peer, appData: nil, ratchet: nil, interfaceID: gaefuID,
         hops: 1, nextHop: nil, announceEmitted: 0,
         learnedAt: Date(timeIntervalSince1970: 1700000000)
     )
@@ -1693,7 +1699,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         identity: peer,
         appData: nil,
         ratchet: nil,
-        interfaceID: InterfaceID("tcp"),
+        interfaceID: gaefuID,
         hops: 1,
         nextHop: nil,
         announceEmitted: 1700000000,
@@ -1716,34 +1722,6 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 
     // Confirm the debounce timer was cancelled by advancing 30 s and verifying no further flush.
     await clock.advance(by: .seconds(30))
-    await store.skipReceivedActions(strict: false)
-}
-
-/// Backgrounding closes the hub socket. A suspended app's socket stays open from the hub's side,
-/// so the push hub keeps writing into it and never goes dormant (no pushes) until the socket dies
-/// on its own — minutes, on cellular. A deliberate close while the process still runs makes the
-/// hub dormant at once.
-///
-/// Mutation: remove `closeHubSocket` from the `.backgrounded` case → `.tcpClient(.disconnect)` is
-/// never received → the `receive` below times out and the test fails.
-@MainActor @Test func backgroundedClosesTheHubSocket() async {
-    let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity()) { state in
-        state.$host.withLock { $0 = "node.example" }
-        state.$port.withLock { $0 = 4243 }
-    }
-    // Dial first so the TCP slot exists, exactly as a real foreground does.
-    await store.send(.foregrounded) { $0.connection = .connecting }
-    await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
-    await store.skipReceivedActions(strict: false)
-    #expect(!store.state.node.client.endpoint.tcpClients.isEmpty)
-
-    await store.send(.backgrounded)
-    await store.receive { action in
-        if case .node(.client(.endpoint(.tcpClients(.element(id: InterfaceID("tcp"), action: .disconnect))))) = action { return true }
-        return false
-    }
-    await store.finish()
     await store.skipReceivedActions(strict: false)
 }
 
@@ -1790,7 +1768,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     // The rehydrateLearnedDestinations action fires, but must carry an empty payload (the
     // expired row was pruned, not delivered).
     var capturedDestinations: [Data: LearnedDestination] = [peerHash: LearnedDestination(
-        identity: peer, appData: nil, ratchet: nil, interfaceID: InterfaceID("tcp"),
+        identity: peer, appData: nil, ratchet: nil, interfaceID: gaefuID,
         hops: 1, nextHop: nil, announceEmitted: 0,
         learnedAt: expiredAt
     )]  // pre-populated to make sure we actually receive the action
@@ -1830,7 +1808,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         identity: peer,
         appData: nil,
         ratchet: nil,
-        interfaceID: InterfaceID("tcp"),
+        interfaceID: gaefuID,
         hops: 1,
         nextHop: nil,
         announceEmitted: 1700000000,
@@ -1849,7 +1827,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 
     // The interface registers → paths become usable → seed runs inside the interfaceConnected handler.
     await store.send(.node(.client(.endpoint(.transport(
-        .interfaceConnected(InterfaceID("tcp"), .tcp))))))
+        .interfaceConnected(gaefuID, .tcp))))))
 
     #expect(store.state.reachablePeers.contains(peerDeliveryHex),
             "a persisted, now-reachable path must unlock Send without an inbound announce")
@@ -1864,7 +1842,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store = makeStore(db, identity: Identity())
 
     await store.send(.node(.client(.endpoint(.transport(
-        .interfaceConnected(InterfaceID("tcp"), .tcp))))))
+        .interfaceConnected(gaefuID, .tcp))))))
 
     #expect(store.state.reachablePeers.isEmpty,
             "no persisted path → nothing to seed → Send stays gated after connect")
@@ -1887,7 +1865,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         identity: peer,
         appData: nil,
         ratchet: nil,
-        interfaceID: InterfaceID("tcp"),
+        interfaceID: gaefuID,
         hops: 1,
         nextHop: nil,
         announceEmitted: 1700000000,
@@ -1898,7 +1876,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 
     // Interface connects FIRST — learned is still empty, so this seed finds nothing.
     await store.send(.node(.client(.endpoint(.transport(
-        .interfaceConnected(InterfaceID("tcp"), .tcp))))))
+        .interfaceConnected(gaefuID, .tcp))))))
     #expect(!store.state.reachablePeers.contains(peerDeliveryHex),
             "connect-before-rehydrate: nothing to seed yet")
 
@@ -1921,7 +1899,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 
 private func learnedEntry(_ identity: Identity) -> LearnedDestination {
     LearnedDestination(identity: identity, appData: nil, ratchet: nil,
-                       interfaceID: InterfaceID("tcp"), hops: 1, nextHop: nil,
+                       interfaceID: gaefuID, hops: 1, nextHop: nil,
                        announceEmitted: 1700000000,
                        learnedAt: Date(timeIntervalSince1970: 1700000000))
 }
@@ -4222,8 +4200,9 @@ private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt:
         s.chatVisible = true
         s.isForeground = false
     }
+    // No node is configured in this fixture (migration never ran), so `.foregrounded` has
+    // nothing to redial and `connection` stays as it was — only `isForeground` flips.
     await store.send(.foregrounded) {
-        $0.connection = .connecting
         $0.isForeground = true
     }
     await store.receive { action in
@@ -4246,7 +4225,9 @@ private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt:
         expiryTimerRow(2, peerA, seconds: 5, expiresAt: infoT0.addingTimeInterval(-1)),
     ])
     let store = makeStore(db, identity: Identity())
-    await store.send(.foregrounded) { $0.connection = .connecting }
+    // No node is configured in this fixture (migration never ran), so `.foregrounded` has
+    // nothing to redial and `connection` stays as it was.
+    await store.send(.foregrounded)
     await store.receive { action in
         if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 1 && nextDue == nil }
         return false
@@ -4283,8 +4264,9 @@ private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt:
         s.chatVisible = true
         s.isForeground = false
     }
+    // No node is configured in this fixture (migration never ran), so `.foregrounded` has
+    // nothing to redial and `connection` stays as it was — only `isForeground` flips.
     await store.send(.foregrounded) {
-        $0.connection = .connecting
         $0.isForeground = true
     }
     await store.receive { if case .threadLoaded = $0 { return true }; return false }
@@ -4435,8 +4417,9 @@ private func expiryFixReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage) 
         s.openPeerHex = peerA
         s.isForeground = false
     }
+    // No node is configured in this fixture (migration never ran), so `.foregrounded` has
+    // nothing to redial and `connection` stays as it was — only `isForeground` flips.
     await store.send(.foregrounded) {
-        $0.connection = .connecting
         $0.isForeground = true
     }
     await store.receive { action in
@@ -6127,4 +6110,264 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     let rows = try await db.read { try GroupDelivery.all.fetchAll($0) }
     #expect(rows.first { $0.messageId == lineA.id }?.status == MessageStatus.sending)
     #expect(rows.first { $0.messageId == lineB.id }?.status == GroupDeliveryStatus.waiting)
+}
+
+// MARK: - Default nodes: endpoint sync and lifecycle (spec 2026-10-10 §3)
+
+@MainActor @Test func nodeSyncFreshLaunchMigratesToTheDefaultNodeAndDialsIt() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    #expect(store.state.nodes.isEmpty)
+    await store.send(.onLaunch)
+    await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    #expect(store.state.nodes == [DefaultNode.entry])
+    #expect(store.state.node.client.endpoint.tcpClients.ids == [gaefuID])
+    #expect(store.state.node.client.endpoint.tcpClients[id: gaefuID]?.interface.host == "gaefu.ddns.net")
+    #expect(store.state.node.client.endpoint.tcpClients[id: gaefuID]?.interface.port == 4242)
+}
+
+@MainActor @Test func nodeSyncLaunchMigratesLegacyHostAndHexOnce() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { state in
+        state.$legacyHost.withLock { $0 = "node.example" }
+        state.$legacyPort.withLock { $0 = 4243 }
+        state.push.$hubHex.withLock { $0 = nodeHexA }
+    }
+    await store.send(.onLaunch)
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.nodes.count == 2)
+    #expect(store.state.nodes[0].pushHubHex == nil)
+    #expect(store.state.nodes[1].host == "node.example")
+    #expect(store.state.nodes[1].port == 4243)
+    #expect(store.state.nodes[1].pushHubHex == nodeHexA)
+    #expect(store.state.node.client.endpoint.tcpClients.ids == [gaefuID, store.state.nodes[1].interfaceID])
+
+    // A later launch with different legacy keys must not migrate again.
+    store.state.$legacyHost.withLock { $0 = "other.example" }
+    await store.send(.onLaunch)
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.nodes.count == 2)
+    #expect(store.state.nodes[1].host == "node.example")
+}
+
+@MainActor @Test func nodeSyncAddsASlotPerEnabledEntryAndSkipsDisabledOnes() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode("a.example", id: 11)
+    let b = userNode("b.example", enabled: false, id: 12)
+    let store = nodeStore(db, nodes: [disabled(DefaultNode.entry), a, b])
+    await connectNodes(store)
+    #expect(store.state.node.client.endpoint.tcpClients.ids == [a.interfaceID])
+}
+
+@MainActor @Test func nodeSyncKeepsAMatchingLiveSlot() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry])
+    await connectNodes(store)
+    // The socket comes up through the real container wiring.
+    await store.send(.node(.client(.endpoint(.tcpClients(.element(id: gaefuID, action: .interface(.connectionEvent(.connected))))))))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.tcpClients[id: gaefuID]?.interface.status == .online)
+
+    // A second connect re-syncs. The slot must be the SAME one (a rebuilt slot starts disconnected).
+    await store.send(.connectTapped)
+    #expect(store.state.node.client.endpoint.tcpClients[id: gaefuID]?.interface.status == .online,
+            "a live slot whose entry is unchanged must be kept, not rebuilt")
+    await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodeSyncRemovesADisabledEntrysSlotWithADisconnectFirst() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode("a.example", id: 11)
+    let store = nodeStore(db, nodes: [DefaultNode.entry, a])
+    await connectNodes(store)
+    #expect(store.state.node.client.endpoint.tcpClients.ids == [gaefuID, a.interfaceID])
+
+    store.state.$nodes.withLock { $0[1].enabled = false }
+    await store.send(.connectTapped)
+    // Removal is reduced BEFORE the dial (`.concatenate`), so the departing slot is never dialed.
+    await store.receive { isRemove(a.interfaceID, $0) }
+    await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.tcpClients.ids == [gaefuID])
+}
+
+@MainActor @Test func nodeSyncForegroundRedialsOnlyNodesThatAreDown() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode("a.example", id: 11)
+    let store = nodeStore(db, nodes: [DefaultNode.entry, a])
+    await connectNodes(store)
+    await store.send(.node(.client(.endpoint(.tcpClients(.element(id: gaefuID, action: .interface(.connectionEvent(.connected))))))))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.connection == .connected)
+
+    await store.send(.foregrounded)
+    await store.receive { isConnect(a.interfaceID, $0) }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.tcpClients[id: gaefuID]?.interface.status == .online,
+            "the live node must not be re-dialed")
+    #expect(store.state.node.client.endpoint.tcpClients[id: a.interfaceID]?.interface.status == .connecting)
+}
+
+@MainActor @Test func nodeSyncForegroundWithANodeUpStaysConnected() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode("a.example", id: 11)
+    let store = nodeStore(db, nodes: [DefaultNode.entry, a])
+    await connectNodes(store)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
+    await store.skipReceivedActions(strict: false)
+
+    await store.send(.foregrounded)
+    #expect(store.state.connection == .connected, "one node up means connected, whatever the others do")
+    await store.receive { isConnect(a.interfaceID, $0) }
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodeSyncBackgroundedDisconnectsEveryClient() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode("a.example", id: 11)
+    let store = nodeStore(db, nodes: [DefaultNode.entry, a])
+    await connectNodes(store)
+
+    await store.send(.backgrounded)
+    for _ in 0..<2 {
+        await store.receive { action in
+            if case .node(.client(.endpoint(.tcpClients(.element(_, .disconnect))))) = action { return true }
+            return false
+        }
+    }
+    await store.skipReceivedActions(strict: false)
+}
+
+// MARK: - Default nodes: push wiring (spec §3 "Push")
+
+@MainActor @Test func nodePushLaunchPointsPushAtThePushNode() async {
+    let db = try! AppDatabase.makeInMemory()
+    // The user entry comes first on purpose: the push node is the one WITH the hex, not the first.
+    let store = nodeStore(db, nodes: [userNode(), DefaultNode.entry])
+    await store.send(.onLaunch)
+    await store.receive(.push(.hubChanged(host: "gaefu.ddns.net", port: 4242)))
+    await store.receive(.push(.setHubHex(DefaultNode.pushHubHex)))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodePushUserNodeWithHexBecomesThePushNode() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [withoutHex(DefaultNode.entry), userNode(hex: nodeHexA)]) { state in
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }   // stale from before
+    }
+    await store.send(.onLaunch)
+    await store.receive(.push(.hubChanged(host: "node.example", port: 4243)))
+    await store.receive(.push(.setHubHex(nodeHexA)))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodePushNoPushNodeClearsTheHub() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [disabled(DefaultNode.entry)]) { state in
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+    }
+    #expect(store.state.pushNode == nil)
+    await store.send(.onLaunch)
+    await store.receive(.push(.hubChanged(host: "", port: 0)))
+    await store.receive(.push(.setHubHex("")))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodePushRegistrationWaitsForThePushNodesInterface() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hub = Data(repeating: 0xC1, count: 16)
+    let store = nodeStore(db, nodes: [DefaultNode.entry])
+    await connectNodes(store)
+    await store.send(.push(.delegate(.sendRegistration(hub: hub, path: "/register", data: Data([1]))))) {
+        $0.pendingPushRegistration = PendingPushRegistration(hub: hub, path: "/register", data: Data([1]))
+    }
+    // Some OTHER interface coming up must not resume it.
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp:other.example:1"), .tcp))))))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.pendingPushRegistration != nil, "only the push node's own interface resumes the registration")
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp)))))) {
+        $0.pendingPushRegistration = nil
+    }
+    await store.receive { if case .push(.delegate(.sendRegistration(hub: hub, _, _))) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodePushInjectUsesThePushNodesInterface() async {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let a = userNode(hex: nodeHexA)
+    let store = makeStore(db, identity: me) { state in
+        state.$nodes.withLock { $0 = [withoutHex(DefaultNode.entry), a] }
+    }
+    await connectNodes(store)
+    await store.send(.node(.client(.registerDelivery)))
+    await store.skipReceivedActions(strict: false)
+    let raw = Data(repeating: 0x5A, count: 40)
+    await store.send(.push(.delegate(.inject(packets: [raw]))))
+    await store.receive { action in
+        if case .node(.client(.endpoint(.transport(.received(let id, let bytes))))) = action {
+            return id == a.interfaceID && bytes == raw
+        }
+        return false
+    }
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodePushInjectFallsBackWhenThePushNodeHasNoSlot() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [userNode(hex: nodeHexA)])   // never connected: no slot
+    await store.send(.node(.client(.registerDelivery)))
+    await store.skipReceivedActions(strict: false)
+    let raw = Data(repeating: 0x5A, count: 40)
+    await store.send(.push(.delegate(.inject(packets: [raw]))))
+    await store.receive { action in
+        if case .node(.client(.endpoint(.transport(.received(let id, let bytes))))) = action {
+            return id == InterfaceID("push") && bytes == raw
+        }
+        return false
+    }
+    await store.skipReceivedActions(strict: false)
+}
+
+// MARK: - Default nodes: propagation default (spec §2 "Propagation node")
+
+@MainActor @Test func nodePropDefaultPropagationIsUsedWhenToggleOn() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.$propagationNodeHex.withLock { $0 = nodeHexQ }
+    }
+    store.dependencies.defaultPropagationHex = nodeHexP
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
+    await store.receive(.node(.client(.setPropagationNode(destinationHash: Data(hexString: nodeHexP)!))))
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodePropStoredHexIsUsedWhenNoDefaultExists() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.$propagationNodeHex.withLock { $0 = nodeHexQ }
+    }
+    // `\.defaultPropagationHex` test value is nil: the toggle (default true) has no effect.
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
+    await store.receive(.node(.client(.setPropagationNode(destinationHash: Data(hexString: nodeHexQ)!))))
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodePropToggleOffFlagUsesTheStoredHex() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.$propagationNodeHex.withLock { $0 = nodeHexQ }
+        state.$usePropagationDefault.withLock { $0 = false }
+    }
+    store.dependencies.defaultPropagationHex = nodeHexP
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
+    await store.receive(.node(.client(.setPropagationNode(destinationHash: Data(hexString: nodeHexQ)!))))
+    await store.skipReceivedActions(strict: false)
 }
