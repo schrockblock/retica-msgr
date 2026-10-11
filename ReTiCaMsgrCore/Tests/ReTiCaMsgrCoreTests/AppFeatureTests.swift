@@ -6438,3 +6438,201 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     await store.receive(.node(.client(.setPropagationNode(destinationHash: Data(hexString: nodeHexQ)!))))
     await store.skipReceivedActions(strict: false)
 }
+
+// MARK: - Default nodes: node actions (spec 2026-10-10 §3 "Node actions")
+
+@MainActor @Test func nodeActAddNodeAppendsConnectsAndKeepsOnePushNode() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+    }
+    await connectNodes(store)
+    await store.send(.addNode(name: " Pi ", host: " pi.local ", port: 4243, pushHubHex: nodeHexA.uppercased()))
+    let added = store.state.nodes[1]
+    #expect(added.name == "Pi")
+    #expect(added.host == "pi.local")
+    #expect(added.port == 4243)
+    #expect(added.enabled == true)
+    #expect(added.isBuiltIn == false)
+    #expect(added.pushHubHex == nodeHexA)
+    #expect(store.state.nodes[0].pushHubHex == nil, "one push node: the built-in entry loses its hex")
+    await store.receive { isConnect(added.interfaceID, $0) }
+    await store.receive(.push(.hubChanged(host: "pi.local", port: 4243)))
+    await store.receive(.push(.setHubHex(nodeHexA)))
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodeActAddNodeRejectsInvalidInput() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry])
+    store.exhaustivity = .on
+    // Each send must leave state untouched and emit nothing.
+    await store.send(.addNode(name: "x", host: "  ", port: 4242, pushHubHex: nil))
+    await store.send(.addNode(name: "x", host: "h", port: 70000, pushHubHex: nil))
+    await store.send(.addNode(name: "x", host: "h", port: 0, pushHubHex: nil))
+    await store.send(.addNode(name: "x", host: "h", port: 4242, pushHubHex: String(nodeHexA.dropLast())))
+    #expect(store.state.nodes == [DefaultNode.entry])
+}
+
+@MainActor @Test func nodeActUpdateNodeEditingHostReplacesTheSlot() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode("node.example", id: 11)
+    let store = nodeStore(db, nodes: [DefaultNode.entry, a])
+    await connectNodes(store)
+    var edited = a
+    edited.host = "node2.example"
+    await store.send(.updateNode(edited))
+    #expect(store.state.nodes[1].host == "node2.example")
+    await store.receive { isRemove(a.interfaceID, $0) }
+    await store.receive { isConnect(edited.interfaceID, $0) }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.tcpClients.ids == [gaefuID, edited.interfaceID])
+}
+
+@MainActor @Test func nodeActUpdateNodeKeepsTheSlotWhenOnlyTheNameChanges() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode("node.example", id: 11)
+    let store = nodeStore(db, nodes: [DefaultNode.entry, a]) { state in
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }   // already pointed at Gaefu
+    }
+    await connectNodes(store)
+    var renamed = a
+    renamed.name = "Renamed"
+    store.exhaustivity = .on
+    await store.send(.updateNode(renamed)) {
+        $0.$nodes.withLock { $0[1].name = "Renamed" }
+    }
+    // Only the push sync fires (same push node as before, so no setHubHex): no removal, no dial.
+    await store.receive(.push(.hubChanged(host: "gaefu.ddns.net", port: 4242)))
+    // Back to non-exhaustive before the test ends: `connectNodes` left both nodes' TCP connect
+    // effects running (their mocked `open()` stream never finishes, by design — see global
+    // constraints). Under `.on` the deinit check reports those as "still running"; every other
+    // test in this file that calls `connectNodes` stays `.off` for the same reason.
+    store.exhaustivity = .off
+    #expect(store.state.node.client.endpoint.tcpClients.ids == [gaefuID, a.interfaceID])
+}
+
+@MainActor @Test func nodeActRemoveNodeDisconnectsItsSlotAndRepointsPush() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode(hex: nodeHexA, id: 11)
+    let store = nodeStore(db, nodes: [withoutHex(DefaultNode.entry), a]) { state in
+        state.push.$hubHex.withLock { $0 = nodeHexA }
+    }
+    await connectNodes(store)
+    await store.send(.removeNode(id: a.id))
+    #expect(store.state.nodes == [withoutHex(DefaultNode.entry)])
+    await store.receive { isRemove(a.interfaceID, $0) }
+    await store.receive(.push(.hubChanged(host: "", port: 0)))
+    await store.receive(.push(.setHubHex("")))
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodeActBuiltInRefusesDelete() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry])
+    store.exhaustivity = .on
+    await store.send(.removeNode(id: DefaultNode.id))
+    #expect(store.state.nodes == [DefaultNode.entry])
+}
+
+@MainActor @Test func nodeActBuiltInRefusesEdit() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry])
+    var edited = DefaultNode.entry
+    edited.host = "elsewhere.example"
+    edited.pushHubHex = nil
+    store.exhaustivity = .on
+    await store.send(.updateNode(edited))
+    #expect(store.state.nodes == [DefaultNode.entry])
+}
+
+@MainActor @Test func nodeActDisableNodeRemovesItsSlotAndEnableReconnects() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [withoutHex(DefaultNode.entry)])
+    await connectNodes(store)
+    await store.send(.setNodeEnabled(id: DefaultNode.id, enabled: false))
+    #expect(store.state.nodes[0].enabled == false)
+    await store.receive { isRemove(gaefuID, $0) }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.tcpClients.isEmpty)
+
+    await store.send(.setNodeEnabled(id: DefaultNode.id, enabled: true))
+    #expect(store.state.nodes[0].enabled == true)
+    await store.receive { isConnect(gaefuID, $0) }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.tcpClients.ids == [gaefuID])
+}
+
+@MainActor @Test func nodeActDisablingThePushNodeTurnsPushOff() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+    }
+    await store.send(.setNodeEnabled(id: DefaultNode.id, enabled: false))
+    #expect(store.state.pushNode == nil)
+    await store.receive(.push(.hubChanged(host: "", port: 0)))
+    await store.receive(.push(.setHubHex("")))
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodeActSettingAHexOnOneNodeClearsItOnOthers() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode(id: 11)
+    let store = nodeStore(db, nodes: [DefaultNode.entry, a]) { state in
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+    }
+    var withHex = a
+    withHex.pushHubHex = nodeHexA
+    await store.send(.updateNode(withHex))
+    #expect(store.state.nodes[0].pushHubHex == nil)
+    #expect(store.state.nodes[1].pushHubHex == nodeHexA)
+    await store.receive(.push(.hubChanged(host: "node.example", port: 4243)))
+    await store.receive(.push(.setHubHex(nodeHexA)))
+    await store.skipReceivedActions(strict: false)
+}
+
+// MARK: - Default nodes: the propagation toggle (spec §2 "Propagation node")
+
+@MainActor @Test func nodePropToggleRepointsTheRouterWhenADefaultExists() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.$propagationNodeHex.withLock { $0 = nodeHexQ }
+    }
+    store.dependencies.defaultPropagationHex = nodeHexP
+    await store.send(.setUsePropagationDefault(false)) {
+        $0.$usePropagationDefault.withLock { $0 = false }
+    }
+    await store.receive(.node(.client(.setPropagationNode(destinationHash: Data(hexString: nodeHexQ)!))))
+    await store.receive(.node(.client(.syncFromPropagationNode)))
+    await store.skipReceivedActions(strict: false)
+    await store.send(.setUsePropagationDefault(true)) {
+        $0.$usePropagationDefault.withLock { $0 = true }
+    }
+    await store.receive(.node(.client(.setPropagationNode(destinationHash: Data(hexString: nodeHexP)!))))
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func nodePropToggleWithoutADefaultChangesNothing() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.$propagationNodeHex.withLock { $0 = nodeHexQ }
+    }
+    store.exhaustivity = .on
+    // No default hex (test value nil): the flag is stored, the router is not touched.
+    await store.send(.setUsePropagationDefault(false)) {
+        $0.$usePropagationDefault.withLock { $0 = false }
+    }
+}
+
+@MainActor @Test func nodePropSetPropagationNodeIsStoredButNotAppliedWhileTheDefaultIsInEffect() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry])
+    store.dependencies.defaultPropagationHex = nodeHexP
+    store.exhaustivity = .on
+    // Exhaustive: the stored hex changes and NOTHING is sent to the node (the default stays in
+    // effect). Do not read `effectivePropagationNodeHex` from the test body: it resolves
+    // `\.defaultPropagationHex` from the test's context, not the store's.
+    await store.send(.setPropagationNode(nodeHexQ)) {
+        $0.$propagationNodeHex.withLock { $0 = nodeHexQ }
+    }
+}

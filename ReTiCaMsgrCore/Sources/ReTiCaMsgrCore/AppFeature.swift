@@ -388,6 +388,15 @@ public struct AppFeature {
         case setNodeMode(Bool)
         case setRelayMode(Bool)
         case setPropagationNode(String)
+        /// Node list edits (spec 2026-10-10 §3 "Node actions"). Each validates, writes the list,
+        /// keeps one push node, re-syncs the endpoint and re-points push. The built-in entry
+        /// accepts only `setNodeEnabled`.
+        case addNode(name: String, host: String, port: Int, pushHubHex: String?)
+        case updateNode(NodeEntry)
+        case removeNode(id: UUID)
+        case setNodeEnabled(id: UUID, enabled: Bool)
+        /// "Use the default node's propagation node". Takes effect only while a default exists.
+        case setUsePropagationDefault(Bool)
         case setDisplayName(String)
         case syncTapped
         case announceTapped
@@ -1776,12 +1785,55 @@ public struct AppFeature {
                 }
 
             case let .setPropagationNode(hex):
+                let before = state.effectivePropagationNodeHex
                 state.$propagationNodeHex.withLock { $0 = hex }
-                guard let pn = Data(hexString: hex), pn.count == 16 else { return .none }
-                return .merge(
-                    .send(.node(.client(.setPropagationNode(destinationHash: pn)))),
-                    .send(.node(.client(.syncFromPropagationNode)))
-                )
+                // While the default is in effect the stored hex is kept for later but not applied.
+                return propagationChangeEffects(state, from: before)
+
+            case let .setUsePropagationDefault(on):
+                let before = state.effectivePropagationNodeHex
+                state.$usePropagationDefault.withLock { $0 = on }
+                return propagationChangeEffects(state, from: before)
+
+            case let .addNode(name, host, port, pushHubHex):
+                guard NodeRules.validationError(host: host, port: port, pushHubHex: pushHubHex) == nil else {
+                    return .none
+                }
+                let (cleanHost, hex) = NodeRules.normalized(host: host, pushHubHex: pushHubHex)
+                let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                let entry = NodeEntry(id: uuid(), name: cleanName.isEmpty ? cleanHost : cleanName,
+                                      host: cleanHost, port: port, enabled: true, pushHubHex: hex)
+                state.$nodes.withLock { $0 = NodeRules.enforceOnePushNode($0 + [entry], keeping: entry.id) }
+                return nodeChangeEffects(&state)
+
+            case let .updateNode(updated):
+                guard let index = state.nodes.firstIndex(where: { $0.id == updated.id }),
+                      !state.nodes[index].isBuiltIn,
+                      NodeRules.validationError(host: updated.host, port: updated.port,
+                                                pushHubHex: updated.pushHubHex) == nil
+                else { return .none }
+                var entry = updated
+                (entry.host, entry.pushHubHex) = NodeRules.normalized(host: updated.host, pushHubHex: updated.pushHubHex)
+                entry.isBuiltIn = false
+                let cleanName = updated.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                entry.name = cleanName.isEmpty ? entry.host : cleanName
+                state.$nodes.withLock { nodes in
+                    nodes[index] = entry
+                    nodes = NodeRules.enforceOnePushNode(nodes, keeping: entry.id)
+                }
+                return nodeChangeEffects(&state)
+
+            case let .removeNode(id):
+                guard let entry = state.nodes.first(where: { $0.id == id }), !entry.isBuiltIn else { return .none }
+                state.$nodes.withLock { $0.removeAll { $0.id == id } }
+                return nodeChangeEffects(&state)
+
+            case let .setNodeEnabled(id, enabled):
+                guard let index = state.nodes.firstIndex(where: { $0.id == id }),
+                      state.nodes[index].enabled != enabled
+                else { return .none }
+                state.$nodes.withLock { $0[index].enabled = enabled }
+                return nodeChangeEffects(&state)
 
             case let .setDisplayName(name):
                 // Persist the TRIMMED value so local state and the wire agree, and so
@@ -2573,6 +2625,25 @@ private func pushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature.Act
     // Concatenated, not merged: the tests (and the push feature's own bookkeeping) rely on
     // `hubChanged` landing before `setHubHex`.
     return .concatenate(effects)
+}
+
+/// After a node edit: slots removed, then new ones dialed, then push re-pointed, in that order
+/// (`.concatenate`), so a departing slot is never dialed and the receives are deterministic.
+private func nodeChangeEffects(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
+    let sync = syncEndpointNodes(&state)
+    return .concatenate(sync.removals, connectEffects(sync.added), pushSyncEffects(state))
+}
+
+/// Re-points the router when the EFFECTIVE propagation node changed to a valid address. There is
+/// no clear verb in the node layer: a change to "none" leaves the router on its current node
+/// until relaunch, as the old `setPropagationNode("")` did.
+private func propagationChangeEffects(_ state: AppFeature.State, from before: String) -> Effect<AppFeature.Action> {
+    let after = state.effectivePropagationNodeHex
+    guard after != before, let pn = Data(hexString: after), pn.count == 16 else { return .none }
+    return .merge(
+        .send(.node(.client(.setPropagationNode(destinationHash: pn)))),
+        .send(.node(.client(.syncFromPropagationNode)))
+    )
 }
 
 /// The `.foregrounded`/`.pushWake` re-dial (spec §3): iOS tears sockets down while suspended,
