@@ -16,11 +16,18 @@ struct SettingsView: View {
     @State private var pnInput: String = ""
     @State private var nameInput: String = ""
     @State private var showingAddress = false
+    @State private var showingAddNode = false
+    @State private var editingNode: NodeEntry? = nil
     @Environment(\.openURL) private var openURL
 
     private var pushStatusIsFailure: Bool {
         if case .failed = store.push.status { return true }
         return false
+    }
+
+    /// The default's propagation node is in effect: a default exists and the toggle is on.
+    private var usesDefaultPropagation: Bool {
+        DefaultNode.propagationHex != nil && store.usePropagationDefault
     }
 
     private var connectionColor: Color {
@@ -63,24 +70,44 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Node Connection") {
+                Section {
                     HStack(spacing: 8) {
                         Circle().fill(connectionColor).frame(width: 10, height: 10)
                         Text(connectionLabel)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                    TextField("Host", text: $store.host)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                    TextField("Port", value: $store.port, format: .number)
-                        .keyboardType(.numberPad)
+                    ForEach(store.nodes) { node in
+                        NodeRow(
+                            node: node,
+                            isConnected: store.connectedInterfaces.contains(node.interfaceID),
+                            isPushNode: store.pushNode?.id == node.id,
+                            onTap: node.isBuiltIn ? nil : { editingNode = node },
+                            onToggle: { store.send(.setNodeEnabled(id: node.id, enabled: $0)) }
+                        )
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if !node.isBuiltIn {
+                                Button("Delete", role: .destructive) { store.send(.removeNode(id: node.id)) }
+                            }
+                        }
+                    }
+                    Button("Add node") { showingAddNode = true }
                     HStack {
                         Button("Connect") { store.send(.connectTapped) }
                             .buttonStyle(.bordered)
                         Button("Disconnect") { store.send(.disconnectTapped) }
                             .buttonStyle(.bordered)
                             .tint(.red)
+                    }
+                } header: {
+                    Text("Nodes")
+                } footer: {
+                    if store.enabledNodes.isEmpty {
+                        Text("No node is enabled. The app reaches peers only over Bluetooth or direct "
+                             + "connections.")
+                    } else {
+                        Text("Connect and Disconnect act on every enabled node. Tap a node to edit it, "
+                             + "swipe to delete.")
                     }
                 }
 
@@ -143,21 +170,22 @@ struct SettingsView: View {
                         get: { store.push.enabled },
                         set: { store.send(.push(.setEnabled($0))) }
                     ))
-                    TextField("Push hub destination (32 hex)", text: Binding(
-                        get: { store.push.hubHex },
-                        set: { store.send(.push(.setHubHex($0))) }
-                    ))
-                        .keyboardType(.asciiCapable)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.body, design: .monospaced))
-                    Text(store.push.status.displayText)
-                        .font(.caption)
-                        .foregroundStyle(pushStatusIsFailure ? .red : .secondary)
-                    Text("Your hub must support ReTiCA push and must have announced its registration "
-                         + "destination to this device. Notifications only ever say \"New message\"; nothing "
-                         + "about the sender or the content leaves the device unencrypted. A changed hub "
-                         + "takes effect on the next launch.")
+                    .disabled(store.pushNode == nil)
+                    if let pushNode = store.pushNode {
+                        Text("Push node: \(pushNode.name)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(store.push.status.displayText)
+                            .font(.caption)
+                            .foregroundStyle(pushStatusIsFailure ? .red : .secondary)
+                    } else {
+                        Text("No push node. Add a push hub destination to a node to enable wake-ups.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Notifications only ever say \"New message\"; nothing about the sender or the "
+                         + "content leaves the device unencrypted. A changed push node takes effect on the "
+                         + "next launch.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -173,12 +201,19 @@ struct SettingsView: View {
                 }
 
                 Section("Propagation Node") {
+                    if DefaultNode.propagationHex != nil {
+                        Toggle("Use the default node's propagation node", isOn: Binding(
+                            get: { store.usePropagationDefault },
+                            set: { store.send(.setUsePropagationDefault($0)) }
+                        ))
+                    }
                     TextField("Node LXMF address (hex)", text: $pnInput)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .font(.system(.body, design: .monospaced))
+                        .disabled(usesDefaultPropagation)
                     Button("Save node") { store.send(.setPropagationNode(pnInput)) }
-                        .disabled(!isValidPeerAddress(pnInput))
+                        .disabled(usesDefaultPropagation || !isValidPeerAddress(pnInput))
                     if !store.propagationNodeHex.isEmpty {
                         Text("Current: \(store.propagationNodeHex)")
                             .font(.caption)
@@ -207,6 +242,12 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingAddress) {
                 AddressView(store: store)
+            }
+            .sheet(isPresented: $showingAddNode) {
+                NodeFormView(store: store, existing: nil)
+            }
+            .sheet(item: $editingNode) { node in
+                NodeFormView(store: store, existing: node)
             }
             // Seed the field from persisted state, so opening Settings with a name set does not
             // show a blank box whose Save button would clear it. (The propagation-node field above
