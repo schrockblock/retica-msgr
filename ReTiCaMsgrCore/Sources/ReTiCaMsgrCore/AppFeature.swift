@@ -509,7 +509,7 @@ public struct AppFeature {
         #endif
     }
 
-    /// Where pushed packets are injected when the endpoint has no TCP client slot.
+    /// Where pushed packets are injected when the push node has no slot.
     static let pushFallbackInterface = InterfaceID("push")
 
     /// Where the node list lives: `<Application Support>/nodes.json`.
@@ -531,8 +531,13 @@ public struct AppFeature {
         Reduce { state, action in
             switch action {
             case .onLaunch:
-                state.connection = .connecting
                 migrateNodesIfNeeded(&state, makeID: { uuid() })
+                // Amendment A10 (final-review M1): only show "Connecting…" when something will
+                // actually dial — an empty/all-disabled node list with the listener and BLE both
+                // off would otherwise leave the UI stuck on "Connecting…" forever.
+                if !state.enabledNodes.isEmpty || state.listenEnabled || state.bleEnabled {
+                    state.connection = .connecting
+                }
                 let sync = syncEndpointNodes(&state)
                 return .merge(
                     // Removals first (`.concatenate`): a departing slot must be gone before
@@ -642,8 +647,10 @@ public struct AppFeature {
                 // down while suspended, so foreground is when we rebuild it — but a live BLE peer
                 // must NOT suppress that: keying on the whole-app `.connected` bool would skip the
                 // re-dial whenever any BLE peer held the app "connected", leaving the dead socket
-                // unrebuilt (A4). A HEALTHY tcp interface still short-circuits, because re-dialling
-                // it would tear down its live links on every app switch.
+                // unrebuilt (A4). `redialDownNodes` does this per node: a live node's interface is
+                // left alone (re-dialling it would tear down its live links on every app switch),
+                // every down node is dialed again, and `connection` goes to `.connecting` only when
+                // nothing is up AND something will actually dial (amendment A10).
                 // Either way, drain the push inbox: packets may have been stashed while suspended.
                 // Disappearing messages: the open thread is being looked at again (first view for
                 // rows that arrived while suspended), and rows that fell due meanwhile go now.
@@ -735,7 +742,11 @@ public struct AppFeature {
                 }
 
             case .connectTapped:
-                state.connection = .connecting
+                // Amendment A10 (final-review M1): only show "Connecting…" when something will
+                // actually dial.
+                if !state.enabledNodes.isEmpty || state.listenEnabled || state.bleEnabled {
+                    state.connection = .connecting
+                }
                 let sync = syncEndpointNodes(&state)
                 return .merge(
                     .concatenate(sync.removals, .send(.node(.client(.endpoint(.start))))),
@@ -1820,12 +1831,16 @@ public struct AppFeature {
                 state.$nodes.withLock { nodes in
                     nodes[index] = entry
                     nodes = NodeRules.enforceOnePushNode(nodes, keeping: entry.id)
+                    nodes = NodeRules.restoringDefaultPushHex(nodes)
                 }
                 return nodeChangeEffects(&state)
 
             case let .removeNode(id):
                 guard let entry = state.nodes.first(where: { $0.id == id }), !entry.isBuiltIn else { return .none }
-                state.$nodes.withLock { $0.removeAll { $0.id == id } }
+                state.$nodes.withLock { nodes in
+                    nodes.removeAll { $0.id == id }
+                    nodes = NodeRules.restoringDefaultPushHex(nodes)
+                }
                 return nodeChangeEffects(&state)
 
             case let .setNodeEnabled(id, enabled):
@@ -1993,7 +2008,7 @@ public struct AppFeature {
                 //
                 // Path: AppFeature → LXMFServiceNode → LXMFNode → TransportEndpoint
                 //       → Transport.rehydrateLearnedDestinations (transport is now shared at the
-                //       container level, so the address no longer traverses the tcpClient slot)
+                //       container level, so the address no longer traverses the tcpClients set)
                 guard !destinations.isEmpty else { return .none }
                 // Launch race: if the interface already registered before this DB read landed, the seed in
                 // interfaceConnected (Task 1) ran against an empty learned table and missed these entries. Seed
@@ -2613,17 +2628,26 @@ private func connectEffects(_ ids: [InterfaceID]) -> Effect<AppFeature.Action> {
 /// always (`""`/`0` when there is no push node, so the extension never proves to a stale hub),
 /// the hex only when it differs from what the push feature holds, because the push feature
 /// treats every `setHubHex` as a hub change (it forgets the registration).
+///
+/// Amendment A14 (final-review F1): when the push node disappears while push is enabled, the
+/// app turns push off itself FIRST — `setEnabled(false)` runs before the hex is cleared so the
+/// push feature's best-effort `/unregister` still has the old hub to address (it may not reach a
+/// removed node; the hub expires registrations on its own, and the APNs unregistration stops
+/// wakes regardless). Switching the push node to a DIFFERENT node (never nil in between) must not
+/// turn push off.
 private func pushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature.Action> {
     let node = state.pushNode
     let hex = node?.pushHubHex ?? ""
-    var effects: [Effect<AppFeature.Action>] = [
-        .send(.push(.hubChanged(host: node?.host ?? "", port: node?.port ?? 0))),
-    ]
+    var effects: [Effect<AppFeature.Action>] = []
+    if node == nil, state.push.enabled {
+        effects.append(.send(.push(.setEnabled(false))))
+    }
+    effects.append(.send(.push(.hubChanged(host: node?.host ?? "", port: node?.port ?? 0))))
     if state.push.hubHex != hex {
         effects.append(.send(.push(.setHubHex(hex))))
     }
     // Concatenated, not merged: the tests (and the push feature's own bookkeeping) rely on
-    // `hubChanged` landing before `setHubHex`.
+    // `hubChanged` landing before `setHubHex`, and `setEnabled(false)` landing before both.
     return .concatenate(effects)
 }
 
@@ -2659,7 +2683,12 @@ private func redialDownNodes(_ state: inout AppFeature.State) -> Effect<AppFeatu
     let down = state.node.client.endpoint.tcpClients.ids.filter { !state.connectedInterfaces.contains($0) }
     let noClientSlots = state.node.client.endpoint.tcpClients.isEmpty
     guard !down.isEmpty || noClientSlots else { return sync.removals }
-    if state.connectedInterfaces.isEmpty { state.connection = .connecting }
+    // Final-review M1: "nothing is up" alone is not enough — with no enabled node, no listener
+    // and no BLE, nothing here is going to dial, and `.connecting` would never resolve.
+    if state.connectedInterfaces.isEmpty,
+       !state.enabledNodes.isEmpty || state.listenEnabled || state.bleEnabled {
+        state.connection = .connecting
+    }
     var dials: [Effect<AppFeature.Action>] = [connectEffects(Array(down))]
     if state.node.client.endpoint.tcpServer != nil {
         dials.append(.send(.node(.client(.endpoint(.tcpServer(.start))))))

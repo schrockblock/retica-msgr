@@ -170,7 +170,7 @@ struct SettingsView: View {
                         get: { store.push.enabled },
                         set: { store.send(.push(.setEnabled($0))) }
                     ))
-                    .disabled(store.pushNode == nil)
+                    .disabled(store.pushNode == nil && !store.push.enabled)
                     if let pushNode = store.pushNode {
                         Text("Push node: \(pushNode.name)")
                             .font(.caption)

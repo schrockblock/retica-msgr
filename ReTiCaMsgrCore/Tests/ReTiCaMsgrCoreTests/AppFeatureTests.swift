@@ -7,6 +7,7 @@ import ReTiCA
 import ReTiCAInterfaces
 import ReTiCANode
 import ReTiCATransport
+import ReTiCAPush
 @testable import ReTiCaMsgrCore
 // `Testing` exports its own `Attachment`; this file means the model.
 import struct ReTiCaMsgrCore.Attachment
@@ -56,6 +57,12 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
             closeChannel: { _ in },
             stop: { }
         )
+        // The final fix wave (F1) can drive `.push(.setEnabled(false))` for real (the push node
+        // disappearing while push is enabled) — unlike every earlier test here, which only ever
+        // flips this through direct action injection. A hermetic no-op keeps that path from
+        // hitting `PushPlatform.testValue`'s `unimplemented` closures.
+        $0.pushPlatform = PushPlatform(requestAuthorization: { true }, registerForRemoteNotifications: {},
+                                       unregisterForRemoteNotifications: {})
     }
     store.exhaustivity = .off
     return store
@@ -6179,7 +6186,7 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     await store.skipReceivedActions(strict: false)
 }
 
-@MainActor @Test func nodeSyncRemovesADisabledEntrysSlotWithADisconnectFirst() async {
+@MainActor @Test func nodeSyncRemovesADisabledEntrysSlot() async {
     let db = try! AppDatabase.makeInMemory()
     let a = userNode("a.example", id: 11)
     let store = nodeStore(db, nodes: [DefaultNode.entry, a])
@@ -6517,7 +6524,9 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     #expect(store.state.node.client.endpoint.tcpClients.ids == [gaefuID, a.interfaceID])
 }
 
-@MainActor @Test func nodeActRemoveNodeDisconnectsItsSlotAndRepointsPush() async {
+/// Amendment A13 (F2): removing the user's push node leaves no entry carrying a hex, so the
+/// built-in entry regains the shipped default and push is re-pointed AT Gaefu, not cleared.
+@MainActor @Test func nodeActRemoveNodeDisconnectsItsSlotAndHandsPushToTheDefault() async {
     let db = try! AppDatabase.makeInMemory()
     let a = userNode(hex: nodeHexA, id: 11)
     let store = nodeStore(db, nodes: [withoutHex(DefaultNode.entry), a]) { state in
@@ -6525,10 +6534,10 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     }
     await connectNodes(store)
     await store.send(.removeNode(id: a.id))
-    #expect(store.state.nodes == [withoutHex(DefaultNode.entry)])
+    #expect(store.state.nodes == [DefaultNode.entry])
     await store.receive { isRemove(a.interfaceID, $0) }
-    await store.receive(.push(.hubChanged(host: "", port: 0)))
-    await store.receive(.push(.setHubHex("")))
+    await store.receive(.push(.hubChanged(host: "gaefu.ddns.net", port: 4242)))
+    await store.receive(.push(.setHubHex(DefaultNode.pushHubHex)))
     await store.skipReceivedActions(strict: false)
 }
 
@@ -6640,4 +6649,88 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     await store.send(.setPropagationNode(nodeHexQ)) {
         $0.$propagationNodeHex.withLock { $0 = nodeHexQ }
     }
+}
+
+// MARK: - Default nodes: final fix wave (whole-branch review)
+
+/// F1 (amendment A14): the push node disappears while push is enabled — the app turns push off
+/// itself (also unregistering from APNs so wakes stop), so the Settings toggle is never the only
+/// way to turn it off.
+@MainActor @Test func nodeFinalLosingThePushNodeTurnsPushOff() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode(hex: nodeHexA, id: 11)
+    let store = nodeStore(db, nodes: [disabled(DefaultNode.entry), a]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = nodeHexA }
+    }
+    await connectNodes(store)
+    await store.send(.removeNode(id: uuid(11)))
+    await store.receive { isRemove(a.interfaceID, $0) }
+    await store.receive(.push(.setEnabled(false)))
+    await store.receive(.push(.hubChanged(host: "", port: 0)))
+    await store.receive(.push(.setHubHex("")))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.push.enabled == false)
+}
+
+/// F1: switching the push node to a DIFFERENT node (never nil in between) must not turn push off.
+@MainActor @Test func nodeFinalSwitchingPushNodeKeepsPushOn() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry, userNode(id: 11)]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+    }
+    await connectNodes(store)
+    await store.send(.updateNode(userNode(hex: nodeHexA, id: 11)))
+    await store.receive(.push(.hubChanged(host: "node.example", port: 4243)))
+    await store.receive(.push(.setHubHex(nodeHexA)))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.push.enabled == true)
+}
+
+/// F2 (amendment A13): removing the only entry carrying a push hex hands push back to the
+/// built-in entry, which regains the shipped default hex.
+@MainActor @Test func nodeFinalRemovingThePushNodeHandsPushBackToTheDefault() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode(hex: nodeHexA, id: 11)
+    let store = nodeStore(db, nodes: [withoutHex(DefaultNode.entry), a]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = nodeHexA }
+    }
+    await connectNodes(store)
+    await store.send(.removeNode(id: uuid(11)))
+    #expect(store.state.nodes[0].pushHubHex == DefaultNode.pushHubHex)
+    await store.receive { isRemove(a.interfaceID, $0) }
+    await store.receive(.push(.hubChanged(host: "gaefu.ddns.net", port: 4242)))
+    await store.receive(.push(.setHubHex(DefaultNode.pushHubHex)))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.push.enabled == true)
+}
+
+/// F2: clearing the user's hex (instead of removing the entry) also hands push back to the default.
+@MainActor @Test func nodeFinalClearingTheUsersHexHandsPushBackToTheDefault() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode(hex: nodeHexA, id: 11)
+    let store = nodeStore(db, nodes: [withoutHex(DefaultNode.entry), a]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = nodeHexA }
+    }
+    await connectNodes(store)
+    await store.send(.updateNode(userNode(id: 11)))
+    #expect(store.state.nodes[0].pushHubHex == DefaultNode.pushHubHex)
+    #expect(store.state.nodes[1].pushHubHex == nil)
+    await store.receive(.push(.hubChanged(host: "gaefu.ddns.net", port: 4242)))
+    await store.receive(.push(.setHubHex(DefaultNode.pushHubHex)))
+    await store.skipReceivedActions(strict: false)
+}
+
+/// M1: with nothing enabled to dial (no nodes, no listener, no BLE), `.connectTapped` must not
+/// leave the UI showing "Connecting…" forever.
+@MainActor @Test func nodeFinalConnectWithNothingEnabledStaysDisconnected() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [disabled(DefaultNode.entry)])
+    await store.send(.connectTapped)
+    #expect(store.state.connection == .disconnected)
+    await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
 }

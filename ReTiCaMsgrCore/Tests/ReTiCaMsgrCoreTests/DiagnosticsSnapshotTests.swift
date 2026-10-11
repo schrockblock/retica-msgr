@@ -31,7 +31,8 @@ private func healthyState() -> AppFeature.State {
     return state
 }
 
-/// Mutate the shared `TransportEndpoint` of a state in place (router, link plane, client slots).
+/// A pass-through to the shared `TransportEndpoint` of a state, so callers can mutate it in
+/// place (router, link plane, client slots) without reaching through the node/client chain.
 @MainActor
 private func withTCP(_ state: inout AppFeature.State,
                      _ body: (inout TransportEndpoint.State) -> Void) {

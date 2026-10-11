@@ -76,4 +76,14 @@ public enum NodeRules {
     public static func pushNode(in entries: [NodeEntry]) -> NodeEntry? {
         entries.first { $0.enabled && $0.pushHubHex != nil }
     }
+
+    /// Amendment A13: with no push hex anywhere, the built-in entry gets the shipped default back.
+    public static func restoringDefaultPushHex(_ entries: [NodeEntry], defaultHex: String = DefaultNode.pushHubHex) -> [NodeEntry] {
+        guard !entries.contains(where: { $0.pushHubHex != nil }) else { return entries }
+        return entries.map { entry in
+            var entry = entry
+            if entry.isBuiltIn { entry.pushHubHex = defaultHex }
+            return entry
+        }
+    }
 }

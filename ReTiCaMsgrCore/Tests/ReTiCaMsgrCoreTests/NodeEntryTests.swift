@@ -11,6 +11,12 @@ private func nodeID(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012d", n))")!
 }
 
+private func withoutHex(_ entry: NodeEntry) -> NodeEntry {
+    var entry = entry
+    entry.pushHubHex = nil
+    return entry
+}
+
 /// A deterministic id source for the migration: 100, 101, …
 private final class IDs {
     var next = 100
@@ -74,6 +80,24 @@ private func migrate(_ host: String, _ port: Int, _ hex: String) -> [NodeEntry] 
     // Keeping an entry WITHOUT a hex changes nothing.
     let plain = NodeEntry(id: nodeID(2), name: "P", host: "p", port: 1)
     #expect(NodeRules.enforceOnePushNode([builtIn, plain], keeping: plain.id) == [builtIn, plain])
+}
+
+/// Amendment A13 (F2): with no entry carrying a push hex, the built-in entry regains the shipped
+/// default — but only then. A disabled entry that still carries a hex counts as carrying one.
+@Test func nodeFinalRestoringDefaultHexOnlyWhenNoneCarriesOne() {
+    let builtIn = withoutHex(DefaultNode.entry)
+
+    let userNoHex = NodeEntry(id: nodeID(1), name: "U", host: "u.example", port: 1, pushHubHex: nil)
+    let restored = NodeRules.restoringDefaultPushHex([builtIn, userNoHex])
+    #expect(restored[0].pushHubHex == defaultHex)
+    #expect(restored[1].pushHubHex == nil)
+
+    let userWithHex = NodeEntry(id: nodeID(2), name: "U", host: "u.example", port: 1, pushHubHex: hexA)
+    #expect(NodeRules.restoringDefaultPushHex([builtIn, userWithHex]) == [builtIn, userWithHex])
+
+    let disabledUserWithHex = NodeEntry(id: nodeID(3), name: "U", host: "u.example", port: 1,
+                                        enabled: false, pushHubHex: hexA)
+    #expect(NodeRules.restoringDefaultPushHex([builtIn, disabledUserWithHex]) == [builtIn, disabledUserWithHex])
 }
 
 @Test func nodeRulesPushNodeIsTheEnabledEntryWithAHex() {
