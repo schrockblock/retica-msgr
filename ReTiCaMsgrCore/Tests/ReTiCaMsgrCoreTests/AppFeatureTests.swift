@@ -109,7 +109,7 @@ private let peerB = String(repeating: "b", count: 32)
     await store.send(.onLaunch)
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     #expect(store.state.connection == .connecting)
-    guard let tcp = store.state.node.client.endpoint.tcpClient else {
+    guard let tcp = store.state.node.client.endpoint.tcpClients.first else {
         Issue.record("expected a TCP-client endpoint slot")
         return
     }
@@ -1425,7 +1425,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     }
     // The dial must use the CURRENT settings, not whatever State.init was built with — the same
     // reason `.onLaunch` and `.connectTapped` sync them.
-    guard let tcp = store.state.node.client.endpoint.tcpClient else {
+    guard let tcp = store.state.node.client.endpoint.tcpClients.first else {
         Issue.record("expected a TCP-client endpoint slot")
         return
     }
@@ -1736,11 +1736,11 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.send(.foregrounded) { $0.connection = .connecting }
     await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
     await store.skipReceivedActions(strict: false)
-    #expect(store.state.node.client.endpoint.tcpClient != nil)
+    #expect(!store.state.node.client.endpoint.tcpClients.isEmpty)
 
     await store.send(.backgrounded)
     await store.receive { action in
-        if case .node(.client(.endpoint(.tcpClient(.disconnect)))) = action { return true }
+        if case .node(.client(.endpoint(.tcpClients(.element(id: InterfaceID("tcp"), action: .disconnect))))) = action { return true }
         return false
     }
     await store.finish()

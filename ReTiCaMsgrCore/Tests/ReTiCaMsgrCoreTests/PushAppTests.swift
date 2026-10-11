@@ -86,7 +86,7 @@ private let tcpID = InterfaceID("tcp")
     await store.send(.push(.delegate(.inject(packets: [raw]))))
     await store.receive { action in
         if case .node(.client(.endpoint(.transport(.received(let id, let bytes))))) = action {
-            return id == store.state.node.client.endpoint.tcpClient?.interfaceID && bytes == raw
+            return id == store.state.node.client.endpoint.tcpClients.first?.interfaceID && bytes == raw
         }
         return false
     }

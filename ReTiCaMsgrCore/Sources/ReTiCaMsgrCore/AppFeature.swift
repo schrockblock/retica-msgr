@@ -641,7 +641,7 @@ public struct AppFeature {
                 // destination, and LXMFNode proves (a no-op when the interface is down) and routes.
                 // A second proof for a packet the extension already proved is dropped by the
                 // sender's transport because the receipt is gone.
-                let interfaceID = state.node.client.endpoint.tcpClient?.interfaceID ?? AppFeature.pushFallbackInterface
+                let interfaceID = state.node.client.endpoint.tcpClients.first?.interfaceID ?? AppFeature.pushFallbackInterface
                 return .merge(packets.map { raw in
                     .send(.node(.client(.endpoint(.transport(.received(interfaceID, raw))))))
                 })
@@ -674,9 +674,10 @@ public struct AppFeature {
                 // cellular was 2–15 minutes (2026-10-02 hub investigation). A clean FIN makes the
                 // hub's interface dormant at once, and `.foregrounded` re-dials on return.
                 // Only the TCP client: BLE peers keep running in the background on their own terms.
-                let closeHubSocket: Effect<Action> = state.node.client.endpoint.tcpClient != nil
-                    ? .send(.node(.client(.endpoint(.tcpClient(.disconnect)))))
-                    : .none
+                let closeHubSocket: Effect<Action> = .merge(
+                    state.node.client.endpoint.tcpClients.ids.map {
+                        .send(.node(.client(.endpoint(.tcpClients(.element(id: $0, action: .disconnect))))))
+                    })
                 return .merge(
                     .cancel(id: CancelID.learnedDebounce),
                     closeHubSocket,
@@ -751,7 +752,7 @@ public struct AppFeature {
                 // resumed now — only for the TCP interface (the hub always sits behind it), and
                 // only after registerDelivery/the announce above, so the hub sees the registration
                 // once this device is actually reachable.
-                if interfaceID == state.node.client.endpoint.tcpClient?.interfaceID,
+                if interfaceID == state.node.client.endpoint.tcpClients.first?.interfaceID,
                    let pending = state.pendingPushRegistration {
                     state.pendingPushRegistration = nil
                     effects.append(.send(.push(.delegate(.sendRegistration(
@@ -2019,7 +2020,7 @@ public struct AppFeature {
                 // up yet, so `openLink` would fail `.pathStale` at once; an unknown hub would send
                 // a path request nothing can answer. Buffer until the TCP interface actually
                 // connects, then `interfaceConnected` resumes this with the real check below.
-                let tcpID = state.node.client.endpoint.tcpClient?.interfaceID
+                let tcpID = state.node.client.endpoint.tcpClients.first?.interfaceID
                 guard let tcpID, state.connectedInterfaces.contains(tcpID) else {
                     state.pendingPushRegistration = PendingPushRegistration(hub: hub, path: path, data: data)
                     event = nil
@@ -2470,7 +2471,7 @@ public struct AppFeature {
 /// The `.foregrounded` re-dial: nothing when the TCP interface is up, otherwise sync the hub
 /// settings and start the endpoint. Returns the effects to merge (the hub forward rides along).
 private func redialIfTCPDown(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
-    let tcpID = state.node.client.endpoint.tcpClient?.interfaceID
+    let tcpID = state.node.client.endpoint.tcpClients.first?.interfaceID
     if let tcpID, state.connectedInterfaces.contains(tcpID) { return .none }
     state.connection = .connecting
     syncEndpointHostPort(&state)
@@ -2482,7 +2483,7 @@ private func redialIfTCPDown(_ state: inout AppFeature.State) -> Effect<AppFeatu
 }
 
 private func syncEndpointHostPort(_ state: inout AppFeature.State) {
-    guard state.node.client.endpoint.tcpClient != nil else { return }
+    guard let tcpID = state.node.client.endpoint.tcpClients.ids.first else { return }
     // Read the @Shared Settings into locals first: mutating `state.node…` while reading
     // `state.host`/`state.port` in the same statement is an exclusive-access violation.
     let host = state.host
@@ -2491,9 +2492,9 @@ private func syncEndpointHostPort(_ state: inout AppFeature.State) {
     let listenPort = UInt16(exactly: state.listenPort)
     let bleEnabled = state.bleEnabled
 
-    state.node.client.endpoint.tcpClient?.interface.host = host
+    state.node.client.endpoint.tcpClients[id: tcpID]?.interface.host = host
     if let dialPort {
-        state.node.client.endpoint.tcpClient?.interface.port = dialPort
+        state.node.client.endpoint.tcpClients[id: tcpID]?.interface.port = dialPort
     }
 
     // Add or remove the listener slot to match the current setting. Rebuilding only the OPTIONAL
