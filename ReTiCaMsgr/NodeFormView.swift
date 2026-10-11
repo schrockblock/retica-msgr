@@ -112,36 +112,44 @@ struct NodeRow: View {
     let onTap: (() -> Void)?
     let onToggle: (Bool) -> Void
 
-    var body: some View {
+    private var rowContent: some View {
         HStack(spacing: 8) {
-            Button {
-                onTap?()
-            } label: {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(isConnected ? Color.green : Color.red)
-                        .frame(width: 10, height: 10)
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(node.isBuiltIn ? "\(node.name) (default)" : node.name)
-                            if isPushNode {
-                                Text("Push")
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.accentColor.opacity(0.15), in: Capsule())
-                            }
-                        }
-                        Text(node.hostPort)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            Circle()
+                .fill(isConnected ? Color.green : Color.red)
+                .frame(width: 10, height: 10)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(node.isBuiltIn ? "\(node.name) (default)" : node.name)
+                    if isPushNode {
+                        Text("Push")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.15), in: Capsule())
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                Text(node.hostPort)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
-            .disabled(onTap == nil)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let onTap {
+                Button {
+                    onTap()
+                } label: {
+                    rowContent
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                rowContent
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Toggle("", isOn: Binding(get: { node.enabled }, set: onToggle))
                 .labelsHidden()
                 .accessibilityLabel("\(node.name) enabled")
