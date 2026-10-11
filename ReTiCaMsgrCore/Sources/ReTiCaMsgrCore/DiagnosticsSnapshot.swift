@@ -74,33 +74,35 @@ extension DiagnosticsSnapshot {
     static func socketLayer(_ state: AppFeature.State) -> Layer {
         let endpoint = state.node.client.endpoint
         let interfaces = endpoint.interfaces
-
-        var status = "n/a"
-        var dialing = "n/a"
-        if let tcp = endpoint.tcpClients.first {
-            status = describe(tcp.interface.status)
-            dialing = "\(tcp.interface.host):\(tcp.interface.port)"
-        }
+        let clients = endpoint.tcpClients
         let app = describe(state.connection)
 
-        let rows = [
-            Row("app connection", app),
-            Row("interface status", status),
-            Row("dialing", dialing),
-            Row("interfaces", interfaces.isEmpty
-                 ? "(none)"
-                 : interfaces
-                    .map { "\($0.key.rawValue) (\($0.value.name))" }
-                    .sorted()
-                    .joined(separator: ", ")),
-        ]
+        var rows = [Row("app connection", app)]
+        if clients.isEmpty {
+            rows.append(Row("nodes", "(none enabled)"))
+        }
+        // One row per node slot, in dial order: what the app is dialing and how that socket is.
+        for client in clients {
+            rows.append(Row("node \(client.interface.host):\(client.interface.port)",
+                            describe(client.interface.status)))
+        }
+        rows.append(Row("interfaces", interfaces.isEmpty
+                        ? "(none)"
+                        : interfaces
+                            .map { "\($0.key.rawValue) (\($0.value.name))" }
+                            .sorted()
+                            .joined(separator: ", ")))
 
         // Order matters: a disagreement must be reported AS a disagreement rather than being
-        // masked by the milder "connecting" rule below it.
-        let interfaceOnline = status == "online"
+        // masked by the milder "connecting" rule below it. "Online" is any node's socket up.
+        let interfaceOnline = clients.contains { $0.interface.status == .online }
+        let nodesReport = clients.isEmpty
+            ? "none"
+            : clients.map { "\($0.interface.host):\($0.interface.port)=\(describe($0.interface.status))" }
+                     .joined(separator: ", ")
         if (app == "connected") != interfaceOnline {
             return Layer(title: "Socket", health: .problem,
-                         reason: "app reports \(app), interface reports \(status)", rows: rows)
+                         reason: "app reports \(app), nodes report \(nodesReport)", rows: rows)
         }
         if interfaceOnline && interfaces.isEmpty {
             return Layer(title: "Socket", health: .problem,

@@ -61,7 +61,7 @@ private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> Diagnost
     withTCP(&state) { $0.tcpClients[id: gaefuID]?.interface.status = .connecting }
     let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
     #expect(socket.health == .problem)
-    #expect(socket.reason == "app reports connected, interface reports connecting")
+    #expect(socket.reason == "app reports connected, nodes report gaefu.ddns.net:4242=connecting")
 }
 
 @MainActor @Test func socketIsAProblemWhenInterfaceIsOnlineButTransportHasNoInterfaces() {
@@ -108,7 +108,7 @@ private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> Diagnost
     // interface stays .online (as set by healthyState)
     let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
     #expect(socket.health == .problem)
-    #expect(socket.reason == "app reports connecting, interface reports online")
+    #expect(socket.reason == "app reports connecting, nodes report gaefu.ddns.net:4242=online")
 }
 
 // MARK: - Paths (F8 cross-check)
@@ -510,7 +510,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
     #expect(text.contains("ReTiCaMsgr diagnostics"))
     #expect(text.contains("2023-11-14"))              // fixedDate in ISO 8601
     #expect(text.contains("SOCKET  [problem]"))
-    #expect(text.contains("app reports connected, interface reports connecting"))
+    #expect(text.contains("app reports connected, nodes report gaefu.ddns.net:4242=connecting"))
     #expect(text.contains("IDENTITY  [ok]"))
     #expect(text.contains("app connection"))
 }
@@ -756,4 +756,42 @@ private func bleEnabledState(status: BLEInterfaceStatus, peers: [Data] = []) -> 
 @MainActor @Test func bluetoothLayerAppearsInTextExport() {
     let snap = DiagnosticsSnapshot(from: bleEnabledState(status: .online), at: fixedDate)
     #expect(snap.text.contains("BLUETOOTH"))
+}
+
+// MARK: - Nodes on the Socket layer (spec 2026-10-10 §3 "Diagnostics")
+
+private let piID = InterfaceID("tcp:pi.local:4243")
+
+private func withPi(_ state: inout AppFeature.State, status: TCPClientInterface.Status) {
+    state.node.client.endpoint.tcpClients.append(
+        TCPEndpoint.State(host: "pi.local", port: 4243, reconnectOnDrop: true, interfaceID: piID))
+    state.node.client.endpoint.tcpClients[id: piID]?.interface.status = status
+}
+
+@MainActor @Test func nodeDiagSocketListsEveryNodeWithItsStatus() {
+    var state = healthyState()
+    withPi(&state, status: .connecting)
+    let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
+    let nodeRows = socket.rows.filter { $0.label.hasPrefix("node ") }
+    #expect(nodeRows == [
+        DiagnosticsSnapshot.Row("node gaefu.ddns.net:4242", "online"),
+        DiagnosticsSnapshot.Row("node pi.local:4243", "connecting"),
+    ])
+}
+
+@MainActor @Test func nodeDiagSocketIsOkWhenAnyNodeIsOnline() {
+    var state = healthyState()
+    withPi(&state, status: .disconnected)   // one node down, the other up and registered
+    let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
+    #expect(socket.health == .ok)
+    #expect(socket.reason == nil)
+}
+
+@MainActor @Test func nodeDiagSocketWithNoNodesSaysNoneEnabled() {
+    var state = AppFeature.State(identity: Identity())
+    state.connection = .disconnected
+    let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
+    #expect(socket.rows.contains(DiagnosticsSnapshot.Row("nodes", "(none enabled)")))
+    #expect(socket.health == .warn)
+    #expect(socket.reason == "disconnected")
 }
