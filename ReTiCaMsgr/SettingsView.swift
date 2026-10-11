@@ -190,6 +190,27 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Contacts") {
+                    Toggle("Save Reticulum addresses to Contacts", isOn: Binding(
+                        get: { store.contactMirrorEnabled },
+                        set: { store.send(.setContactMirror($0)) }
+                    ))
+                    Text("Adds a Reticulum URL to each linked contact's card, so other devices and apps can "
+                         + "find the address. Needs full Contacts access.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if !store.contactMirrorEnabled, !store.contactLinks.isEmpty {
+                        Text("Addresses already saved to Contacts stay there.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !store.importCandidates.isEmpty {
+                        Button("Import \(store.importCandidates.count) addresses found in Contacts") {
+                            store.send(.importContactLinks)
+                        }
+                    }
+                }
+
                 Section("Run as Propagation Node") {
                     Toggle("Act as a propagation node", isOn: Binding(
                         get: { store.nodeModeEnabled },

@@ -2259,6 +2259,12 @@ public struct AppFeature {
 
             case let .setContactMirror(on):
                 state.$contactMirrorEnabled.withLock { $0 = on }
+                if on, contactsClient.authorizationStatus() == .notDetermined {
+                    return .run { [contactsClient] send in
+                        _ = await contactsClient.requestAccess()
+                        await send(.setContactMirror(true))
+                    }
+                }
                 // Turning on writes every existing link once and scans for imports; turning off
                 // leaves the cards as they are (clearing other people's data is a deliberate act).
                 guard on, contactsClient.authorizationStatus() == .full else { return .none }

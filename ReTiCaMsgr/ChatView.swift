@@ -28,6 +28,7 @@ struct ChatView: View {
     @State private var highlightGeneration = 0
     @FocusState private var draftFocused: Bool
     @State private var showingGroupInfo = false
+    @State private var showingPeerInfo = false
 
     private var isGroup: Bool { store.openConversationKind == .group }
 
@@ -197,7 +198,12 @@ struct ChatView: View {
                     .buttonStyle(.plain)
                     .accessibilityHint("Shows the group's members and settings")
                 } else {
-                    ChatTitle(title: store.openPeerHex.map(shortHex) ?? "Chat", expiry: store.openConversationExpiry)
+                    Button { showingPeerInfo = true } label: {
+                        ChatTitle(title: store.openPeerHex.map { store.state.contactName($0) ?? shortHex($0) } ?? "Chat",
+                                  expiry: store.openConversationExpiry)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Shows the address and contact for this chat")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -208,12 +214,19 @@ struct ChatView: View {
                     // Not gated on reachability (amendment A17): the pick applies here at once, the
                     // change line shows if its message failed, and every later message carries the
                     // timer, so the peer converges even when the change itself never arrived.
-                    ExpiryMenu(current: store.openConversationExpiry) { store.send(.expirySelected(seconds: $0)) }
+                    HStack(spacing: 16) {
+                        Button { showingPeerInfo = true } label: { Image(systemName: "info.circle") }
+                            .accessibilityLabel("Chat info")
+                        ExpiryMenu(current: store.openConversationExpiry) { store.send(.expirySelected(seconds: $0)) }
+                    }
                 }
             }
         }
         .sheet(isPresented: $showingGroupInfo) {
             GroupInfoView(store: store)
+        }
+        .sheet(isPresented: $showingPeerInfo) {
+            if let peer = store.openPeerHex { PeerInfoView(store: store, peerHex: peer) }
         }
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $pickerTarget) { target in

@@ -41,8 +41,9 @@ struct ConversationListView: View {
                                     .font(.headline)
                                     .lineLimit(1)
                             } else {
-                                Text(shortHex(convo.peerHex))
-                                    .font(.system(.headline, design: .monospaced))
+                                Text(store.state.contactName(convo.peerHex) ?? shortHex(convo.peerHex))
+                                    .font(store.state.contactName(convo.peerHex) == nil
+                                          ? .system(.headline, design: .monospaced) : .headline)
                             }
                             if convo.groupState == GroupState.invited {
                                 Text("Invited")
@@ -50,6 +51,9 @@ struct ConversationListView: View {
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
                                     .background(Capsule().fill(Color.accentColor.opacity(0.2)))
+                            }
+                            if store.state.contactLinks[convo.peerHex]?.isConflicted == true {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.caption)
                             }
                             Spacer()
                             Text(convo.lastTimestamp, style: .relative)
@@ -116,6 +120,7 @@ struct ComposeSheet: View {
     @Binding var isPresented: Bool
     @State private var address: String = ""
     @State private var showingScanner = false
+    @State private var scannedForLink: String?
 
     // Uses the public `isValidPeerAddress` helper added in Step 2 (add that
     // helper first — `Data(hexString:)` is internal to the package and NOT
@@ -152,7 +157,22 @@ struct ComposeSheet: View {
                 QRScannerView(ownAddress: store.myAddressHex) { hex in
                     address = hex
                     showingScanner = false
-                    store.send(.startConversation(address))
+                    scannedForLink = hex
+                }
+            }
+            .confirmationDialog("Who is this?", isPresented: Binding(
+                get: { scannedForLink != nil },
+                set: { if !$0 { scannedForLink = nil } }
+            ), titleVisibility: .visible) {
+                Button("Choose contact") {
+                    guard let hex = scannedForLink else { return }
+                    store.send(.startConversation(hex))
+                    store.send(.linkContactTapped(peerHex: hex, source: ContactLinkSource.scanned))
+                    isPresented = false
+                }
+                Button("Not now") {
+                    guard let hex = scannedForLink else { return }
+                    store.send(.startConversation(hex))
                     isPresented = false
                 }
             }
