@@ -59,4 +59,22 @@ public enum ContactLinking {
         }
         return nil
     }
+
+    /// The cards worth offering for import: a well-formed 32-hex address, not already linked by
+    /// peer or by contact, one candidate per contact (the first address wins). Nothing is ever
+    /// overwritten by an import (spec §3).
+    public static func importable(_ found: [ImportCandidate], links: [String: ContactLink]) -> [ImportCandidate] {
+        let linkedContacts = Set(links.values.map(\.contactIdentifier))
+        var seen = Set<String>()
+        return found.filter { candidate in
+            guard isValidPeerAddress(candidate.peerHex),
+                  links[candidate.peerHex] == nil,
+                  !linkedContacts.contains(candidate.identifier),
+                  !seen.contains(candidate.identifier)
+            else { return false }
+            seen.insert(candidate.identifier)
+            return true
+        }
+        .sorted { $0.identifier < $1.identifier }
+    }
 }

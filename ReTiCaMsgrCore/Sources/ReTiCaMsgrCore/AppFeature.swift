@@ -247,6 +247,11 @@ public struct AppFeature {
         public var pendingLinkCollision: LinkCollision? = nil
         /// Peers whose unverified link received a confirmation: the info sheet asks to verify.
         public var pendingVerifyPrompts: Set<String> = []
+        /// Spec §3 "Contact-card mirror": write `reticulum:<peerHex>` into linked cards (full
+        /// access only) and import such URLs found on cards.
+        @Shared(.appStorage("contactMirrorEnabled")) public var contactMirrorEnabled: Bool = false
+        /// `reticulum:` URLs found on cards and not yet linked, offered for import.
+        public var importCandidates: [ImportCandidate] = []
 
         public init(identity: Identity,
                     pushStorage: PushStorage = .temporary(),
@@ -440,6 +445,11 @@ public struct AppFeature {
         case resolveConflict(peerHex: String)
         case contactNameRefreshed(peerHex: String, name: String)
         case contactLinksLoaded([ContactLink])
+        case setContactMirror(Bool)
+        /// The link sheet opened: with the mirror on, scan the cards for importable addresses.
+        case contactLinkSheetAppeared
+        case importCandidatesFound([ImportCandidate])
+        case importContactLinks
         case setDisplayName(String)
         case syncTapped
         case announceTapped
@@ -2247,6 +2257,50 @@ public struct AppFeature {
                 state.contactLinks = Dictionary(uniqueKeysWithValues: rows.map { ($0.peerHex, $0) })
                 return .none
 
+            case let .setContactMirror(on):
+                state.$contactMirrorEnabled.withLock { $0 = on }
+                // Turning on writes every existing link once and scans for imports; turning off
+                // leaves the cards as they are (clearing other people's data is a deliberate act).
+                guard on, contactsClient.authorizationStatus() == .full else { return .none }
+                let links = Array(state.contactLinks.values)
+                let known = state.contactLinks
+                return .run { [contactsClient] send in
+                    for link in links {
+                        try? await contactsClient.writeAddress(link.contactIdentifier, link.peerHex)
+                    }
+                    let found = (try? await contactsClient.addressedContacts()) ?? []
+                    await send(.importCandidatesFound(ContactLinking.importable(found, links: known)))
+                }
+
+            case .contactLinkSheetAppeared:
+                guard state.contactMirrorEnabled else { return .none }
+                let known = state.contactLinks
+                return .run { [contactsClient] send in
+                    let found = (try? await contactsClient.addressedContacts()) ?? []
+                    await send(.importCandidatesFound(ContactLinking.importable(found, links: known)))
+                }
+
+            case let .importCandidatesFound(candidates):
+                state.importCandidates = candidates
+                return .none
+
+            case .importContactLinks:
+                // Re-filter against the current links: the list may be stale by the time it is tapped.
+                let candidates = ContactLinking.importable(state.importCandidates, links: state.contactLinks)
+                state.importCandidates = []
+                guard !candidates.isEmpty else { return .none }
+                let now = date.now
+                return .run { [database] send in
+                    try await database.write { db in
+                        for candidate in candidates {
+                            try ContactLink.insertReplacing(
+                                ContactLinking.newLink(peerHex: candidate.peerHex, identifier: candidate.identifier,
+                                                       name: candidate.name, source: ContactLinkSource.imported, now: now), db)
+                        }
+                    }
+                    try await reloadContactLinks(database, send)
+                }
+
             case .node, .binding, .pushRegistrationTimedOut:
                 return .none
             }
@@ -3054,23 +3108,32 @@ private func reloadContactLinks(_ database: any DatabaseWriter, _ send: Send<App
     await send(.contactLinksLoaded(rows))
 }
 
-/// Writes a new or replacing link and reloads. `replacing` is the row a Replace discards; Task 4
-/// uses it and `contacts` for the card mirror.
+/// Writes a new or replacing link, mirrors it to the card when the mirror is on with full
+/// access (clearing the replaced row's card first when it was a different contact), reloads.
 private func writeLinkEffects(_ state: AppFeature.State, link: ContactLink, replacing: ContactLink?,
                               contacts: ContactsClient) -> Effect<AppFeature.Action> {
     @Dependency(\.defaultDatabase) var database
+    let mirror = state.contactMirrorEnabled && contacts.authorizationStatus() == .full
     return .run { send in
         try await database.write { try ContactLink.insertReplacing(link, $0) }
+        if mirror {
+            if let replacing, replacing.contactIdentifier != link.contactIdentifier {
+                try? await contacts.clearAddress(replacing.contactIdentifier)
+            }
+            try? await contacts.writeAddress(link.contactIdentifier, link.peerHex)
+        }
         try await reloadContactLinks(database, send)
     }
 }
 
-/// Deletes a link and reloads. Task 4 adds the card clear.
+/// Deletes a link, clears its card when the mirror is on with full access, reloads.
 private func unlinkEffects(_ state: AppFeature.State, link: ContactLink,
                            contacts: ContactsClient) -> Effect<AppFeature.Action> {
     @Dependency(\.defaultDatabase) var database
+    let mirror = state.contactMirrorEnabled && contacts.authorizationStatus() == .full
     return .run { send in
         try await database.write { try ContactLink.delete(peerHex: link.peerHex, $0) }
+        if mirror { try? await contacts.clearAddress(link.contactIdentifier) }
         try await reloadContactLinks(database, send)
     }
 }

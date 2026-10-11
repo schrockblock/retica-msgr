@@ -312,3 +312,129 @@ private func announce(_ store: TestStoreOf<AppFeature>, _ hex: String, _ name: S
     #expect(store.state.contactLinks[linkPeerA] == linkRow(linkPeerA, jane))
     await store.skipReceivedActions(strict: false)
 }
+
+// MARK: - Contact-card mirror and import (spec §3)
+
+private let linkPeerC = String(repeating: "c", count: 32)
+
+@MainActor
+private func mirrorStore(_ db: any DatabaseWriter, fake: FakeContacts, on: Bool = true) -> TestStoreOf<AppFeature> {
+    makeLinkStore(db, fake: fake) { $0.$contactMirrorEnabled.withLock { $0 = on } }
+}
+
+@MainActor @Test func linkMirrorWritesOnLinkWithFullAccess() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [jane])
+    let store = mirrorStore(db, fake: fake)
+    await pick(store, linkPeerA, jane)
+    await receiveLinks(store)
+    await store.finish()
+    #expect(fake.writes == [FakeContacts.Write(identifier: "CN-1", peerHex: linkPeerA)])
+    #expect(fake.clears.isEmpty)
+}
+
+@MainActor @Test func linkMirrorNoWriteUnderLimitedAccess() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(authorization: .limited, contacts: [jane])
+    let store = mirrorStore(db, fake: fake)
+    await pick(store, linkPeerA, jane)
+    await receiveLinks(store)
+    await store.finish()
+    #expect(fake.writes.isEmpty, "limited access cannot update cards")
+    #expect(store.state.contactLinks[linkPeerA] != nil, "the link itself still happens")
+}
+
+@MainActor @Test func linkMirrorOffWritesNothingOnLink() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [jane])
+    let store = mirrorStore(db, fake: fake, on: false)
+    await pick(store, linkPeerA, jane)
+    await receiveLinks(store)
+    await store.finish()
+    #expect(fake.writes.isEmpty)
+}
+
+@MainActor @Test func linkMirrorClearsOnUnlink() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [jane])
+    let store = mirrorStore(db, fake: fake)
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
+    await store.send(.unlinkContact(peerHex: linkPeerA))
+    await receiveLinks(store)
+    await store.finish()
+    #expect(fake.clears == ["CN-1"])
+}
+
+@MainActor @Test func linkMirrorReplaceClearsTheOldCardAndWritesTheNew() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [jane, bob])
+    let store = mirrorStore(db, fake: fake)
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
+    await pick(store, linkPeerA, bob)            // peer already linked to Jane → collision
+    await store.send(.replaceLinkConfirmed) { $0.pendingLinkCollision = nil }
+    await receiveLinks(store)
+    await store.finish()
+    #expect(fake.clears == ["CN-1"])
+    #expect(fake.writes == [FakeContacts.Write(identifier: "CN-2", peerHex: linkPeerA)])
+}
+
+@MainActor @Test func linkMirrorToggleOnWritesEveryExistingLinkOnce() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [jane, bob])
+    let store = mirrorStore(db, fake: fake, on: false)
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane), linkRow(linkPeerB, bob)])
+    await store.send(.setContactMirror(true)) { $0.$contactMirrorEnabled.withLock { $0 = true } }
+    await store.skipReceivedActions(strict: false)
+    await store.finish()
+    #expect(Set(fake.writes) == [FakeContacts.Write(identifier: "CN-1", peerHex: linkPeerA),
+                                 FakeContacts.Write(identifier: "CN-2", peerHex: linkPeerB)])
+    #expect(fake.writes.count == 2)
+}
+
+@MainActor @Test func linkMirrorToggleOffWritesNothing() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [jane])
+    let store = mirrorStore(db, fake: fake)
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
+    store.exhaustivity = .on
+    await store.send(.setContactMirror(false)) { $0.$contactMirrorEnabled.withLock { $0 = false } }
+    #expect(fake.writes.isEmpty)
+    #expect(fake.clears.isEmpty, "cards already written stay as they are")
+}
+
+@MainActor @Test func linkMirrorImportCreatesUnverifiedLinksAndSkipsCollisions() async throws {
+    let db = try AppDatabase.makeInMemory()
+    // CN-1 is already linked to peer A; CN-2's card points at peer B (new); CN-3's card points at
+    // peer A (the address is taken) — only CN-2 is importable.
+    let fake = FakeContacts(contacts: [jane, bob, ContactSummary(identifier: "CN-3", name: "Cy", hasPhoto: false)],
+                            addresses: ["CN-1": linkPeerA, "CN-2": linkPeerB, "CN-3": linkPeerA])
+    let store = mirrorStore(db, fake: fake)
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
+    await store.send(.contactLinkSheetAppeared)
+    await store.receive(.importCandidatesFound([ImportCandidate(identifier: "CN-2", name: "Bob Ray", peerHex: linkPeerB)])) {
+        $0.importCandidates = [ImportCandidate(identifier: "CN-2", name: "Bob Ray", peerHex: linkPeerB)]
+    }
+    await store.send(.importContactLinks) { $0.importCandidates = [] }
+    await receiveLinks(store)
+    await store.finish()
+    #expect(store.state.contactLinks[linkPeerB] == linkRow(linkPeerB, bob, source: ContactLinkSource.imported, verified: false))
+    #expect(store.state.contactLinks[linkPeerA] == linkRow(linkPeerA, jane), "the existing link is untouched")
+    #expect(fake.writes.isEmpty, "an imported address is already on its card")
+}
+
+@MainActor @Test func linkMirrorImportDropsMalformedAddresses() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [jane, bob], addresses: ["CN-1": "zzz", "CN-2": String(linkPeerB.dropLast())])
+    let store = mirrorStore(db, fake: fake)
+    store.exhaustivity = .on
+    await store.send(.contactLinkSheetAppeared)
+    await store.receive(.importCandidatesFound([]))
+}
+
+@MainActor @Test func linkMirrorOffDoesNotScan() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [bob], addresses: ["CN-2": linkPeerB])
+    let store = mirrorStore(db, fake: fake, on: false)
+    store.exhaustivity = .on
+    await store.send(.contactLinkSheetAppeared)   // exhaustive: nothing happens with the mirror off
+}
