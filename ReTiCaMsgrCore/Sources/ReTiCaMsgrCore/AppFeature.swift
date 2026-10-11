@@ -2578,12 +2578,16 @@ private func pushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature.Act
 /// The `.foregrounded`/`.pushWake` re-dial (spec §3): iOS tears sockets down while suspended,
 /// so every enabled node whose interface is not connected is dialed again; a live node is left
 /// alone (re-dialling it would tear down its links on every app switch). The listener and BLE
-/// slots restart as the old `.start` did. `connection` goes to connecting only when nothing is
-/// up (amendment A10).
+/// slots restart as the old `.start` did — including when there are NO TCP client slots at all
+/// (every node disabled or the list empty): the old code always had exactly one slot to find
+/// down, so it always reached the listener/BLE restart; `down.isEmpty` alone would now skip it
+/// in that case, so `noClientSlots` keeps the restart reachable. `connection` goes to connecting
+/// only when nothing is up (amendment A10).
 private func redialDownNodes(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
     let down = state.node.client.endpoint.tcpClients.ids.filter { !state.connectedInterfaces.contains($0) }
-    guard !down.isEmpty else { return sync.removals }
+    let noClientSlots = state.node.client.endpoint.tcpClients.isEmpty
+    guard !down.isEmpty || noClientSlots else { return sync.removals }
     if state.connectedInterfaces.isEmpty { state.connection = .connecting }
     var dials: [Effect<AppFeature.Action>] = [connectEffects(Array(down))]
     if state.node.client.endpoint.tcpServer != nil {

@@ -6242,6 +6242,21 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     await store.skipReceivedActions(strict: false)
 }
 
+/// With every node disabled there is no TCP slot at all, so `down` (the set of disconnected slots)
+/// is empty — but the listener and BLE slots must still restart on foreground, exactly as the old
+/// `.start` always did when the (then always-present) TCP slot was down. Review fix: `redialDownNodes`
+/// used to return early whenever `down.isEmpty`, which also skipped the listener/BLE restart.
+@MainActor @Test func nodeSyncForegroundWithNoNodesRestartsTheListener() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [disabled(DefaultNode.entry)]) { state in
+        state.$listenEnabled.withLock { $0 = true }
+        state.$listenPort.withLock { $0 = 5151 }
+    }
+    await store.send(.foregrounded)
+    await store.receive { if case .node(.client(.endpoint(.tcpServer(.start)))) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
 // MARK: - Default nodes: push wiring (spec §3 "Push")
 
 @MainActor @Test func nodePushLaunchPointsPushAtThePushNode() async {
@@ -6288,11 +6303,47 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     await store.send(.push(.delegate(.sendRegistration(hub: hub, path: "/register", data: Data([1]))))) {
         $0.pendingPushRegistration = PendingPushRegistration(hub: hub, path: "/register", data: Data([1]))
     }
-    // Some OTHER interface coming up must not resume it.
+    // Some OTHER interface coming up must not resume it. Checked BEFORE draining: the resume
+    // guard's clear of `pendingPushRegistration` is the SEND's own synchronous mutation (visible
+    // at once), but a wrongly-resumed registration re-enters the (separate, still-correct) guard
+    // once its resend is drained and gets re-buffered — which would mask a dropped condition here
+    // if the drain ran first.
     await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(InterfaceID("tcp:other.example:1"), .tcp))))))
-    await store.skipReceivedActions(strict: false)
     #expect(store.state.pendingPushRegistration != nil, "only the push node's own interface resumes the registration")
+    await store.skipReceivedActions(strict: false)
     await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp)))))) {
+        $0.pendingPushRegistration = nil
+    }
+    await store.receive { if case .push(.delegate(.sendRegistration(hub: hub, _, _))) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
+/// With a single node, "the push node's interface" and "the first slot" are the same id, so the
+/// test above cannot tell the guard apart from a `tcpClients.first?.interfaceID` bug. Here the push
+/// node (the one with a hex) is the SECOND entry: only ITS interface may resume the registration,
+/// not the first slot that happens to be up.
+@MainActor @Test func nodePushRegistrationWithOnlyAnotherInterfaceUpStillWaits() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode(hex: nodeHexA, id: 11)
+    let store = nodeStore(db, nodes: [withoutHex(DefaultNode.entry), a])
+    await connectNodes(store)
+    // The non-push node's interface comes up first.
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
+    await store.skipReceivedActions(strict: false)
+
+    let hub = Data(repeating: 0xC1, count: 16)
+    // Exhaustive: the guard's only effect when it (correctly) still buffers is the state mutation
+    // below — any emitted action (a path request, a registration timer) means the guard wrongly
+    // treated the non-push interface as satisfying it.
+    store.exhaustivity = .on
+    await store.send(.push(.delegate(.sendRegistration(hub: hub, path: "/register", data: Data([1]))))) {
+        $0.pendingPushRegistration = PendingPushRegistration(hub: hub, path: "/register", data: Data([1]))
+    }
+    #expect(!store.state.pushRegistrationFlow.isActive)
+    store.exhaustivity = .off
+
+    // The push node's OWN interface coming up does resume it.
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(a.interfaceID, .tcp)))))) {
         $0.pendingPushRegistration = nil
     }
     await store.receive { if case .push(.delegate(.sendRegistration(hub: hub, _, _))) = $0 { return true }; return false }
@@ -6334,6 +6385,22 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
         return false
     }
     await store.skipReceivedActions(strict: false)
+}
+
+/// Amendment A7: `setHubHex` must not be sent when the push node's hex already equals what the
+/// push feature holds — every `setHubHex` makes the push feature forget its registration (its
+/// `status` flips to `.failed`), so a no-op hex must leave a registered status alone.
+@MainActor @Test func nodePushEqualHexSendsNoSetHubHex() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+        state.push.$enabled.withLock { $0 = true }
+        state.push.status = .registered(Date(timeIntervalSince1970: 1700000000))
+    }
+    await store.send(.connectTapped)
+    await store.receive(.push(.hubChanged(host: "gaefu.ddns.net", port: 4242)))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.push.status == .registered(Date(timeIntervalSince1970: 1700000000)))
 }
 
 // MARK: - Default nodes: propagation default (spec §2 "Propagation node")
