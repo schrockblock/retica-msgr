@@ -650,12 +650,12 @@ private func mirrorStore(_ db: any DatabaseWriter, fake: FakeContacts, on: Bool 
     try await seedLinks(db, store, [linkRow(linkPeerA, bob)])   // cached "Bob Ray", no photo known
     await store.send(.contactRowAppeared(peerHex: linkPeerA))
     await store.receive(.contactNameRefreshed(peerHex: linkPeerA, name: "Robert Ray"))
-    await store.receive(.contactCardLoaded(contactIdentifier: "CN-2", .available(thumbnail: Data([0xFF, 0xD8])))) {
-        $0.contactCards["CN-2"] = .available(thumbnail: Data([0xFF, 0xD8]))
-    }
-    await receiveLinks(store)
-    #expect(store.state.contactLinks[linkPeerA]?.cachedName == "Robert Ray")
+    // The name refresh's reload and the card load are two independent effects with no ordering
+    // guarantee between them: let both finish, then read the state they produced.
     await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.contactCards["CN-2"] == .available(thumbnail: Data([0xFF, 0xD8])))
+    #expect(store.state.contactLinks[linkPeerA]?.cachedName == "Robert Ray")
 }
 
 @MainActor @Test func linkFixRowAppearedForAnUnlinkedPeerDoesNothing() async throws {
