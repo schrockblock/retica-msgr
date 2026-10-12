@@ -245,8 +245,11 @@ public struct AppFeature {
         public var linkPickerTarget: LinkPickerTarget? = nil
         /// A pick that collides with an existing link, awaiting Replace or Cancel.
         public var pendingLinkCollision: LinkCollision? = nil
-        /// Peers whose unverified link received a confirmation: the info sheet asks to verify.
-        public var pendingVerifyPrompts: Set<String> = []
+        /// Peers whose row asks for verification (spec §3 "Confirmation prompt"): derived from the
+        /// rows, never stored, so a prompt — and a "Not now" — survives a relaunch.
+        public var pendingVerifyPrompts: Set<String> {
+            Set(contactLinks.values.filter(\.needsVerifyPrompt).map(\.peerHex))
+        }
         /// Spec §3 "Contact-card mirror": write `reticulum:<peerHex>` into linked cards (full
         /// access only) and import such URLs found on cards.
         @Shared(.appStorage("contactMirrorEnabled")) public var contactMirrorEnabled: Bool = false
@@ -2206,10 +2209,8 @@ public struct AppFeature {
             case .replaceLinkConfirmed:
                 guard let collision = state.pendingLinkCollision else { return .none }
                 state.pendingLinkCollision = nil
-                // Every row Replace is about to delete (spec 2026-10-11 Review Focus F2): a
-                // double collision can name two peers, and a stale verify prompt for either one
-                // must not outlive the row it was about.
-                for existing in collision.existing { state.pendingVerifyPrompts.remove(existing.peerHex) }
+                // Every row Replace deletes takes its verify prompt with it (the prompt is derived
+                // from the row), so a double collision leaves nothing stale behind (Review Focus F2).
                 let link = ContactLinking.newLink(peerHex: collision.peerHex, identifier: collision.identifier,
                                                   name: collision.name, source: collision.source, now: date.now)
                 return writeLinkEffects(state, link: link, replacing: collision.existing, contacts: contactsClient)
@@ -2220,24 +2221,23 @@ public struct AppFeature {
 
             case let .unlinkContact(peerHex):
                 guard let link = state.contactLinks[peerHex] else { return .none }
-                state.pendingVerifyPrompts.remove(peerHex)
                 return unlinkEffects(state, link: link, contacts: contactsClient)
 
             case let .markContactVerified(peerHex):
                 guard state.contactLinks[peerHex] != nil else { return .none }
-                state.pendingVerifyPrompts.remove(peerHex)
                 return updateContactLink(database, peerHex: peerHex, now: date.now) { $0.verified = true }
 
             case let .confirmationReceived(peerHex, confirmation):
-                guard let link = state.contactLinks[peerHex] else { return .none }
-                if !link.verified { state.pendingVerifyPrompts.insert(peerHex) }
+                guard state.contactLinks[peerHex] != nil else { return .none }
+                // A new confirmation asks again, even after an earlier "Not now".
                 return updateContactLink(database, peerHex: peerHex, now: date.now) {
                     $0.confirmations.append(confirmation)
+                    $0.promptDismissed = false
                 }
 
             case let .dismissVerifyPrompt(peerHex):
-                state.pendingVerifyPrompts.remove(peerHex)
-                return .none
+                guard state.contactLinks[peerHex] != nil else { return .none }
+                return updateContactLink(database, peerHex: peerHex, now: date.now) { $0.promptDismissed = true }
 
             case let .conflictReported(peerHex, contactIdentifier, otherPeerHex, at):
                 guard let link = state.contactLinks[peerHex], link.contactIdentifier == contactIdentifier else {

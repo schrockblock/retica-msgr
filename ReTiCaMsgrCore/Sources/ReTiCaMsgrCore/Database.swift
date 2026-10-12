@@ -219,6 +219,7 @@ public enum AppDatabase {
                 t.column("discoveredAt", .datetime)
                 t.column("confirmationsJSON", .text).notNull().defaults(to: "[]")
                 t.column("verified", .boolean).notNull()
+                t.column("promptDismissed", .boolean).notNull().defaults(to: false)
                 t.column("conflictedAt", .datetime)
                 t.column("conflictPeerHex", .text)
                 t.column("createdAt", .datetime).notNull()

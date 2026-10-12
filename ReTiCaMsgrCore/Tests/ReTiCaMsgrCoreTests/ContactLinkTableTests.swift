@@ -11,13 +11,14 @@ private func linkTableRow(peer: String = linkTablePeer, contact: String = "CN-1"
                           source: String = ContactLinkSource.manual, verified: Bool = true) -> ContactLink {
     ContactLink(peerHex: peer, contactIdentifier: contact, cachedName: name, source: source,
                 discoveredViaHex: nil, discoveredSessionId: nil, discoveredAt: nil,
-                confirmationsJSON: "[]", verified: verified, conflictedAt: nil, conflictPeerHex: nil,
-                createdAt: linkTableT0, updatedAt: linkTableT0)
+                confirmationsJSON: "[]", verified: verified, promptDismissed: false, conflictedAt: nil,
+                conflictPeerHex: nil, createdAt: linkTableT0, updatedAt: linkTableT0)
 }
 
 @Test func linkTableRoundTripsEveryColumn() throws {
     let db = try AppDatabase.makeInMemory()
     var row = linkTableRow(source: ContactLinkSource.discovered, verified: false)
+    row.promptDismissed = true
     row.discoveredViaHex = linkTablePeer2
     row.discoveredSessionId = "sess-1"
     row.discoveredAt = linkTableT0

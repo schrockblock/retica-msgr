@@ -23,6 +23,9 @@ public struct ContactLink: Equatable, Sendable {
     /// True at creation for `manual` and `scanned`; false for `discovered` and `imported` until
     /// the user marks it. Never set by a confirmation alone (the app asks).
     public var verified: Bool
+    /// The user answered "Not now" to the latest confirmation; a new confirmation resets it, so
+    /// the prompt is derived from the row and survives a relaunch (backlog 2026-10-11 item 3).
+    public var promptDismissed: Bool
     public var conflictedAt: Date?
     public var conflictPeerHex: String?
     public var createdAt: Date
@@ -30,8 +33,8 @@ public struct ContactLink: Equatable, Sendable {
 
     public init(peerHex: String, contactIdentifier: String, cachedName: String, source: String,
                 discoveredViaHex: String?, discoveredSessionId: String?, discoveredAt: Date?,
-                confirmationsJSON: String, verified: Bool, conflictedAt: Date?, conflictPeerHex: String?,
-                createdAt: Date, updatedAt: Date) {
+                confirmationsJSON: String, verified: Bool, promptDismissed: Bool, conflictedAt: Date?,
+                conflictPeerHex: String?, createdAt: Date, updatedAt: Date) {
         self.peerHex = peerHex
         self.contactIdentifier = contactIdentifier
         self.cachedName = cachedName
@@ -41,6 +44,7 @@ public struct ContactLink: Equatable, Sendable {
         self.discoveredAt = discoveredAt
         self.confirmationsJSON = confirmationsJSON
         self.verified = verified
+        self.promptDismissed = promptDismissed
         self.conflictedAt = conflictedAt
         self.conflictPeerHex = conflictPeerHex
         self.createdAt = createdAt
@@ -63,6 +67,10 @@ public struct ContactLink: Equatable, Sendable {
     }
 
     public var isConflicted: Bool { conflictedAt != nil }
+
+    /// Whether the info sheet asks to verify (spec §3 "Confirmation prompt"): unverified, at least
+    /// one confirmation, and the latest one not dismissed.
+    public var needsVerifyPrompt: Bool { !verified && !confirmations.isEmpty && !promptDismissed }
 
     public static func fetch(peerHex: String, _ db: GRDB.Database) throws -> ContactLink? {
         try ContactLink.where { $0.peerHex.eq(peerHex) }.fetchOne(db)

@@ -50,7 +50,7 @@ func linkRow(_ peer: String, _ contact: ContactSummary, source: String = Contact
     ContactLink(peerHex: peer, contactIdentifier: contact.identifier, cachedName: contact.name, source: source,
                 discoveredViaHex: nil, discoveredSessionId: nil, discoveredAt: nil, confirmationsJSON: "[]",
                 verified: verified ?? (source == ContactLinkSource.manual || source == ContactLinkSource.scanned),
-                conflictedAt: nil, conflictPeerHex: nil, createdAt: linkT0, updatedAt: linkT0)
+                promptDismissed: false, conflictedAt: nil, conflictPeerHex: nil, createdAt: linkT0, updatedAt: linkT0)
 }
 
 /// Seed rows straight into the table and into state, as a launch would.
@@ -214,15 +214,52 @@ private func rows(_ db: any DatabaseWriter) throws -> [ContactLink] {
     let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane]))
     try await seedLinks(db, store, [linkRow(linkPeerA, jane, source: ContactLinkSource.discovered)])
     let confirmation = ContactConfirmation(peerHex: linkPeerB, sessionId: "s1", date: linkT0)
-    await store.send(.confirmationReceived(peerHex: linkPeerA, confirmation: confirmation)) {
-        $0.pendingVerifyPrompts = [linkPeerA]
-    }
+    await store.send(.confirmationReceived(peerHex: linkPeerA, confirmation: confirmation))
     await receiveLinks(store)
+    #expect(store.state.pendingVerifyPrompts == [linkPeerA])
     #expect(store.state.contactLinks[linkPeerA]?.confirmations == [confirmation])
     #expect(store.state.contactLinks[linkPeerA]?.verified == false, "the app asks; it never verifies by itself")
-    await store.send(.markContactVerified(peerHex: linkPeerA)) { $0.pendingVerifyPrompts = [] }
+    await store.send(.markContactVerified(peerHex: linkPeerA))
     await receiveLinks(store)
+    #expect(store.state.pendingVerifyPrompts.isEmpty)
     #expect(store.state.contactLinks[linkPeerA]?.verified == true)
+    await store.finish()
+}
+
+/// Backlog 3: "Not now" is persisted — a relaunch does not ask again.
+@MainActor @Test func linkFixDismissedPromptSurvivesRelaunch() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane]))
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane, source: ContactLinkSource.discovered)])
+    await store.send(.confirmationReceived(peerHex: linkPeerA,
+                                           confirmation: ContactConfirmation(peerHex: linkPeerB, sessionId: "s1", date: linkT0)))
+    await receiveLinks(store)
+    #expect(store.state.pendingVerifyPrompts == [linkPeerA])
+    await store.send(.dismissVerifyPrompt(peerHex: linkPeerA))
+    await receiveLinks(store)
+    #expect(store.state.pendingVerifyPrompts.isEmpty)
+    await store.finish()
+    let relaunched = makeLinkStore(db, fake: FakeContacts(contacts: [jane]))
+    await relaunched.send(.onLaunch)
+    await receiveLinks(relaunched)
+    #expect(relaunched.state.contactLinks[linkPeerA]?.confirmations.count == 1)
+    #expect(relaunched.state.pendingVerifyPrompts.isEmpty)
+    await relaunched.skipReceivedActions(strict: false)
+}
+
+/// A NEW confirmation after a dismissal asks again.
+@MainActor @Test func linkFixNewConfirmationReasksAfterDismissal() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane]))
+    var dismissed = linkRow(linkPeerA, jane, source: ContactLinkSource.discovered)
+    dismissed.confirmations = [ContactConfirmation(peerHex: linkPeerB, sessionId: "s1", date: linkT0)]
+    dismissed.promptDismissed = true
+    try await seedLinks(db, store, [dismissed])
+    #expect(store.state.pendingVerifyPrompts.isEmpty)
+    await store.send(.confirmationReceived(peerHex: linkPeerA,
+                                           confirmation: ContactConfirmation(peerHex: linkPeerB, sessionId: "s2", date: linkT0)))
+    await receiveLinks(store)
+    #expect(store.state.pendingVerifyPrompts == [linkPeerA])
     await store.finish()
 }
 
@@ -475,17 +512,15 @@ private func mirrorStore(_ db: any DatabaseWriter, fake: FakeContacts, on: Bool 
 
 @MainActor @Test func linkFinalReplaceClearsPromptsForEveryDeletedPeer() async throws {
     let db = try AppDatabase.makeInMemory()
-    let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane, bob])) {
-        $0.pendingVerifyPrompts = [linkPeerB]
-    }
-    try await seedLinks(db, store, [linkRow(linkPeerA, jane), linkRow(linkPeerB, bob)])
+    let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane, bob]))
+    var asking = linkRow(linkPeerB, bob, source: ContactLinkSource.discovered)
+    asking.confirmations = [ContactConfirmation(peerHex: linkPeerA, sessionId: "s1", date: linkT0)]
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane), asking])
+    #expect(store.state.pendingVerifyPrompts == [linkPeerB])
     await pick(store, linkPeerA, bob)
-    await store.send(.replaceLinkConfirmed) {
-        $0.pendingLinkCollision = nil
-        $0.pendingVerifyPrompts = []
-    }
+    await store.send(.replaceLinkConfirmed) { $0.pendingLinkCollision = nil }
     await receiveLinks(store)
-    #expect(store.state.pendingVerifyPrompts.isEmpty)
+    #expect(store.state.pendingVerifyPrompts.isEmpty, "the prompt died with its row")
     await store.finish()
 }
 

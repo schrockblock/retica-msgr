@@ -45,7 +45,7 @@ public enum ContactLinking {
         ContactLink(peerHex: peerHex, contactIdentifier: identifier, cachedName: name, source: source,
                     discoveredViaHex: nil, discoveredSessionId: nil, discoveredAt: nil, confirmationsJSON: "[]",
                     verified: source == ContactLinkSource.manual || source == ContactLinkSource.scanned,
-                    conflictedAt: nil, conflictPeerHex: nil, createdAt: now, updatedAt: now)
+                    promptDismissed: false, conflictedAt: nil, conflictPeerHex: nil, createdAt: now, updatedAt: now)
     }
 
     /// The collision(s) a pick causes, if any: the peer side is checked, then the contact side —
