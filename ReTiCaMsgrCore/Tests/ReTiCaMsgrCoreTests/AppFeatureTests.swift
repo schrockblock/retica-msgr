@@ -6933,13 +6933,13 @@ private func answerUnregister(_ store: TestStoreOf<AppFeature>, hub: Data) async
     await hubReachable(store, hub: defaultHub, via: gaefuID)
     await store.send(.updateNode(userNode(hex: nodeHexA, id: 11))) {
         $0.$nodes.withLock { $0 = NodeRules.enforceOnePushNode([DefaultNode.entry, userNode(hex: nodeHexA, id: 11)], keeping: uuid(11)) }
-        $0.nodeSyncAwaitingUnregister = true
+        $0.pendingUnregister = PendingUnregister(hub: defaultHub, interfaceID: gaefuID)
     }
     await store.receive(.unregisterFromHub(defaultHub))
     await store.receive { if case .node(.client(.endpoint(.openLink(destinationHash: defaultHub)))) = $0 { return true }; return false }
     #expect(store.state.push.hubHex == DefaultNode.pushHubHex, "the re-point waits for the unregister")
     await answerUnregister(store, hub: defaultHub)
-    await store.receive(.pushRegistrationSettled) { $0.nodeSyncAwaitingUnregister = false }
+    await store.receive(.pushRegistrationSettled) { $0.pendingUnregister = nil }
     await store.receive(.push(.hubChanged(host: "node.example", port: 4243)))
     await store.receive(.push(.setHubHex(nodeHexA)))
     await store.skipReceivedActions(strict: false)
@@ -6958,7 +6958,7 @@ private func answerUnregister(_ store: TestStoreOf<AppFeature>, hub: Data) async
     await hubReachable(store, hub: hubA, via: a.interfaceID)
     await store.send(.removeNode(id: uuid(11))) {
         $0.$nodes.withLock { $0 = [disabled(DefaultNode.entry)] }   // A13 gives the built-in its hex back
-        $0.nodeSyncAwaitingUnregister = true
+        $0.pendingUnregister = PendingUnregister(hub: hubA, interfaceID: a.interfaceID)
     }
     await store.receive(.push(.hubChanged(host: "", port: 0)))
     await store.receive(.push(.setEnabled(false)))
@@ -6966,7 +6966,7 @@ private func answerUnregister(_ store: TestStoreOf<AppFeature>, hub: Data) async
     await store.receive { if case .node(.client(.endpoint(.openLink(destinationHash: hubA)))) = $0 { return true }; return false }
     #expect(store.state.node.client.endpoint.tcpClients[id: a.interfaceID] != nil, "the slot stays up for the unregister")
     await answerUnregister(store, hub: hubA)
-    await store.receive(.pushRegistrationSettled) { $0.nodeSyncAwaitingUnregister = false }
+    await store.receive(.pushRegistrationSettled) { $0.pendingUnregister = nil }
     await store.receive { isRemove(a.interfaceID, $0) }
     await store.receive(.push(.setHubHex("")))
     await store.skipReceivedActions(strict: false)
@@ -7007,7 +7007,7 @@ private func answerUnregister(_ store: TestStoreOf<AppFeature>, hub: Data) async
     await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store.skipReceivedActions(strict: false)
     await store.send(.updateNode(userNode(hex: nodeHexA, id: 11)))
-    #expect(store.state.nodeSyncAwaitingUnregister == false)
+    #expect(store.state.pendingUnregister == nil)
     await store.receive(.push(.hubChanged(host: "node.example", port: 4243)))
     await store.receive(.push(.setHubHex(nodeHexA)))
     await store.skipReceivedActions(strict: false)
@@ -7028,13 +7028,13 @@ private func answerUnregister(_ store: TestStoreOf<AppFeature>, hub: Data) async
     await hubReachable(store, hub: defaultHub, via: gaefuID)
     await store.send(.updateNode(userNode(hex: nodeHexA, id: 11))) {
         $0.$nodes.withLock { $0 = NodeRules.enforceOnePushNode([DefaultNode.entry, userNode(hex: nodeHexA, id: 11)], keeping: uuid(11)) }
-        $0.nodeSyncAwaitingUnregister = true
+        $0.pendingUnregister = PendingUnregister(hub: defaultHub, interfaceID: gaefuID)
     }
     await store.receive(.unregisterFromHub(defaultHub))
     await store.skipReceivedActions(strict: false)
     await clock.advance(by: .seconds(20))
     await store.receive(.push(.registrationResponse(.failure(RegistrationFailure("Push hub link failed")))))
-    await store.receive(.pushRegistrationSettled) { $0.nodeSyncAwaitingUnregister = false }
+    await store.receive(.pushRegistrationSettled) { $0.pendingUnregister = nil }
     await store.receive(.push(.hubChanged(host: "node.example", port: 4243)))
     await store.receive(.push(.setHubHex(nodeHexA)))
     await store.skipReceivedActions(strict: false)
@@ -7056,4 +7056,82 @@ private func answerUnregister(_ store: TestStoreOf<AppFeature>, hub: Data) async
     await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
     await store.skipReceivedActions(strict: false)
     #expect(!store.state.pushRegistrationFlow.isActive, "nothing stale resumes when the push node's socket comes up")
+}
+
+/// Review fix: a foreground (or push wake) while the unregister is in flight must not tear down
+/// the slot it runs over — the slot is kept until the attempt settles.
+@MainActor @Test func nodeUnregForegroundDuringTheUnregisterKeepsTheOldSlot() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode(hex: nodeHexA, id: 11)
+    let store = nodeStore(db, nodes: [disabled(withoutHex(DefaultNode.entry)), a]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = nodeHexA }
+    }
+    await connectNodes(store)
+    await hubReachable(store, hub: hubA, via: a.interfaceID)
+    await store.send(.removeNode(id: uuid(11))) {
+        $0.$nodes.withLock { $0 = [disabled(DefaultNode.entry)] }
+        $0.pendingUnregister = PendingUnregister(hub: hubA, interfaceID: a.interfaceID)
+    }
+    await store.receive { if case .node(.client(.endpoint(.openLink(destinationHash: hubA)))) = $0 { return true }; return false }
+    await store.send(.foregrounded)
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.tcpClients[id: a.interfaceID] != nil,
+            "the foreground's sync keeps the slot the unregister runs over")
+    await answerUnregister(store, hub: hubA)
+    await store.receive(.pushRegistrationSettled) { $0.pendingUnregister = nil }
+    await store.receive { isRemove(a.interfaceID, $0) }
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Review fix: a foreground while the unregister is in flight must not re-point push early (its
+/// `setHubHex` would start the new registration and cancel the unregister).
+@MainActor @Test func nodeUnregForegroundDuringTheUnregisterHoldsThePushRepoint() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry, userNode(id: 11)]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+    }
+    await connectNodes(store)
+    await hubReachable(store, hub: defaultHub, via: gaefuID)   // the user node's slot stays down
+    await store.send(.updateNode(userNode(hex: nodeHexA, id: 11))) {
+        $0.$nodes.withLock { $0 = NodeRules.enforceOnePushNode([DefaultNode.entry, userNode(hex: nodeHexA, id: 11)], keeping: uuid(11)) }
+        $0.pendingUnregister = PendingUnregister(hub: defaultHub, interfaceID: gaefuID)
+    }
+    await store.receive { if case .node(.client(.endpoint(.openLink(destinationHash: defaultHub)))) = $0 { return true }; return false }
+    await store.send(.foregrounded)
+    await store.receive { isConnect(userNode(id: 11).interfaceID, $0) }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.push.hubHex == DefaultNode.pushHubHex, "the re-point waits for the unregister")
+    #expect(store.state.pushRegistrationFlow.isActive, "the unregister was not cancelled")
+    await answerUnregister(store, hub: defaultHub)
+    await store.receive(.pushRegistrationSettled) { $0.pendingUnregister = nil }
+    await store.receive(.push(.hubChanged(host: "node.example", port: 4243)))
+    await store.receive(.push(.setHubHex(nodeHexA)))
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Review fix (backlog 3): the first foreground after a real suspension restarts the listener
+/// even if it still reports `.listening` — the system can cancel a listener without the actor
+/// ever hearing `.failed`, and the old per-foreground restart used to heal exactly that.
+@MainActor @Test func nodeFixForegroundAfterBackgroundRestartsTheListener() async {
+    let db = try! AppDatabase.makeInMemory()
+    let listens = LockIsolated(0)
+    let store = countingStore(db, listens: listens) { state in
+        state.$nodes.withLock { $0 = [DefaultNode.entry] }
+        state.$listenEnabled.withLock { $0 = true }
+        state.$listenPort.withLock { $0 = 5151 }
+        state.node.client.endpoint.tcpServer = TCPServerEndpoint.State(port: 5151)
+        state.node.client.endpoint.tcpServer?.interface.status = .listening
+    }
+    await store.send(.backgrounded) { $0.isForeground = false; $0.suspendedSinceForeground = true }
+    await store.skipReceivedActions(strict: false)
+    await store.send(.foregrounded) { $0.isForeground = true; $0.suspendedSinceForeground = false }
+    await store.receive { if case .node(.client(.endpoint(.tcpServer(.start)))) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    #expect(listens.value == 1)
+    // A second foreground with no suspension in between (an interruption) leaves it alone.
+    await store.send(.foregrounded)
+    await store.skipReceivedActions(strict: false)
+    #expect(listens.value == 1)
 }

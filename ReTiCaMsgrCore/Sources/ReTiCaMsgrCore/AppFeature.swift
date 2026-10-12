@@ -26,6 +26,19 @@ public struct PendingPushRegistration: Equatable, Sendable {
     }
 }
 
+/// The hub a node edit moved the push role off, whose `/unregister` is in flight over the socket
+/// of `interfaceID` (backlog 2026-10-11 item 1). While set, every slot sync keeps that slot and
+/// push is not re-pointed; `.pushRegistrationSettled` clears it and applies both.
+public struct PendingUnregister: Equatable, Sendable {
+    public var hub: Data
+    public var interfaceID: InterfaceID
+
+    public init(hub: Data, interfaceID: InterfaceID) {
+        self.hub = hub
+        self.interfaceID = interfaceID
+    }
+}
+
 @Reducer
 public struct AppFeature {
     public enum Connection: Equatable { case disconnected, connecting, connected }
@@ -99,9 +112,13 @@ public struct AppFeature {
         /// A registration the push feature asked for before the hub socket was up. Started from
         /// `interfaceConnected`, after `registerDelivery`, so the announce precedes it.
         public var pendingPushRegistration: PendingPushRegistration? = nil
-        /// A node edit moved the push role off a hub that is still reachable: the slot sync and
-        /// push re-point wait for that hub's `/unregister` to settle (backlog item 1).
-        public var nodeSyncAwaitingUnregister = false
+        /// A node edit moved the push role off a hub that is still reachable: its slot is kept and
+        /// the push re-point waits until that hub's `/unregister` settles (backlog item 1).
+        public var pendingUnregister: PendingUnregister? = nil
+        /// Set by `.backgrounded`, consumed by the next `.foregrounded`: a listener that was alive
+        /// across a suspension may have been cancelled by the system without the actor hearing it,
+        /// so that foreground restarts the listener regardless of its reported status.
+        public var suspendedSinceForeground = false
         /// The TCP nodes the app dials (spec 2026-10-10 §2), persisted as JSON. Empty only before
         /// the first launch's migration; afterwards it always holds the built-in entry.
         @Shared(.fileStorage(AppFeature.nodesFileURL)) public var nodes: [NodeEntry] = []
@@ -675,11 +692,13 @@ public struct AppFeature {
                 // Disappearing messages: the open thread is being looked at again (first view for
                 // rows that arrived while suspended), and rows that fell due meanwhile go now.
                 state.isForeground = true
+                let resumed = state.suspendedSinceForeground
+                state.suspendedSinceForeground = false
                 let expiryCatchUp = viewOpenThreadEffect(state)
-                return .merge(redialDownNodes(&state), .send(.push(.drainInbox)), expiryCatchUp)
+                return .merge(redialDownNodes(&state, restartListener: resumed), .send(.push(.drainInbox)), expiryCatchUp)
 
             case .pushWake:
-                return .merge(redialDownNodes(&state), .send(.push(.drainInbox)))
+                return .merge(redialDownNodes(&state, restartListener: false), .send(.push(.drainInbox)))
 
             case let .pushDeviceToken(token):
                 return .send(.push(.deviceTokenReceived(token)))
@@ -727,6 +746,8 @@ public struct AppFeature {
             case .backgrounded:
                 // Amendment A5: a message arriving into the open thread from now on is not viewed.
                 state.isForeground = false
+                // The next foreground restarts the listener (see `suspendedSinceForeground`).
+                state.suspendedSinceForeground = true
                 // Flush the learned-destination table immediately instead of waiting out the
                 // debounce interval. On iOS, applicationDidEnterBackground gives the app ~5 s
                 // before the process is suspended; the debounce timer cannot run while suspended,
@@ -770,7 +791,7 @@ public struct AppFeature {
                 let sync = syncEndpointNodes(&state)
                 return .merge(
                     .concatenate(sync.removals, .send(.node(.client(.endpoint(.start))))),
-                    pushSyncEffects(state)
+                    heldPushSyncEffects(state)
                 )
 
             case .disconnectTapped:
@@ -1879,8 +1900,8 @@ public struct AppFeature {
             case .pushRegistrationSettled:
                 // The deferred half of a node edit (backlog item 1): the old hub's unregister
                 // settled, so the slots can change and push can be re-pointed.
-                guard state.nodeSyncAwaitingUnregister else { return .none }
-                state.nodeSyncAwaitingUnregister = false
+                guard state.pendingUnregister != nil else { return .none }
+                state.pendingUnregister = nil
                 return nodeChangeEffects(&state)
 
             case let .setDisplayName(name):
@@ -2626,7 +2647,10 @@ private func migrateNodesIfNeeded(_ state: inout AppFeature.State, makeID: () ->
 /// (callers `.concatenate` them before any dial) and the ids of the slots added.
 private func syncEndpointNodes(_ state: inout AppFeature.State) -> (removals: Effect<AppFeature.Action>, added: [InterfaceID]) {
     let wanted = state.enabledNodes
-    let wantedIDs = Set(wanted.map(\.interfaceID))
+    var wantedIDs = Set(wanted.map(\.interfaceID))
+    // The slot an in-flight `/unregister` runs over is kept until it settles (backlog item 1):
+    // a foreground or a second edit meanwhile must not close the socket under it.
+    if let pending = state.pendingUnregister { wantedIDs.insert(pending.interfaceID) }
     let stale = state.node.client.endpoint.tcpClients.ids.filter { !wantedIDs.contains($0) }
     var added: [InterfaceID] = []
     for entry in wanted where state.node.client.endpoint.tcpClients[id: entry.interfaceID] == nil {
@@ -2708,11 +2732,19 @@ private func pushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature.Act
     return .concatenate(effects)
 }
 
+/// `pushSyncEffects`, unless an `/unregister` is in flight: its `setHubHex` would start the new
+/// hub's registration and `.start`-cancel the unregister, so the re-point waits for
+/// `.pushRegistrationSettled` (backlog item 1). Every caller that syncs outside a node edit
+/// (foreground, push wake, Connect) goes through this.
+private func heldPushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature.Action> {
+    state.pendingUnregister == nil ? pushSyncEffects(state) : .none
+}
+
 /// After a node edit: slots removed, then new ones dialed, then push re-pointed, in that order
 /// (`.concatenate`), so a departing slot is never dialed and the receives are deterministic.
 private func nodeChangeEffects(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
-    return .concatenate(sync.removals, connectEffects(sync.added), pushSyncEffects(state))
+    return .concatenate(sync.removals, connectEffects(sync.added), heldPushSyncEffects(state))
 }
 
 /// After a node edit (backlog item 1). When push is on and the edit moved the push role off a hub
@@ -2721,13 +2753,16 @@ private func nodeChangeEffects(_ state: inout AppFeature.State) -> Effect<AppFea
 /// (`.pushRegistrationSettled`): a `setHubHex` would otherwise start the new hub's registration
 /// and `.start`-cancel the unregister, and a removal would close the socket it needs. On a loss
 /// (no push node left) the push feature's own switch-off carries the unregister (A14), with
-/// `hubChanged` first so the extension forgets the host (item 2). Anything else applies at once.
+/// `hubChanged` first so the extension forgets the host (item 2). Anything else applies at once —
+/// with the awaited slot kept and the re-point held if an earlier edit's unregister is still in
+/// flight (`syncEndpointNodes`, `heldPushSyncEffects`); a second qualifying edit replaces it, and
+/// its `.start` cancels the earlier attempt, whose own finish then settles both.
 private func nodeChangeEffects(_ state: inout AppFeature.State, from before: NodeEntry?) -> Effect<AppFeature.Action> {
     if state.push.enabled, let before, let oldHex = before.pushHubHex,
        oldHex != state.pushNode?.pushHubHex,
        let hub = Data(hexString: oldHex), hub.count == 16,
        state.node.client.endpoint.transport.reachableLearned(hub) != nil {
-        state.nodeSyncAwaitingUnregister = true
+        state.pendingUnregister = PendingUnregister(hub: hub, interfaceID: before.interfaceID)
         if state.pushNode == nil {
             return .concatenate(.send(.push(.hubChanged(host: "", port: 0))), .send(.push(.setEnabled(false))))
         }
@@ -2750,16 +2785,20 @@ private func propagationChangeEffects(_ state: AppFeature.State, from before: St
 
 /// The `.foregrounded`/`.pushWake` re-dial (spec §3): iOS tears sockets down while suspended,
 /// so every enabled node whose interface is not connected is dialed again; a live node is left
-/// alone (re-dialling it would tear down its links on every app switch). A STOPPED listener
-/// restarts (backlog item 3: `.listen` is `cancelInFlight`, so re-starting a listening slot drops
-/// every accepted direct connection, and with several nodes "one is down" is the normal state on
-/// foreground); the BLE slot gets `.start` as before, which `BLEInterface` itself ignores unless
-/// it is stopped or terminally unavailable. Both run even when there are NO TCP client slots at
-/// all (every node disabled or the list empty): the old code always had exactly one slot to find
-/// down, so it always reached the listener/BLE restart; `down.isEmpty` alone would now skip it
-/// in that case, so `noClientSlots` keeps the restart reachable. `connection` goes to connecting
-/// only when nothing is up (amendment A10).
-private func redialDownNodes(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
+/// alone (re-dialling it would tear down its links on every app switch). The listener restarts
+/// when it is STOPPED, or on the first foreground after a suspension (`restartListener`): backlog
+/// item 3 — `.listen` is `cancelInFlight`, so re-starting a listening slot drops every accepted
+/// direct connection, and with several nodes "one is down" is the normal state on an
+/// interruption foreground or a push wake; but a listener the system cancelled while the app was
+/// suspended never reports `.failed` (the actor only hears `.ready`/`.failed`), so a real resume
+/// restarts it regardless, as every foreground used to. The BLE slot gets `.start` as before,
+/// which `BLEInterface` itself ignores unless it is stopped or terminally unavailable. Both run
+/// even when there are NO TCP client slots at all (every node disabled or the list empty): the
+/// old code always had exactly one slot to find down, so it always reached the listener/BLE
+/// restart; `down.isEmpty` alone would now skip it in that case, so `noClientSlots` keeps the
+/// restart reachable. `connection` goes to connecting only when nothing is up (amendment A10).
+/// The push re-point is held while an `/unregister` is in flight (`heldPushSyncEffects`).
+private func redialDownNodes(_ state: inout AppFeature.State, restartListener: Bool) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
     let down = state.node.client.endpoint.tcpClients.ids.filter { !state.connectedInterfaces.contains($0) }
     let noClientSlots = state.node.client.endpoint.tcpClients.isEmpty
@@ -2771,13 +2810,14 @@ private func redialDownNodes(_ state: inout AppFeature.State) -> Effect<AppFeatu
         state.connection = .connecting
     }
     var dials: [Effect<AppFeature.Action>] = [connectEffects(down)]
-    if let server = state.node.client.endpoint.tcpServer, server.interface.status != .listening {
+    if let server = state.node.client.endpoint.tcpServer,
+       restartListener || server.interface.status != .listening {
         dials.append(.send(.node(.client(.endpoint(.tcpServer(.start))))))
     }
     if state.node.client.endpoint.ble != nil {
         dials.append(.send(.node(.client(.endpoint(.ble(.start))))))
     }
-    return .concatenate(sync.removals, .merge(dials), pushSyncEffects(state))
+    return .concatenate(sync.removals, .merge(dials), heldPushSyncEffects(state))
 }
 
 // Seed `reachablePeers` (the Send gate, "a send would route now") from learned destinations that
