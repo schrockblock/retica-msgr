@@ -99,6 +99,9 @@ public struct AppFeature {
         /// A registration the push feature asked for before the hub socket was up. Started from
         /// `interfaceConnected`, after `registerDelivery`, so the announce precedes it.
         public var pendingPushRegistration: PendingPushRegistration? = nil
+        /// A node edit moved the push role off a hub that is still reachable: the slot sync and
+        /// push re-point wait for that hub's `/unregister` to settle (backlog item 1).
+        public var nodeSyncAwaitingUnregister = false
         /// The TCP nodes the app dials (spec 2026-10-10 §2), persisted as JSON. Empty only before
         /// the first launch's migration; afterwards it always holds the built-in entry.
         @Shared(.fileStorage(AppFeature.nodesFileURL)) public var nodes: [NodeEntry] = []
@@ -364,6 +367,11 @@ public struct AppFeature {
         case pushDeviceTokenFailed(String)
         /// The 20 s registration timer fired. Internal.
         case pushRegistrationTimedOut
+        /// `/unregister` from `hub` over its (still open) link; the registration reducer runs it
+        /// (backlog 2026-10-11 item 1: a push-node switch leaves the old hub cleanly).
+        case unregisterFromHub(Data)
+        /// The registration flow finished (any result but a superseded attempt's cancellation).
+        case pushRegistrationSettled
         case push(PushFeature.Action)
         case connectTapped
         case disconnectTapped
@@ -1827,8 +1835,9 @@ public struct AppFeature {
                 let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                 let entry = NodeEntry(id: uuid(), name: cleanName.isEmpty ? cleanHost : cleanName,
                                       host: cleanHost, port: port, enabled: true, pushHubHex: hex)
+                let before = state.pushNode
                 state.$nodes.withLock { $0 = NodeRules.enforceOnePushNode($0 + [entry], keeping: entry.id) }
-                return nodeChangeEffects(&state)
+                return nodeChangeEffects(&state, from: before)
 
             case let .updateNode(updated):
                 guard let index = state.nodes.firstIndex(where: { $0.id == updated.id }),
@@ -1842,26 +1851,36 @@ public struct AppFeature {
                 entry.isBuiltIn = false
                 let cleanName = updated.name.trimmingCharacters(in: .whitespacesAndNewlines)
                 entry.name = cleanName.isEmpty ? entry.host : cleanName
+                let before = state.pushNode
                 state.$nodes.withLock { nodes in
                     nodes[index] = entry
                     nodes = NodeRules.enforceOnePushNode(nodes, keeping: entry.id)
                     nodes = NodeRules.restoringDefaultPushHex(nodes)
                 }
-                return nodeChangeEffects(&state)
+                return nodeChangeEffects(&state, from: before)
 
             case let .removeNode(id):
                 guard let entry = state.nodes.first(where: { $0.id == id }), !entry.isBuiltIn else { return .none }
+                let before = state.pushNode
                 state.$nodes.withLock { nodes in
                     nodes.removeAll { $0.id == id }
                     nodes = NodeRules.restoringDefaultPushHex(nodes)
                 }
-                return nodeChangeEffects(&state)
+                return nodeChangeEffects(&state, from: before)
 
             case let .setNodeEnabled(id, enabled):
                 guard let index = state.nodes.firstIndex(where: { $0.id == id }),
                       state.nodes[index].enabled != enabled
                 else { return .none }
+                let before = state.pushNode
                 state.$nodes.withLock { $0[index].enabled = enabled }
+                return nodeChangeEffects(&state, from: before)
+
+            case .pushRegistrationSettled:
+                // The deferred half of a node edit (backlog item 1): the old hub's unregister
+                // settled, so the slots can change and push can be re-pointed.
+                guard state.nodeSyncAwaitingUnregister else { return .none }
+                state.nodeSyncAwaitingUnregister = false
                 return nodeChangeEffects(&state)
 
             case let .setDisplayName(name):
@@ -2114,7 +2133,7 @@ public struct AppFeature {
                 state.inboundTransfers[linkID] = nil
                 return .none
 
-            case .node, .binding, .pushRegistrationTimedOut:
+            case .node, .binding, .pushRegistrationTimedOut, .unregisterFromHub:
                 return .none
             }
         }
@@ -2125,6 +2144,16 @@ public struct AppFeature {
             let event: RegistrationLinkFlow.Event?
             switch action {
             case let .push(.delegate(.sendRegistration(hub, path, data))):
+                if path == RegistrationWire.unregisterPath {
+                    // Never buffered (backlog item 1): a stale unregister resumed on a later
+                    // connect would `.start`-cancel a live registration. Best effort — the hub
+                    // expires registrations on its own — so an unreachable hub settles at once.
+                    guard state.node.client.endpoint.transport.reachableLearned(hub) != nil else {
+                        return .send(.pushRegistrationSettled)
+                    }
+                    event = .start(hub: hub, path: path, data: data, hubKnown: true)
+                    break
+                }
                 // I1: `sendRegistration` fired at launch races the socket — `learned[hub]` can
                 // exist (rehydrated from the previous session) while the interface itself is not
                 // up yet, so `openLink` would fail `.pathStale` at once; an unknown hub would send
@@ -2152,6 +2181,14 @@ public struct AppFeature {
                 event = .requestFailed(linkID: linkID)
             case .pushRegistrationTimedOut:
                 event = .timedOut
+            case let .unregisterFromHub(hub):
+                // A node edit moved the push role off `hub` (backlog item 1). Same rule as the
+                // push feature's own unregister above: run only against a reachable hub.
+                guard state.node.client.endpoint.transport.reachableLearned(hub) != nil else {
+                    return .send(.pushRegistrationSettled)
+                }
+                event = .start(hub: hub, path: RegistrationWire.unregisterPath,
+                               data: RegistrationWire.unregisterRequest(), hubKnown: true)
             default:
                 event = nil
             }
@@ -2188,6 +2225,7 @@ public struct AppFeature {
                     case let .success(data):
                         ordered.append(.cancel(id: CancelID.pushRegistration))
                         ordered.append(.send(.push(.registrationResponse(.success(data)))))
+                        ordered.append(.send(.pushRegistrationSettled))
                     case .failure(.cancelled):
                         // I2: a cancellation is caused by a newer attempt's `.start`, whose own
                         // timer was just armed with `cancellable(id:, cancelInFlight: true)` —
@@ -2195,11 +2233,12 @@ public struct AppFeature {
                         // SAME CancelID and retire the NEW attempt's timer instead (a stray cancel
                         // on an otherwise-idle flow is a no-op, so this is not merely redundant,
                         // it is actively wrong). The newer attempt reports its own result;
-                        // forwarding this one would land on it.
+                        // forwarding this one would land on it — and it settles for both.
                         break
                     case let .failure(failure):
                         ordered.append(.cancel(id: CancelID.pushRegistration))
                         ordered.append(.send(.push(.registrationResponse(.failure(RegistrationFailure(failure))))))
+                        ordered.append(.send(.pushRegistrationSettled))
                     }
                 }
             }
@@ -2644,25 +2683,28 @@ private func connectEffects(_ ids: some Collection<InterfaceID>) -> Effect<AppFe
 /// treats every `setHubHex` as a hub change (it forgets the registration).
 ///
 /// Amendment A14 (final-review F1): when the push node disappears while push is enabled, the
-/// app turns push off itself FIRST — `setEnabled(false)` runs before the hex is cleared so the
-/// push feature's best-effort `/unregister` still has the old hub to address (it may not reach a
-/// removed node; the hub expires registrations on its own, and the APNs unregistration stops
-/// wakes regardless). Switching the push node to a DIFFERENT node (never nil in between) must not
-/// turn push off.
+/// app turns push off itself — before the hex is cleared, so the push feature's best-effort
+/// `/unregister` still has the old hub to address (it may not reach a removed node; the hub
+/// expires registrations on its own, and the APNs unregistration stops wakes regardless), but
+/// AFTER `hubChanged`: the push feature saves the extension's settings on `hubChanged` only while
+/// enabled, so the host must change hands before the switch-off or the extension keeps proving
+/// to the old hub (backlog item 2). Switching the push node to a DIFFERENT node (never nil in
+/// between) must not turn push off.
 private func pushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature.Action> {
     let node = state.pushNode
     let hex = node?.pushHubHex ?? ""
-    var effects: [Effect<AppFeature.Action>] = []
+    var effects: [Effect<AppFeature.Action>] = [
+        .send(.push(.hubChanged(host: node?.host ?? "", port: node?.port ?? 0))),
+    ]
     if node == nil, state.push.enabled {
         effects.append(.send(.push(.setEnabled(false))))
     }
-    effects.append(.send(.push(.hubChanged(host: node?.host ?? "", port: node?.port ?? 0))))
     // Case-insensitive: an uppercase hex persisted by an older build is the same hub (item 8).
     if state.push.hubHex.lowercased() != hex {
         effects.append(.send(.push(.setHubHex(hex))))
     }
     // Concatenated, not merged: the tests (and the push feature's own bookkeeping) rely on
-    // `hubChanged` landing before `setHubHex`, and `setEnabled(false)` landing before both.
+    // `hubChanged` landing first and `setHubHex` landing last.
     return .concatenate(effects)
 }
 
@@ -2671,6 +2713,27 @@ private func pushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature.Act
 private func nodeChangeEffects(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
     return .concatenate(sync.removals, connectEffects(sync.added), pushSyncEffects(state))
+}
+
+/// After a node edit (backlog item 1). When push is on and the edit moved the push role off a hub
+/// that is reachable right now, the app `/unregister`s from that hub FIRST, over its still-open
+/// socket, and holds the slot sync and push re-point until the attempt settles
+/// (`.pushRegistrationSettled`): a `setHubHex` would otherwise start the new hub's registration
+/// and `.start`-cancel the unregister, and a removal would close the socket it needs. On a loss
+/// (no push node left) the push feature's own switch-off carries the unregister (A14), with
+/// `hubChanged` first so the extension forgets the host (item 2). Anything else applies at once.
+private func nodeChangeEffects(_ state: inout AppFeature.State, from before: NodeEntry?) -> Effect<AppFeature.Action> {
+    if state.push.enabled, let before, let oldHex = before.pushHubHex,
+       oldHex != state.pushNode?.pushHubHex,
+       let hub = Data(hexString: oldHex), hub.count == 16,
+       state.node.client.endpoint.transport.reachableLearned(hub) != nil {
+        state.nodeSyncAwaitingUnregister = true
+        if state.pushNode == nil {
+            return .concatenate(.send(.push(.hubChanged(host: "", port: 0))), .send(.push(.setEnabled(false))))
+        }
+        return .send(.unregisterFromHub(hub))
+    }
+    return nodeChangeEffects(&state)
 }
 
 /// Re-points the router when the EFFECTIVE propagation node changed to a valid address. There is

@@ -6668,8 +6668,10 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     await connectNodes(store)
     await store.send(.removeNode(id: uuid(11)))
     await store.receive { isRemove(a.interfaceID, $0) }
-    await store.receive(.push(.setEnabled(false)))
+    // `hubChanged` lands (and is saved) while push is still on, so the extension forgets the
+    // old host (backlog 2); the hex is cleared last so the switch-off's unregister has it.
     await store.receive(.push(.hubChanged(host: "", port: 0)))
+    await store.receive(.push(.setEnabled(false)))
     await store.receive(.push(.setHubHex("")))
     await store.skipReceivedActions(strict: false)
     #expect(store.state.push.enabled == false)
@@ -6886,3 +6888,172 @@ private func countingStore(_ db: any DatabaseWriter, listens: LockIsolated<Int>,
 // No BLE counterpart: `BLEInterface` itself ignores `.start` unless it is stopped or terminally
 // unavailable (BLEInterface.swift `case .start` guard), so a foreground `.ble(.start)` on a
 // running slot is already a no-op — a driver-start count cannot tell the two apart.
+
+// MARK: - Default nodes: unregister from the old hub on a push-node switch (backlog 1, 2)
+
+/// Marks `id` connected and makes `hub` reachable on it, as a hub whose announce was heard over
+/// that socket is. Mirrors PushAppTests (the router's `learned` table is only populated by real actions).
+@MainActor
+private func hubReachable(_ store: TestStoreOf<AppFeature>, hub: Data, via id: InterfaceID) async {
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(id, .tcp))))))
+    await store.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations([
+        hub: LearnedDestination(identity: Identity(), appData: nil, ratchet: nil, interfaceID: id,
+                                hops: 1, nextHop: nil, announceEmitted: 0,
+                                learnedAt: Date(timeIntervalSince1970: 1700000000))
+    ]))))))
+    await store.skipReceivedActions(strict: false)
+}
+
+private let defaultHub = Data(hexString: DefaultNode.pushHubHex)!
+private let hubA = Data(hexString: nodeHexA)!
+private let unregLink = Data(repeating: 0x7E, count: 16)
+
+/// Runs the link half of an unregister attempt the flow just opened: establish, expect identify +
+/// the `/unregister` request, answer it, expect the close and the push feature's (ignored) response.
+@MainActor
+private func answerUnregister(_ store: TestStoreOf<AppFeature>, hub: Data) async {
+    await store.send(.node(.client(.endpoint(.delegate(.linkEstablished(linkID: unregLink, destinationHash: hub))))))
+    await store.receive { if case .node(.client(.endpoint(.identifyOverLink(linkID: unregLink, _)))) = $0 { return true }; return false }
+    await store.receive { if case .node(.client(.endpoint(.sendRequestOverLink(linkID: unregLink, path: "/unregister", _)))) = $0 { return true }; return false }
+    await store.send(.node(.client(.endpoint(.delegate(.responseReceived(linkID: unregLink, requestID: Data(), data: Data([0])))))))
+    await store.receive { if case .node(.client(.endpoint(.closeLink(linkID: unregLink)))) = $0 { return true }; return false }
+    await store.receive(.push(.registrationResponse(.success(Data([0])))))
+}
+
+/// Backlog 1: moving the push role to another node unregisters from the old hub over its still
+/// open socket FIRST; the re-point (and so the new registration) waits for that to settle.
+@MainActor @Test func nodeUnregSwitchingThePushNodeUnregistersFromTheOldHubFirst() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry, userNode(id: 11)]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+        state.push.status = .registered(Date(timeIntervalSince1970: 1700000000))
+    }
+    await connectNodes(store)
+    await hubReachable(store, hub: defaultHub, via: gaefuID)
+    await store.send(.updateNode(userNode(hex: nodeHexA, id: 11))) {
+        $0.$nodes.withLock { $0 = NodeRules.enforceOnePushNode([DefaultNode.entry, userNode(hex: nodeHexA, id: 11)], keeping: uuid(11)) }
+        $0.nodeSyncAwaitingUnregister = true
+    }
+    await store.receive(.unregisterFromHub(defaultHub))
+    await store.receive { if case .node(.client(.endpoint(.openLink(destinationHash: defaultHub)))) = $0 { return true }; return false }
+    #expect(store.state.push.hubHex == DefaultNode.pushHubHex, "the re-point waits for the unregister")
+    await answerUnregister(store, hub: defaultHub)
+    await store.receive(.pushRegistrationSettled) { $0.nodeSyncAwaitingUnregister = false }
+    await store.receive(.push(.hubChanged(host: "node.example", port: 4243)))
+    await store.receive(.push(.setHubHex(nodeHexA)))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.push.enabled == true)
+}
+
+/// Backlog 1 (loss): removing the push node unregisters before its slot is torn down.
+@MainActor @Test func nodeUnregLosingThePushNodeUnregistersBeforeRemovingItsSlot() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode(hex: nodeHexA, id: 11)
+    let store = nodeStore(db, nodes: [disabled(withoutHex(DefaultNode.entry)), a]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = nodeHexA }
+    }
+    await connectNodes(store)
+    await hubReachable(store, hub: hubA, via: a.interfaceID)
+    await store.send(.removeNode(id: uuid(11))) {
+        $0.$nodes.withLock { $0 = [disabled(DefaultNode.entry)] }   // A13 gives the built-in its hex back
+        $0.nodeSyncAwaitingUnregister = true
+    }
+    await store.receive(.push(.hubChanged(host: "", port: 0)))
+    await store.receive(.push(.setEnabled(false)))
+    await store.receive { if case .push(.delegate(.sendRegistration(hub: hubA, path: "/unregister", _))) = $0 { return true }; return false }
+    await store.receive { if case .node(.client(.endpoint(.openLink(destinationHash: hubA)))) = $0 { return true }; return false }
+    #expect(store.state.node.client.endpoint.tcpClients[id: a.interfaceID] != nil, "the slot stays up for the unregister")
+    await answerUnregister(store, hub: hubA)
+    await store.receive(.pushRegistrationSettled) { $0.nodeSyncAwaitingUnregister = false }
+    await store.receive { isRemove(a.interfaceID, $0) }
+    await store.receive(.push(.setHubHex("")))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.push.enabled == false)
+}
+
+/// Backlog 2: after the automatic switch-off the extension's saved settings no longer name the
+/// old hub (`hubChanged` lands, and is saved, while push is still enabled).
+@MainActor @Test func nodeUnregExtensionSettingsLoseTheOldHubOnSwitchOff() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode(hex: nodeHexA, id: 11)
+    let store = nodeStore(db, nodes: [disabled(withoutHex(DefaultNode.entry)), a]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = nodeHexA }
+    }
+    await connectNodes(store)                         // pushSync → hubChanged("node.example") saved
+    await store.finish()
+    #expect(store.state.push.storage.settings.load().hubHost == "node.example")
+    await store.send(.removeNode(id: uuid(11)))       // hub not reachable: no unregister, no deferral
+    await store.receive(.push(.hubChanged(host: "", port: 0)))
+    await store.receive(.push(.setEnabled(false)))
+    await store.receive(.push(.setHubHex("")))
+    await store.skipReceivedActions(strict: false)
+    await store.finish()
+    #expect(store.state.push.storage.settings.load().hubHost == "")
+    #expect(store.state.push.storage.settings.load().hubPort == 0)
+}
+
+/// An old hub that is not reachable (its socket is up but no announce was ever heard) gets no
+/// unregister and no deferral: the edit applies at once.
+@MainActor @Test func nodeUnregUnreachableOldHubSkipsTheUnregister() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry, userNode(id: 11)]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+    }
+    await connectNodes(store)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
+    await store.skipReceivedActions(strict: false)
+    await store.send(.updateNode(userNode(hex: nodeHexA, id: 11)))
+    #expect(store.state.nodeSyncAwaitingUnregister == false)
+    await store.receive(.push(.hubChanged(host: "node.example", port: 4243)))
+    await store.receive(.push(.setHubHex(nodeHexA)))
+    await store.skipReceivedActions(strict: false)
+    #expect(!store.state.pushRegistrationFlow.isActive)
+}
+
+/// An unregister whose link never establishes (the link plane's 15 s deadline passes) fails, and
+/// the deferred edit still applies.
+@MainActor @Test func nodeUnregFailedUnregisterStillSyncsTheNodes() async {
+    let db = try! AppDatabase.makeInMemory()
+    let clock = TestClock()
+    let store = makeStore(db, identity: Identity(), clock: clock) { state in
+        state.$nodes.withLock { $0 = [DefaultNode.entry, userNode(id: 11)] }
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+    }
+    await connectNodes(store)
+    await hubReachable(store, hub: defaultHub, via: gaefuID)
+    await store.send(.updateNode(userNode(hex: nodeHexA, id: 11))) {
+        $0.$nodes.withLock { $0 = NodeRules.enforceOnePushNode([DefaultNode.entry, userNode(hex: nodeHexA, id: 11)], keeping: uuid(11)) }
+        $0.nodeSyncAwaitingUnregister = true
+    }
+    await store.receive(.unregisterFromHub(defaultHub))
+    await store.skipReceivedActions(strict: false)
+    await clock.advance(by: .seconds(20))
+    await store.receive(.push(.registrationResponse(.failure(RegistrationFailure("Push hub link failed")))))
+    await store.receive(.pushRegistrationSettled) { $0.nodeSyncAwaitingUnregister = false }
+    await store.receive(.push(.hubChanged(host: "node.example", port: 4243)))
+    await store.receive(.push(.setHubHex(nodeHexA)))
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Backlog 1 (second half): an `/unregister` is never buffered, so it can never be resumed later
+/// and `.start`-cancel a live registration.
+@MainActor @Test func nodeUnregStaleUnregisterIsNeverBuffered() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }
+    }
+    await store.send(.push(.setEnabled(false)))
+    await store.receive { if case .push(.delegate(.sendRegistration(hub: defaultHub, path: "/unregister", _))) = $0 { return true }; return false }
+    #expect(store.state.pendingPushRegistration == nil, "an unregister with no reachable hub is dropped, not buffered")
+    await store.receive(.pushRegistrationSettled)
+    await store.skipReceivedActions(strict: false)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
+    await store.skipReceivedActions(strict: false)
+    #expect(!store.state.pushRegistrationFlow.isActive, "nothing stale resumes when the push node's socket comes up")
+}
