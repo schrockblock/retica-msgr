@@ -6734,3 +6734,31 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }
     await store.skipReceivedActions(strict: false)
 }
+
+// MARK: - Default nodes: follow-ups (backlog 2026-10-11)
+
+/// Backlog 5: `Gaefu.ddns.net` typed by hand is the default node; one hub, one socket.
+@MainActor @Test func nodeFixAddNodeRefusesADuplicateHost() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry])
+    store.exhaustivity = .on
+    await store.send(.addNode(name: "Mine", host: "GAEFU.ddns.net", port: 4242, pushHubHex: nil))
+    #expect(store.state.nodes.count == 1)
+}
+
+@MainActor @Test func nodeFixUpdateNodeRefusesADuplicateHostButAllowsItsOwn() async {
+    let db = try! AppDatabase.makeInMemory()
+    let a = userNode(id: 11)
+    let store = nodeStore(db, nodes: [DefaultNode.entry, a])
+    store.exhaustivity = .on
+    var clash = a
+    clash.host = "Gaefu.ddns.net"
+    clash.port = 4242
+    await store.send(.updateNode(clash))
+    #expect(store.state.nodes[1].host == "node.example")
+    store.exhaustivity = .off
+    var renamed = a
+    renamed.name = "Renamed"
+    await store.send(.updateNode(renamed)) { $0.$nodes.withLock { $0[1].name = "Renamed" } }
+    await store.skipReceivedActions(strict: false)
+}

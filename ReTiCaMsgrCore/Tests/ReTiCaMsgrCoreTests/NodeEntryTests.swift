@@ -150,3 +150,38 @@ private func migrate(_ host: String, _ port: Int, _ hex: String) -> [NodeEntry] 
     #expect(entries[0].pushHubHex == defaultHex)
     #expect(entries[1].pushHubHex == nil)
 }
+
+// MARK: - Follow-ups (backlog 2026-10-11, items 4, 5, 15)
+
+@Test func nodeFixPushHexRejectsNonASCIIHexDigits() {
+    let fullwidth = "\u{FF41}" + String(hexA.dropFirst())   // "ａ" + 31 ASCII hex digits, count == 32
+    #expect(fullwidth.count == 32)
+    #expect(NodeRules.isValidPushHex(fullwidth) == false)
+    #expect(NodeRules.isValidPushHex(hexA) == true)
+}
+
+@Test func nodeFixNormalizedLowercasesTheHost() {
+    #expect(NodeRules.normalized(host: " Gaefu.DDNS.net ", pushHubHex: nil).host == "gaefu.ddns.net")
+}
+
+@Test func nodeFixValidationRejectsADuplicateHostPortCaseInsensitively() {
+    let existing = [DefaultNode.entry]
+    #expect(NodeRules.validationError(host: "GAEFU.ddns.net", port: 4242, pushHubHex: nil, among: existing) == .duplicateHostPort)
+    #expect(NodeRules.validationError(host: "gaefu.ddns.net", port: 4243, pushHubHex: nil, among: existing) == nil)
+    #expect(NodeRules.validationError(host: "gaefu.ddns.net", port: 4242, pushHubHex: nil,
+                                      among: existing, excluding: DefaultNode.id) == nil, "editing an entry never collides with itself")
+}
+
+@Test func nodeFixEntryDecodesWithMissingOptionalKeys() throws {
+    let json = Data(#"{"id":"00000000-0000-0000-0000-000000000001","host":"h.example","port":4242}"#.utf8)
+    let entry = try JSONDecoder().decode(NodeEntry.self, from: json)
+    #expect(entry.name == "h.example")
+    #expect(entry.enabled == true)
+    #expect(entry.isBuiltIn == false)
+    #expect(entry.pushHubHex == nil)
+}
+
+@Test func nodeFixEntryDecodeStillRequiresAHost() {
+    let json = Data(#"{"id":"00000000-0000-0000-0000-000000000001","port":4242}"#.utf8)
+    #expect(throws: (any Error).self) { try JSONDecoder().decode(NodeEntry.self, from: json) }
+}

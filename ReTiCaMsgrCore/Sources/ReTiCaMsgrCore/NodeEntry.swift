@@ -29,12 +29,31 @@ public struct NodeEntry: Codable, Identifiable, Equatable, Sendable {
     public var interfaceID: InterfaceID { InterfaceID("tcp:\(host):\(port)") }
 
     public var hostPort: String { "\(host):\(port)" }
+
+    private enum CodingKeys: String, CodingKey { case id, name, host, port, enabled, isBuiltIn, pushHubHex }
+
+    /// Tolerant: a key added in a later schema (or dropped by an older build) must never make
+    /// the whole list decode to `[]` and re-migrate (backlog item 4). `id`, `host`, `port` stay
+    /// required. Encoding stays synthesized.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let host = try c.decode(String.self, forKey: .host)
+        self.init(id: try c.decode(UUID.self, forKey: .id),
+                  name: try c.decodeIfPresent(String.self, forKey: .name) ?? host,
+                  host: host,
+                  port: try c.decode(Int.self, forKey: .port),
+                  enabled: try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
+                  isBuiltIn: try c.decodeIfPresent(Bool.self, forKey: .isBuiltIn) ?? false,
+                  pushHubHex: try c.decodeIfPresent(String.self, forKey: .pushHubHex))
+    }
 }
 
 public enum NodeValidationError: Equatable, Sendable {
     case emptyHost
     case portOutOfRange
     case invalidPushHex
+    /// Another entry already dials this host:port (hosts compared case-insensitively).
+    case duplicateHostPort
 }
 
 /// The node-list rules of spec §2 "Rules", as pure functions so the reducer and the form agree.
@@ -42,23 +61,31 @@ public enum NodeRules {
     public static let portRange = 1...65535
     public static let pushHexLength = 32
 
-    /// Trimmed host; trimmed, lowercased hex, nil when blank.
+    /// Trimmed, LOWERCASED host (hostnames are case-insensitive, and one hub must map to one
+    /// socket — backlog item 5); trimmed, lowercased hex, nil when blank.
     public static func normalized(host: String, pushHubHex: String?) -> (host: String, pushHubHex: String?) {
-        let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let host = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let hex = pushHubHex?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         return (host, hex.isEmpty ? nil : hex)
     }
 
+    /// ASCII only: `Character.isHexDigit` also accepts fullwidth digits (backlog item 15).
     public static func isValidPushHex(_ hex: String) -> Bool {
-        hex.count == pushHexLength && hex.allSatisfy(\.isHexDigit)
+        hex.count == pushHexLength && hex.allSatisfy { $0.isASCII && $0.isHexDigit }
     }
 
-    /// The first failing rule, or nil when the (normalized) node is valid.
-    public static func validationError(host: String, port: Int, pushHubHex: String?) -> NodeValidationError? {
+    /// The first failing rule, or nil when the (normalized) node is valid. `among` is the current
+    /// list and `excluding` the entry being edited (nil when adding): no two entries may dial the
+    /// same host:port.
+    public static func validationError(host: String, port: Int, pushHubHex: String?,
+                                       among entries: [NodeEntry] = [], excluding id: UUID? = nil) -> NodeValidationError? {
         let (host, hex) = normalized(host: host, pushHubHex: pushHubHex)
         if host.isEmpty { return .emptyHost }
         if !portRange.contains(port) { return .portOutOfRange }
         if let hex, !isValidPushHex(hex) { return .invalidPushHex }
+        if entries.contains(where: { $0.id != id && $0.host.lowercased() == host && $0.port == port }) {
+            return .duplicateHostPort
+        }
         return nil
     }
 

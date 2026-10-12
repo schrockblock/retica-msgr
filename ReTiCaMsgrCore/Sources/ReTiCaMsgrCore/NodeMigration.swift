@@ -19,18 +19,18 @@ public enum NodeMigration {
 
         // Step 2: a custom host becomes a user entry named after the host.
         let hasCustomHost = targetIsUsable && !targetIsDefault && !targetIsLoopback
-        if hasCustomHost {
-            entries.append(NodeEntry(id: makeID(), name: host, host: host, port: legacyPort, enabled: true))
-        }
-
         // Step 3: a custom, valid hex is attached to exactly one entry.
-        guard let hex, NodeRules.isValidPushHex(hex),
-              hex != defaultEntry.pushHubHex?.lowercased()
-        else { return entries }
+        let customHex: String? = {
+            guard let hex, NodeRules.isValidPushHex(hex), hex != defaultEntry.pushHubHex?.lowercased() else { return nil }
+            return hex
+        }()
         if hasCustomHost {
-            entries[1].pushHubHex = hex
-            return NodeRules.enforceOnePushNode(entries, keeping: entries[1].id)
+            var custom = NodeEntry(id: makeID(), name: host, host: host, port: legacyPort, enabled: true)
+            custom.pushHubHex = customHex
+            entries.append(custom)
+            return customHex == nil ? entries : NodeRules.enforceOnePushNode(entries, keeping: custom.id)
         }
+        guard let hex = customHex else { return entries }
         if targetIsDefault {
             // The user's hub is the default node itself: their hex replaces the shipped one.
             entries[0].pushHubHex = hex

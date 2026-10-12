@@ -1807,7 +1807,8 @@ public struct AppFeature {
                 return propagationChangeEffects(state, from: before)
 
             case let .addNode(name, host, port, pushHubHex):
-                guard NodeRules.validationError(host: host, port: port, pushHubHex: pushHubHex) == nil else {
+                guard NodeRules.validationError(host: host, port: port, pushHubHex: pushHubHex,
+                                                among: state.nodes) == nil else {
                     return .none
                 }
                 let (cleanHost, hex) = NodeRules.normalized(host: host, pushHubHex: pushHubHex)
@@ -1821,7 +1822,8 @@ public struct AppFeature {
                 guard let index = state.nodes.firstIndex(where: { $0.id == updated.id }),
                       !state.nodes[index].isBuiltIn,
                       NodeRules.validationError(host: updated.host, port: updated.port,
-                                                pushHubHex: updated.pushHubHex) == nil
+                                                pushHubHex: updated.pushHubHex,
+                                                among: state.nodes, excluding: updated.id) == nil
                 else { return .none }
                 var entry = updated
                 (entry.host, entry.pushHubHex) = NodeRules.normalized(host: updated.host, pushHubHex: updated.pushHubHex)

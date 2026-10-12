@@ -22,9 +22,12 @@ struct NodeFormView: View {
 
     private var port: Int { Int(portText.trimmingCharacters(in: .whitespaces)) ?? 0 }
 
-    private var isValid: Bool {
-        NodeRules.validationError(host: host, port: port, pushHubHex: pushHex) == nil
+    private var validationError: NodeValidationError? {
+        NodeRules.validationError(host: host, port: port, pushHubHex: pushHex,
+                                  among: store.nodes, excluding: existing?.id)
     }
+
+    private var isValid: Bool { validationError == nil }
 
     /// True when saving would move the push role off another node.
     private var replacesPushNode: NodeEntry? {
@@ -45,6 +48,11 @@ struct NodeFormView: View {
                         .keyboardType(.URL)
                     TextField("Port", text: $portText)
                         .keyboardType(.numberPad)
+                    if validationError == .duplicateHostPort {
+                        Text("A node with this host and port already exists.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
                 Section("Push") {
                     TextField("Push hub destination (32 hex)", text: $pushHex)
