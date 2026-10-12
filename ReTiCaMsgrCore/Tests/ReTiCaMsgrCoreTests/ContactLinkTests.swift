@@ -124,6 +124,7 @@ private func rows(_ db: any DatabaseWriter) throws -> [ContactLink] {
     store.exhaustivity = .on
     await store.send(.linkContactTapped(peerHex: linkPeerB, source: ContactLinkSource.manual)) {
         $0.contactsAuthorization = .denied
+        $0.showingContactsDenied = true   // the root alert explains (backlog item 2)
     }
     #expect(store.state.linkPickerTarget == nil)
     #expect(store.state.peerDisplayName(linkPeerA) == "Jane Doe", "names keep working from the cached name")
@@ -432,7 +433,10 @@ private func mirrorStore(_ db: any DatabaseWriter, fake: FakeContacts, on: Bool 
     let store = mirrorStore(db, fake: fake)
     try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
     store.exhaustivity = .on
-    await store.send(.setContactMirror(false)) { $0.$contactMirrorEnabled.withLock { $0 = false } }
+    await store.send(.setContactMirror(false)) {
+        $0.$contactMirrorEnabled.withLock { $0 = false }
+        $0.contactsAuthorization = .full   // the toggle refreshes access either way (backlog item 5)
+    }
     #expect(fake.writes.isEmpty)
     #expect(fake.clears.isEmpty, "cards already written stay as they are")
 }
@@ -554,6 +558,76 @@ private func mirrorStore(_ db: any DatabaseWriter, fake: FakeContacts, on: Bool 
     try await seedLinks(db, store, [blankNamed])
     #expect(store.state.contactName(linkPeerA) == nil)
     #expect(store.state.peerDisplayName(linkPeerA) == "jane_on_the_mesh")
+}
+
+// MARK: - Follow-ups (backlog 2026-10-11)
+
+/// Backlog 7: a conflict report is applied only if the row STILL names the reported contact at
+/// write time (a Replace can land between the state check and the write).
+@MainActor @Test func linkFixConflictIgnoresARowThatChangedUnderneath() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane, bob]))
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
+    // The table moved on without the reducer hearing about it yet.
+    try await db.write { try ContactLink.insertReplacing(linkRow(linkPeerA, bob), $0) }
+    await store.send(.conflictReported(peerHex: linkPeerA, contactIdentifier: "CN-1", otherPeerHex: linkPeerB, at: linkT0))
+    await receiveLinks(store)
+    #expect(store.state.contactLinks[linkPeerA]?.contactIdentifier == "CN-2")
+    #expect(store.state.contactLinks[linkPeerA]?.conflictedAt == nil, "the report was about Jane's row, which is gone")
+    await store.finish()
+}
+
+/// Backlog 2: a denied tap raises the explanation, from any entry point.
+@MainActor @Test func linkFixDeniedTapShowsThePrompt() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(authorization: .denied))
+    store.exhaustivity = .on
+    await store.send(.linkContactTapped(peerHex: linkPeerA, source: ContactLinkSource.scanned)) {
+        $0.contactsAuthorization = .denied
+        $0.showingContactsDenied = true
+    }
+    await store.send(.dismissContactsDenied) { $0.showingContactsDenied = false }
+}
+
+@MainActor @Test func linkFixDeniedOnFirstRequestShowsThePrompt() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(authorization: .notDetermined, grantOnRequest: .denied))
+    await store.send(.linkContactTapped(peerHex: linkPeerA, source: ContactLinkSource.manual)) {
+        $0.contactsAuthorization = .notDetermined
+    }
+    await store.receive(.contactsAccessResolved(.denied, peerHex: linkPeerA, source: ContactLinkSource.manual)) {
+        $0.contactsAuthorization = .denied
+        $0.showingContactsDenied = true
+    }
+    await store.finish()
+}
+
+/// Backlog 5: turning the mirror on refreshes what Contacts reports, so Settings can explain
+/// why nothing is written.
+@MainActor @Test func linkFixMirrorToggleRefreshesAuthorization() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(authorization: .denied))
+    store.exhaustivity = .on
+    await store.send(.setContactMirror(true)) {
+        $0.$contactMirrorEnabled.withLock { $0 = true }
+        $0.contactsAuthorization = .denied
+    }
+}
+
+/// Backlog 11: the `.notDetermined` branch of the mirror toggle asks once and then applies.
+@MainActor @Test func linkFixMirrorToggleAsksForAccessThenWrites() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(authorization: .notDetermined, grantOnRequest: .full, contacts: [jane])
+    let store = makeLinkStore(db, fake: fake)
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
+    await store.send(.setContactMirror(true)) {
+        $0.$contactMirrorEnabled.withLock { $0 = true }
+        $0.contactsAuthorization = .notDetermined
+    }
+    await store.receive(.setContactMirror(true)) { $0.contactsAuthorization = .full }
+    await store.skipReceivedActions(strict: false)
+    await store.finish()
+    #expect(fake.writes == [FakeContacts.Write(identifier: "CN-1", peerHex: linkPeerA)])
 }
 
 @MainActor @Test func linkFinalImportLowercasesAddresses() async throws {

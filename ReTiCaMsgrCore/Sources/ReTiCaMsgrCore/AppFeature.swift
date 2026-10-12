@@ -245,6 +245,9 @@ public struct AppFeature {
         public var linkPickerTarget: LinkPickerTarget? = nil
         /// A pick that collides with an existing link, awaiting Replace or Cancel.
         public var pendingLinkCollision: LinkCollision? = nil
+        /// A link was asked for with Contacts access denied: the root alert explains it and
+        /// offers Settings, whichever entry point the tap came from (backlog 2026-10-11 item 2).
+        public var showingContactsDenied = false
         /// Peers whose row asks for verification (spec §3 "Confirmation prompt"): derived from the
         /// rows, never stored, so a prompt — and a "Not now" — survives a relaunch.
         public var pendingVerifyPrompts: Set<String> {
@@ -437,6 +440,7 @@ public struct AppFeature {
         case linkContactTapped(peerHex: String, source: String)
         case contactsAccessResolved(ContactsAuthorization, peerHex: String, source: String)
         case linkPickerDismissed
+        case dismissContactsDenied
         case contactPicked(peerHex: String, identifier: String, name: String, source: String)
         case replaceLinkConfirmed
         case cancelLinkCollision
@@ -2172,6 +2176,7 @@ public struct AppFeature {
                     state.linkPickerTarget = LinkPickerTarget(peerHex: peerHex, source: source)
                     return .none
                 case .denied:
+                    state.showingContactsDenied = true
                     return .none
                 case .notDetermined:
                     return .run { [contactsClient] send in
@@ -2182,9 +2187,18 @@ public struct AppFeature {
 
             case let .contactsAccessResolved(status, peerHex, source):
                 state.contactsAuthorization = status
-                if status == .full || status == .limited {
+                switch status {
+                case .full, .limited:
                     state.linkPickerTarget = LinkPickerTarget(peerHex: peerHex, source: source)
+                case .denied:
+                    state.showingContactsDenied = true
+                case .notDetermined:
+                    break
                 }
+                return .none
+
+            case .dismissContactsDenied:
+                state.showingContactsDenied = false
                 return .none
 
             case .linkPickerDismissed:
@@ -2243,7 +2257,9 @@ public struct AppFeature {
                 guard let link = state.contactLinks[peerHex], link.contactIdentifier == contactIdentifier else {
                     return .none
                 }
-                return updateContactLink(database, peerHex: peerHex, now: date.now) {
+                // Re-checked inside the write too: a Replace can land between this guard and the
+                // write once the exchange reports from the background (backlog 2026-10-11 item 7).
+                return updateContactLink(database, peerHex: peerHex, now: date.now, expectingContact: contactIdentifier) {
                     $0.conflictedAt = at
                     $0.conflictPeerHex = otherPeerHex
                 }
@@ -2267,7 +2283,10 @@ public struct AppFeature {
 
             case let .setContactMirror(on):
                 state.$contactMirrorEnabled.withLock { $0 = on }
-                if on, contactsClient.authorizationStatus() == .notDetermined {
+                // Refresh what Contacts reports so Settings can say why nothing is written when
+                // the toggle is on with denied or limited access (backlog 2026-10-11 item 5).
+                state.contactsAuthorization = contactsClient.authorizationStatus()
+                if on, state.contactsAuthorization == .notDetermined {
                     return .run { [contactsClient] send in
                         _ = await contactsClient.requestAccess()
                         await send(.setContactMirror(true))
@@ -2275,7 +2294,7 @@ public struct AppFeature {
                 }
                 // Turning on writes every existing link once and scans for imports; turning off
                 // leaves the cards as they are (clearing other people's data is a deliberate act).
-                guard on, contactsClient.authorizationStatus() == .full else { return .none }
+                guard on, state.contactsAuthorization == .full else { return .none }
                 let links = Array(state.contactLinks.values)
                 let known = state.contactLinks
                 return .run { [contactsClient] send in
@@ -3156,12 +3175,16 @@ private func unlinkEffects(_ state: AppFeature.State, link: ContactLink,
     }
 }
 
-/// Applies `mutate` to one row (stamping `updatedAt`), then reloads. A missing row is a no-op.
+/// Applies `mutate` to one row (stamping `updatedAt`), then reloads. A missing row is a no-op,
+/// and so is a row that no longer names `expectingContact` when one is given.
 private func updateContactLink(_ database: any DatabaseWriter, peerHex: String, now: Date,
+                               expectingContact: String? = nil,
                                _ mutate: @escaping @Sendable (inout ContactLink) -> Void) -> Effect<AppFeature.Action> {
     .run { send in
         try await database.write { db in
-            guard var row = try ContactLink.fetch(peerHex: peerHex, db) else { return }
+            guard var row = try ContactLink.fetch(peerHex: peerHex, db),
+                  expectingContact == nil || row.contactIdentifier == expectingContact
+            else { return }
             mutate(&row)
             row.updatedAt = now
             try ContactLink.delete(peerHex: peerHex, db)

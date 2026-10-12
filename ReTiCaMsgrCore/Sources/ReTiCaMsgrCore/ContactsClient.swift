@@ -10,6 +10,13 @@ public enum ContactsAuthorization: Equatable, Sendable {
     case notDetermined, full, limited, denied
 }
 
+/// The live client's own failures (the framework's `CNError`s pass through as they are).
+public enum ContactsClientError: Error, Equatable, Sendable {
+    /// `CNContact.mutableCopy()` did not yield a `CNMutableContact`; cannot happen with a
+    /// store-fetched contact, but a card write must fail loudly rather than silently do nothing.
+    case contactNotMutable(String)
+}
+
 public struct ContactSummary: Equatable, Sendable {
     public var identifier: String
     public var name: String
@@ -184,7 +191,7 @@ extension ContactsClient: DependencyKey {
             },
             writeAddress: { id, hex in
                 let c = try box.store.unifiedContact(withIdentifier: id, keysToFetch: [CNContactUrlAddressesKey as CNKeyDescriptor])
-                guard let m = c.mutableCopy() as? CNMutableContact else { return }
+                guard let m = c.mutableCopy() as? CNMutableContact else { throw ContactsClientError.contactNotMutable(id) }
                 m.urlAddresses = m.urlAddresses.filter { !($0.value as String).hasPrefix(ContactsClient.urlScheme) }
                     + [CNLabeledValue(label: ContactsClient.urlLabel, value: (ContactsClient.urlScheme + hex) as NSString)]
                 let request = CNSaveRequest()
@@ -193,7 +200,7 @@ extension ContactsClient: DependencyKey {
             },
             clearAddress: { id in
                 let c = try box.store.unifiedContact(withIdentifier: id, keysToFetch: [CNContactUrlAddressesKey as CNKeyDescriptor])
-                guard let m = c.mutableCopy() as? CNMutableContact else { return }
+                guard let m = c.mutableCopy() as? CNMutableContact else { throw ContactsClientError.contactNotMutable(id) }
                 m.urlAddresses = m.urlAddresses.filter { !($0.value as String).hasPrefix(ContactsClient.urlScheme) }
                 let request = CNSaveRequest()
                 request.update(m)
