@@ -256,6 +256,32 @@ public struct AppFeature {
         /// inject.
         @Shared(.appStorage("bleEnabled")) public var bleEnabled: Bool = false
 
+        /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
+        /// link write. The one source for "what do we call this peer" when a link exists.
+        public var contactLinks: [String: ContactLink] = [:]
+        /// What Contacts last reported. Session-only; drives the denied explanation.
+        public var contactsAuthorization: ContactsAuthorization = .notDetermined
+        /// Non-nil while the system contact picker should be up (presented at the root).
+        public var linkPickerTarget: LinkPickerTarget? = nil
+        /// A pick that collides with an existing link, awaiting Replace or Cancel.
+        public var pendingLinkCollision: LinkCollision? = nil
+        /// A link was asked for with Contacts access denied: the root alert explains it and
+        /// offers Settings, whichever entry point the tap came from (backlog 2026-10-11 item 2).
+        public var showingContactsDenied = false
+        /// Peers whose row asks for verification (spec §3 "Confirmation prompt"): derived from the
+        /// rows, never stored, so a prompt — and a "Not now" — survives a relaunch.
+        public var pendingVerifyPrompts: Set<String> {
+            Set(contactLinks.values.filter(\.needsVerifyPrompt).map(\.peerHex))
+        }
+        /// Spec §3 "Contact-card mirror": write `reticulum:<peerHex>` into linked cards (full
+        /// access only) and import such URLs found on cards.
+        @Shared(.appStorage("contactMirrorEnabled")) public var contactMirrorEnabled: Bool = false
+        /// `reticulum:` URLs found on cards and not yet linked, offered for import.
+        public var importCandidates: [ImportCandidate] = []
+        /// What Contacts reports for each linked card, keyed by `contactIdentifier` so a changed
+        /// link never shows the previous contact's photo (backlog 2026-10-11 items 6, 10).
+        public var contactCards: [String: ContactCard] = [:]
+
         public init(identity: Identity,
                     pushStorage: PushStorage = .temporary(),
                     bundleID: String = Bundle.main.bundleIdentifier ?? "",
@@ -316,16 +342,31 @@ public struct AppFeature {
             threadReactions = ReactionSummary.byMessage(rows, me: myAddressHex)
         }
 
-        /// The open peer's display name from its LXMF delivery announce (`learnedPeers`, the table
-        /// the Announces list shows), trimmed. nil when no conversation is open, no announce was
-        /// heard, or the name is blank, so labels fall back to "Them" rather than "".
+        /// The open peer's display name (spec 2026-10-11 §4): the linked contact's name wins,
+        /// else the display name from its LXMF delivery announce (`learnedPeers`, the table the
+        /// Announces list shows), trimmed. nil when no conversation is open, there is no link and
+        /// no announce was heard, or the name is blank, so labels fall back to "Them" rather than "".
         public var openPeerDisplayName: String? {
             openPeerHex.flatMap(peerDisplayName)
         }
 
-        /// `peerHex`'s display name from its LXMF delivery announce (`learnedPeers`), trimmed; nil
-        /// when no announce was heard or the name is blank, so labels fall back to "Them".
+        /// What we call `hex`: the linked contact's name when a link exists (spec 2026-10-11 §4),
+        /// else the display name from its LXMF delivery announce, trimmed; nil when neither, so
+        /// labels fall back to "Them".
         public func peerDisplayName(_ hex: String) -> String? {
+            contactName(hex) ?? peerAnnounceName(hex)
+        }
+
+        /// The linked contact's cached name, or nil when the peer is not linked or the cached
+        /// name is empty (an unnamed card must not blank out a title that already has one).
+        public func contactName(_ hex: String) -> String? {
+            guard let name = contactLinks[hex]?.cachedName, !name.isEmpty else { return nil }
+            return name
+        }
+
+        /// The display name from `hex`'s LXMF delivery announce only (`learnedPeers`), trimmed;
+        /// nil when no announce was heard or the name is blank.
+        public func peerAnnounceName(_ hex: String) -> String? {
             guard let hash = Data(hexString: hex),
                   let name = node.client.learnedPeers[hash]?.displayName?
                       .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -353,7 +394,8 @@ public struct AppFeature {
             openGroupOthers.contains { reachablePeers.contains($0) }
         }
 
-        /// A member's name for a line: "You", the announce display name, else a short hex.
+        /// A member's name for a line: "You", the linked contact's name, else the announce
+        /// display name, else a short hex.
         public func groupMemberName(_ hex: String) -> String {
             if hex == myAddressHex { return GroupEventText.you }
             return peerDisplayName(hex) ?? GroupEventText.fallbackName(hex)
@@ -431,6 +473,35 @@ public struct AppFeature {
         case setNodeEnabled(id: UUID, enabled: Bool)
         /// "Use the default node's propagation node". Takes effect only while a default exists.
         case setUsePropagationDefault(Bool)
+        /// Contact links (spec 2026-10-11 §5).
+        case linkContactTapped(peerHex: String, source: String)
+        case contactsAccessResolved(ContactsAuthorization, peerHex: String, source: String)
+        case linkPickerDismissed
+        case dismissContactsDenied
+        case contactPicked(peerHex: String, identifier: String, name: String, source: String)
+        case replaceLinkConfirmed
+        case cancelLinkCollision
+        case unlinkContact(peerHex: String)
+        case markContactVerified(peerHex: String)
+        /// A later exchange returned the same identity for this contact; the app asks the user
+        /// whether to mark the link verified. Sent by the exchange (a later feature).
+        case confirmationReceived(peerHex: String, confirmation: ContactConfirmation)
+        case dismissVerifyPrompt(peerHex: String)
+        /// A later exchange returned a different identity for this contact. Ignored when the
+        /// reported contact no longer matches the link (the link changed since).
+        case conflictReported(peerHex: String, contactIdentifier: String, otherPeerHex: String, at: Date)
+        case resolveConflict(peerHex: String)
+        case contactNameRefreshed(peerHex: String, name: String)
+        /// A contact row came on screen: load the live name (refreshing the cache) and the photo.
+        case contactRowAppeared(peerHex: String)
+        case contactCardLoaded(contactIdentifier: String, ContactCard)
+        case contactLinksLoaded([ContactLink])
+        case setContactMirror(Bool)
+        /// A sheet that shows Contacts state opened (the info sheets, Settings): refresh the
+        /// access status and, with the mirror on, scan the cards for importable addresses.
+        case contactLinkSheetAppeared
+        case importCandidatesFound([ImportCandidate])
+        case importContactLinks
         case setDisplayName(String)
         case syncTapped
         case announceTapped
@@ -515,6 +586,7 @@ public struct AppFeature {
     @Dependency(\.defaultDatabase) var database
     @Dependency(\.date) var date
     @Dependency(\.uuid) var uuid
+    @Dependency(\.contactsClient) var contactsClient
     @Dependency(\.continuousClock) var clock
     @Dependency(\.attachmentStore) var attachmentStore
     @Dependency(\.attachmentCacheEvictor) var attachmentCacheEvictor
@@ -583,6 +655,7 @@ public struct AppFeature {
                     pushSyncEffects(state),
                     .send(.push(.appLaunched)),
                     .run { [database] send in try await reloadConversations(database, send) },
+                    .run { [database] send in try await reloadContactLinks(database, send) },
                     .run { [database] send in
                         // ORDER BY storedAt so eviction during rehydration is deterministic across
                         // launches: the oldest entries are ingested first, matching the order in which
@@ -2156,6 +2229,15 @@ public struct AppFeature {
 
             case .node, .binding, .pushRegistrationTimedOut, .unregisterFromHub:
                 return .none
+
+            // The contact-link arms live in `ContactLinksReducer` (AppFeature+ContactLinks.swift).
+            case .linkContactTapped, .contactsAccessResolved, .dismissContactsDenied, .linkPickerDismissed,
+                 .contactPicked, .replaceLinkConfirmed, .cancelLinkCollision, .unlinkContact,
+                 .markContactVerified, .confirmationReceived, .dismissVerifyPrompt, .conflictReported,
+                 .resolveConflict, .contactNameRefreshed, .contactRowAppeared, .contactCardLoaded,
+                 .contactLinksLoaded, .setContactMirror, .contactLinkSheetAppeared, .importCandidatesFound,
+                 .importContactLinks:
+                return .none
             }
         }
 
@@ -2266,6 +2348,8 @@ public struct AppFeature {
             if !ordered.isEmpty { effects.append(.concatenate(ordered)) }
             return effects.isEmpty ? .none : .merge(effects)
         }
+
+        ContactLinksReducer()
     }
 
     /// The open thread is being looked at again (`.foregrounded`, `.chatAppeared`): stamp its

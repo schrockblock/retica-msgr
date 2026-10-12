@@ -207,20 +207,26 @@ struct GroupInfoView: View {
                 }
                 Section {
                     ForEach(store.openGroupMembers, id: \.memberHex) { member in
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(store.reachablePeers.contains(member.memberHex) || member.memberHex == store.myAddressHex
-                                      ? Color.green : Color.secondary.opacity(0.4))
-                                .frame(width: 8, height: 8)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(store.state.groupMemberName(member.memberHex))
-                                Text(shortHex(member.memberHex))
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                        VStack(alignment: .leading) {
+                            HStack(spacing: 8) {
+                                Circle()
+                                    .fill(store.reachablePeers.contains(member.memberHex) || member.memberHex == store.myAddressHex
+                                          ? Color.green : Color.secondary.opacity(0.4))
+                                    .frame(width: 8, height: 8)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(store.state.groupMemberName(member.memberHex))
+                                    Text(shortHex(member.memberHex))
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if member.memberHex == group?.creatorHex {
+                                    Text("Creator").font(.caption).foregroundStyle(.secondary)
+                                }
                             }
-                            Spacer()
-                            if member.memberHex == group?.creatorHex {
-                                Text("Creator").font(.caption).foregroundStyle(.secondary)
+                            if member.memberHex != store.myAddressHex {
+                                ContactLinkRow(store: store, peerHex: member.memberHex)
+                                    .padding(.leading, 16)
                             }
                         }
                         .swipeActions {
@@ -250,6 +256,10 @@ struct GroupInfoView: View {
                     }
                 }
             }
+            // Refreshes `contactsAuthorization` and re-scans for import candidates (spec
+            // 2026-10-11 Review Focus F3), as `PeerInfoView` already does — a group member's
+            // Contact row needs the same up-to-date access state.
+            .onAppear { store.send(.contactLinkSheetAppeared) }
             .navigationTitle("Group info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

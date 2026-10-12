@@ -204,6 +204,28 @@ public enum AppDatabase {
             // The dispatcher's `memberHex IN … AND status = …` scans run on every announce.
             try db.create(indexOn: "groupDeliveries", columns: ["memberHex", "status"])
         }
+        m.registerMigration("createContactLinks") { db in
+            // Contact links (spec 2026-10-11 §1): one row per linked peer, keyed by the peer's
+            // LXMF address; `contactIdentifier` is the iOS Contacts identifier and is UNIQUE, which
+            // with the primary key is the strict 1:1 rule. `confirmationsJSON` is a JSON array of
+            // {peerHex, sessionId, date}. Provenance columns are set only for `discovered` rows.
+            try db.create(table: "contactLinks") { t in
+                t.primaryKey("peerHex", .text).notNull()
+                t.column("contactIdentifier", .text).notNull().unique()
+                t.column("cachedName", .text).notNull()
+                t.column("source", .text).notNull()
+                t.column("discoveredViaHex", .text)
+                t.column("discoveredSessionId", .text)
+                t.column("discoveredAt", .datetime)
+                t.column("confirmationsJSON", .text).notNull().defaults(to: "[]")
+                t.column("verified", .boolean).notNull()
+                t.column("promptDismissed", .boolean).notNull().defaults(to: false)
+                t.column("conflictedAt", .datetime)
+                t.column("conflictPeerHex", .text)
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull()
+            }
+        }
         return m
     }
 

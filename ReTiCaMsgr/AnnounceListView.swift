@@ -54,8 +54,11 @@ struct AnnounceListView: View {
                             store.send(.announceRowTapped(destinationHashHex: announce.hex))
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(announce.displayName ?? "Unnamed")
+                                Text(store.state.contactName(announce.hex) ?? announce.displayName ?? "Unnamed")
                                     .font(.headline)
+                                if store.state.contactName(announce.hex) != nil, let name = announce.displayName {
+                                    Text("announces as \(name)").font(.caption).foregroundStyle(.secondary)
+                                }
                                 HStack(spacing: 6) {
                                     Text(shortHex(announce.hex))
                                         .font(.system(.caption, design: .monospaced))

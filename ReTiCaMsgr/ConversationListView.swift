@@ -15,10 +15,19 @@ func shortHex(_ hex: String) -> String {
     return "\(hex.prefix(4))…\(hex.suffix(2))"
 }
 
+/// What a scanned-then-dismissed compose sheet decided (spec 2026-10-11 Review Focus F1): acted
+/// on from `ConversationListView`'s `onDismiss`, once the compose sheet itself has finished
+/// tearing down, so the root picker it may trigger never collides with that dismissal.
+enum ScanOutcome: Equatable {
+    case start(String)
+    case startAndLink(String)
+}
+
 struct ConversationListView: View {
     @Bindable var store: StoreOf<AppFeature>
     @State private var showingCompose = false
     @State private var showingNewGroup = false
+    @State private var scanOutcome: ScanOutcome?
 
     var connectionColor: Color {
         switch store.connection {
@@ -41,8 +50,9 @@ struct ConversationListView: View {
                                     .font(.headline)
                                     .lineLimit(1)
                             } else {
-                                Text(shortHex(convo.peerHex))
-                                    .font(.system(.headline, design: .monospaced))
+                                Text(store.state.contactName(convo.peerHex) ?? shortHex(convo.peerHex))
+                                    .font(store.state.contactName(convo.peerHex) == nil
+                                          ? .system(.headline, design: .monospaced) : .headline)
                             }
                             if convo.groupState == GroupState.invited {
                                 Text("Invited")
@@ -50,6 +60,9 @@ struct ConversationListView: View {
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
                                     .background(Capsule().fill(Color.accentColor.opacity(0.2)))
+                            }
+                            if store.state.contactLinks[convo.peerHex]?.isConflicted == true {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.caption)
                             }
                             Spacer()
                             Text(convo.lastTimestamp, style: .relative)
@@ -101,8 +114,19 @@ struct ConversationListView: View {
             ) {
                 ChatView(store: store)
             }
-            .sheet(isPresented: $showingCompose) {
-                ComposeSheet(store: store, isPresented: $showingCompose)
+            .sheet(isPresented: $showingCompose, onDismiss: {
+                switch scanOutcome {
+                case let .start(hex)?:
+                    store.send(.startConversation(hex))
+                case let .startAndLink(hex)?:
+                    store.send(.startConversation(hex))
+                    store.send(.linkContactTapped(peerHex: hex, source: ContactLinkSource.scanned))
+                case nil:
+                    break
+                }
+                scanOutcome = nil
+            }) {
+                ComposeSheet(store: store, isPresented: $showingCompose, scanOutcome: $scanOutcome)
             }
             .sheet(isPresented: $showingNewGroup) {
                 NewGroupView(store: store, isPresented: $showingNewGroup)
@@ -114,8 +138,11 @@ struct ConversationListView: View {
 struct ComposeSheet: View {
     @Bindable var store: StoreOf<AppFeature>
     @Binding var isPresented: Bool
+    @Binding var scanOutcome: ScanOutcome?
     @State private var address: String = ""
     @State private var showingScanner = false
+    @State private var pendingScan: String?
+    @State private var askingWhoIsThis = false
 
     // Uses the public `isValidPeerAddress` helper added in Step 2 (add that
     // helper first — `Data(hexString:)` is internal to the package and NOT
@@ -148,13 +175,38 @@ struct ComposeSheet: View {
                     Button("Cancel") { isPresented = false }
                 }
             }
-            .sheet(isPresented: $showingScanner) {
+            // The scanner sheet must fully dismiss before "Who is this?" goes up — presenting
+            // both at once let the picker collide with the in-flight dismissal (Review Focus
+            // F1). `onDismiss` fires only after that teardown finishes.
+            .sheet(isPresented: $showingScanner, onDismiss: {
+                if pendingScan != nil { askingWhoIsThis = true }
+            }) {
                 QRScannerView(ownAddress: store.myAddressHex) { hex in
                     address = hex
+                    pendingScan = hex
                     showingScanner = false
-                    store.send(.startConversation(address))
+                }
+            }
+            // `presenting:` hands the scanned hex to the buttons themselves, so clearing
+            // `pendingScan` when the dialog goes away cannot race a tap.
+            .confirmationDialog("Who is this?", isPresented: $askingWhoIsThis, titleVisibility: .visible,
+                                presenting: pendingScan) { hex in
+                // Neither button sends anything itself: the pick's `linkContactTapped` would
+                // race the compose sheet's own dismissal. They just record the outcome; the
+                // list's `onDismiss` acts on it once this sheet is fully gone.
+                Button("Choose contact") {
+                    scanOutcome = .startAndLink(hex)
                     isPresented = false
                 }
+                Button("Not now") {
+                    scanOutcome = .start(hex)
+                    isPresented = false
+                }
+            }
+            .onChange(of: askingWhoIsThis) { _, asking in
+                // Dismissed by tapping outside: forget the scan, or reopening and cancelling the
+                // scanner in this same sheet would re-ask about the old address (backlog item 1).
+                if !asking { pendingScan = nil }
             }
         }
     }
