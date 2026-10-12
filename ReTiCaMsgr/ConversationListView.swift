@@ -187,20 +187,26 @@ struct ComposeSheet: View {
                     showingScanner = false
                 }
             }
-            .confirmationDialog("Who is this?", isPresented: $askingWhoIsThis, titleVisibility: .visible) {
+            // `presenting:` hands the scanned hex to the buttons themselves, so clearing
+            // `pendingScan` when the dialog goes away cannot race a tap.
+            .confirmationDialog("Who is this?", isPresented: $askingWhoIsThis, titleVisibility: .visible,
+                                presenting: pendingScan) { hex in
                 // Neither button sends anything itself: the pick's `linkContactTapped` would
                 // race the compose sheet's own dismissal. They just record the outcome; the
                 // list's `onDismiss` acts on it once this sheet is fully gone.
                 Button("Choose contact") {
-                    guard let hex = pendingScan else { return }
                     scanOutcome = .startAndLink(hex)
                     isPresented = false
                 }
                 Button("Not now") {
-                    guard let hex = pendingScan else { return }
                     scanOutcome = .start(hex)
                     isPresented = false
                 }
+            }
+            .onChange(of: askingWhoIsThis) { _, asking in
+                // Dismissed by tapping outside: forget the scan, or reopening and cancelling the
+                // scanner in this same sheet would re-ask about the old address (backlog item 1).
+                if !asking { pendingScan = nil }
             }
         }
     }

@@ -118,9 +118,9 @@ struct ContactLinkRow: View {
             // Live name and photo through the reducer (backlog item 10): a rename updates the
             // cache, a missing contact says so. Re-sent whenever the linked contact changes.
             .task(id: link.contactIdentifier) { store.send(.contactRowAppeared(peerHex: peerHex)) }
-            // The denied/limited affordance is the same whether or not a link already exists
+            // The denied/limited affordance shows whether or not a link already exists
             // (Review Focus F3 item 3): access, not the contact, is what's missing.
-            accessRows
+            accessRows(linked: true)
         } else {
             Button {
                 store.send(.linkContactTapped(peerHex: peerHex, source: ContactLinkSource.manual))
@@ -130,14 +130,17 @@ struct ContactLinkRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            accessRows
+            accessRows(linked: false)
         }
     }
 
     @ViewBuilder
-    private var accessRows: some View {
+    private func accessRows(linked: Bool) -> some View {
         if store.state.contactsAuthorization == .denied {
-            Text("Contacts access is off for ReTiCaMsgr. Allow it in Settings to link a contact.")
+            Text(linked
+                 ? "Contacts access is off for ReTiCaMsgr. The name shown is the one saved when you linked "
+                   + "it; allow access in Settings to update or change the contact."
+                 : "Contacts access is off for ReTiCaMsgr. Allow it in Settings to link a contact.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Open Settings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
@@ -212,6 +215,20 @@ struct LinkPromptsModifier: ViewModifier {
             )) {
                 Button("Replace") { store.send(.replaceLinkConfirmed) }
                 Button("Cancel", role: .cancel) { store.send(.cancelLinkCollision) }
+            }
+            // A link asked for with access denied, from any entry point (the scan dialog has no
+            // info sheet to explain itself in): say why nothing happened (backlog item 2).
+            .alert("Contacts access is off", isPresented: Binding(
+                get: { store.showingContactsDenied },
+                set: { if !$0 { store.send(.dismissContactsDenied) } }
+            )) {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                    store.send(.dismissContactsDenied)
+                }
+                Button("Cancel", role: .cancel) { store.send(.dismissContactsDenied) }
+            } message: {
+                Text("Allow ReTiCaMsgr to use Contacts in Settings to link a contact.")
             }
     }
 

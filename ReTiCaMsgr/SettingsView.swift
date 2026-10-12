@@ -199,8 +199,22 @@ struct SettingsView: View {
                          + "find the address. Needs full Contacts access.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if store.contactMirrorEnabled, store.contactsAuthorization == .denied {
+                        Text("Contacts access is off, so nothing is written to cards. Allow it in Settings.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                        }
+                    } else if store.contactMirrorEnabled, store.contactsAuthorization == .limited {
+                        Text("Only the contacts you selected are available, and their cards cannot be "
+                             + "updated with limited access.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if !store.contactMirrorEnabled, !store.contactLinks.isEmpty {
-                        Text("Addresses already saved to Contacts stay there.")
+                        Text("Addresses already saved to Contacts stay there, and are offered for import "
+                             + "again when you turn this back on.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -274,7 +288,11 @@ struct SettingsView: View {
             // show a blank box whose Save button would clear it. (The propagation-node field above
             // deliberately starts blank — pasting a fresh hex address is its normal use — but a
             // name is edited, not replaced.)
-            .onAppear { nameInput = store.displayName }
+            .onAppear {
+                nameInput = store.displayName
+                // The Contacts section shows access state and import candidates: refresh both.
+                store.send(.contactLinkSheetAppeared)
+            }
         }
     }
 }
