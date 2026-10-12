@@ -37,6 +37,13 @@ public struct LinkCollision: Equatable, Sendable {
     }
 }
 
+/// What Contacts reports for one linked card (backlog 2026-10-11 items 6, 10): loaded through
+/// the reducer (`contactRowAppeared` → `contactCardLoaded`), never from the view.
+public enum ContactCard: Equatable, Sendable {
+    case available(thumbnail: Data?)
+    case missing
+}
+
 /// Pure rules behind the link actions, so each is testable on its own.
 public enum ContactLinking {
     /// The link a pick creates: verified when the user made it, unverified when it was

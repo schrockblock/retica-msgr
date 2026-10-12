@@ -56,18 +56,18 @@ struct PeerInfoView: View {
 struct ContactLinkRow: View {
     let store: StoreOf<AppFeature>
     let peerHex: String
-    @Dependency(\.contactsClient) private var contacts
-    @State private var thumbnail: Data?
-    @State private var missing = false
     @State private var managingAccess = false
 
     private var link: ContactLink? { store.state.contactLinks[peerHex] }
+    /// What Contacts reported for the linked card, keyed by the contact so a changed link never
+    /// shows the previous contact's photo (backlog item 6); loaded by `contactRowAppeared`.
+    private var card: ContactCard? { link.flatMap { store.state.contactCards[$0.contactIdentifier] } }
 
     var body: some View {
         if let link {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
-                    if let thumbnail, let image = UIImage(data: thumbnail) {
+                    if case let .available(thumbnail?) = card, let image = UIImage(data: thumbnail) {
                         Image(uiImage: image).resizable().frame(width: 36, height: 36).clipShape(Circle())
                     } else {
                         Image(systemName: "person.crop.circle").font(.title).foregroundStyle(.secondary)
@@ -85,7 +85,7 @@ struct ContactLinkRow: View {
                         Text(sourceText(link)).font(.caption).foregroundStyle(.secondary)
                         // Not when access is merely denied: the contact itself is not gone, only
                         // unreadable, and that case already gets its own explanation below.
-                        if missing, store.state.contactsAuthorization != .denied {
+                        if card == .missing, store.state.contactsAuthorization != .denied {
                             Text("Contact not available").font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -115,16 +115,9 @@ struct ContactLinkRow: View {
                 .font(.subheadline)
                 .buttonStyle(.borderless)
             }
-            .task(id: link.contactIdentifier) {
-                // Live name and photo; a rename updates the cache, a missing contact says so.
-                if let summary = try? await contacts.contact(link.contactIdentifier) {
-                    missing = false
-                    if summary.name != link.cachedName { store.send(.contactNameRefreshed(peerHex: peerHex, name: summary.name)) }
-                    thumbnail = summary.hasPhoto ? await contacts.thumbnail(link.contactIdentifier) : nil
-                } else {
-                    missing = true
-                }
-            }
+            // Live name and photo through the reducer (backlog item 10): a rename updates the
+            // cache, a missing contact says so. Re-sent whenever the linked contact changes.
+            .task(id: link.contactIdentifier) { store.send(.contactRowAppeared(peerHex: peerHex)) }
             // The denied/limited affordance is the same whether or not a link already exists
             // (Review Focus F3 item 3): access, not the contact, is what's missing.
             accessRows

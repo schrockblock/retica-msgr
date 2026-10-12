@@ -258,6 +258,9 @@ public struct AppFeature {
         @Shared(.appStorage("contactMirrorEnabled")) public var contactMirrorEnabled: Bool = false
         /// `reticulum:` URLs found on cards and not yet linked, offered for import.
         public var importCandidates: [ImportCandidate] = []
+        /// What Contacts reports for each linked card, keyed by `contactIdentifier` so a changed
+        /// link never shows the previous contact's photo (backlog 2026-10-11 items 6, 10).
+        public var contactCards: [String: ContactCard] = [:]
 
         public init(identity: Identity,
                     pushStorage: PushStorage = .temporary(),
@@ -455,6 +458,9 @@ public struct AppFeature {
         case conflictReported(peerHex: String, contactIdentifier: String, otherPeerHex: String, at: Date)
         case resolveConflict(peerHex: String)
         case contactNameRefreshed(peerHex: String, name: String)
+        /// A contact row came on screen: load the live name (refreshing the cache) and the photo.
+        case contactRowAppeared(peerHex: String)
+        case contactCardLoaded(contactIdentifier: String, ContactCard)
         case contactLinksLoaded([ContactLink])
         case setContactMirror(Bool)
         /// The link sheet opened: with the mirror on, scan the cards for importable addresses.
@@ -2277,8 +2283,29 @@ public struct AppFeature {
                 }
                 return updateContactLink(database, peerHex: peerHex, now: date.now) { $0.cachedName = name }
 
+            case let .contactRowAppeared(peerHex):
+                guard let link = state.contactLinks[peerHex] else { return .none }
+                let id = link.contactIdentifier
+                let cached = link.cachedName
+                return .run { [contactsClient] send in
+                    guard let summary = try? await contactsClient.contact(id) else {
+                        await send(.contactCardLoaded(contactIdentifier: id, .missing))
+                        return
+                    }
+                    if summary.name != cached { await send(.contactNameRefreshed(peerHex: peerHex, name: summary.name)) }
+                    let thumbnail = summary.hasPhoto ? await contactsClient.thumbnail(id) : nil
+                    await send(.contactCardLoaded(contactIdentifier: id, .available(thumbnail: thumbnail)))
+                }
+
+            case let .contactCardLoaded(id, card):
+                state.contactCards[id] = card
+                return .none
+
             case let .contactLinksLoaded(rows):
                 state.contactLinks = Dictionary(uniqueKeysWithValues: rows.map { ($0.peerHex, $0) })
+                // Cards of contacts that are no longer linked are dropped with their rows.
+                let linked = Set(rows.map(\.contactIdentifier))
+                state.contactCards = state.contactCards.filter { linked.contains($0.key) }
                 return .none
 
             case let .setContactMirror(on):

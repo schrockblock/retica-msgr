@@ -285,8 +285,9 @@ private func rows(_ db: any DatabaseWriter) throws -> [ContactLink] {
     await store.send(.conflictReported(peerHex: linkPeerA, contactIdentifier: "CN-9", otherPeerHex: linkPeerB, at: linkT0))
     await store.finish()
     store.exhaustivity = .off
+    // The table is the real check: the exhaustive send above already proved no state change
+    // and no reload, so state still holds the seeded row whatever the reducer wrote.
     #expect(try rows(db).first?.conflictedAt == nil, "a report naming the wrong contact must not write")
-    #expect(store.state.contactLinks[linkPeerA]?.conflictedAt == nil)
     await store.send(.conflictReported(peerHex: linkPeerA, contactIdentifier: "CN-1", otherPeerHex: linkPeerB, at: linkT0))
     await receiveLinks(store)
     #expect(store.state.contactLinks[linkPeerA]?.conflictedAt == linkT0)
@@ -628,6 +629,66 @@ private func mirrorStore(_ db: any DatabaseWriter, fake: FakeContacts, on: Bool 
     await store.skipReceivedActions(strict: false)
     await store.finish()
     #expect(fake.writes == [FakeContacts.Write(identifier: "CN-1", peerHex: linkPeerA)])
+}
+
+/// Backlog 11: a missing contact keeps its cached name on every surface.
+@MainActor @Test func linkFixRowAppearedMissingContactFallsBackToTheCachedName() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts())          // Jane's card is gone
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
+    await store.send(.contactRowAppeared(peerHex: linkPeerA))
+    await store.receive(.contactCardLoaded(contactIdentifier: "CN-1", .missing)) {
+        $0.contactCards["CN-1"] = .missing
+    }
+    #expect(store.state.peerDisplayName(linkPeerA) == "Jane Doe")
+}
+
+@MainActor @Test func linkFixRowAppearedLoadsTheCardForItsContact() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let renamed = ContactSummary(identifier: "CN-2", name: "Robert Ray", hasPhoto: true)
+    let store = makeLinkStore(db, fake: FakeContacts(contacts: [renamed]))
+    try await seedLinks(db, store, [linkRow(linkPeerA, bob)])   // cached "Bob Ray", no photo known
+    await store.send(.contactRowAppeared(peerHex: linkPeerA))
+    await store.receive(.contactNameRefreshed(peerHex: linkPeerA, name: "Robert Ray"))
+    await store.receive(.contactCardLoaded(contactIdentifier: "CN-2", .available(thumbnail: Data([0xFF, 0xD8])))) {
+        $0.contactCards["CN-2"] = .available(thumbnail: Data([0xFF, 0xD8]))
+    }
+    await receiveLinks(store)
+    #expect(store.state.contactLinks[linkPeerA]?.cachedName == "Robert Ray")
+    await store.finish()
+}
+
+@MainActor @Test func linkFixRowAppearedForAnUnlinkedPeerDoesNothing() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane]))
+    store.exhaustivity = .on
+    await store.send(.contactRowAppeared(peerHex: linkPeerA))
+}
+
+/// Backlog 11: a contact-side Replace with the mirror on keeps the card (it is rewritten, not cleared).
+@MainActor @Test func linkFixMirrorContactSideReplaceDoesNotClearTheCard() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let fake = FakeContacts(contacts: [jane])
+    let store = mirrorStore(db, fake: fake)
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
+    await pick(store, linkPeerB, jane)                            // Jane already linked to A → contactAlreadyLinked
+    await store.send(.replaceLinkConfirmed) { $0.pendingLinkCollision = nil }
+    await receiveLinks(store)
+    await store.finish()
+    #expect(fake.clears.isEmpty, "the same card is about to be rewritten, never cleared")
+    #expect(fake.writes == [FakeContacts.Write(identifier: "CN-1", peerHex: linkPeerB)])
+}
+
+/// Backlog 11: the pick's source survives a Replace.
+@MainActor @Test func linkFixScannedSourceSurvivesReplace() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(contacts: [jane]))
+    try await seedLinks(db, store, [linkRow(linkPeerA, jane)])
+    await pick(store, linkPeerB, jane, source: ContactLinkSource.scanned)
+    await store.send(.replaceLinkConfirmed) { $0.pendingLinkCollision = nil }
+    await receiveLinks(store)
+    #expect(store.state.contactLinks[linkPeerB]?.source == ContactLinkSource.scanned)
+    await store.finish()
 }
 
 @MainActor @Test func linkFinalImportLowercasesAddresses() async throws {
