@@ -63,7 +63,7 @@ struct NodeFormView: View {
                     Text("Your hub must support ReTiCA push and must have announced its registration "
                          + "destination to this device. Notifications only ever say \"New message\"; nothing "
                          + "about the sender or the content leaves the device unencrypted. A changed hub "
-                         + "takes effect on the next launch.")
+                         + "is registered with as soon as it is reachable.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if let current = replacesPushNode {

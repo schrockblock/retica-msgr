@@ -6659,7 +6659,9 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
 @MainActor @Test func nodeFinalLosingThePushNodeTurnsPushOff() async {
     let db = try! AppDatabase.makeInMemory()
     let a = userNode(hex: nodeHexA, id: 11)
-    let store = nodeStore(db, nodes: [disabled(DefaultNode.entry), a]) { state in
+    // The rule never produces two hex-carrying entries (backlog 18): the built-in has none here
+    // and regains the default on the removal (A13) — disabled, so there is still no push node.
+    let store = nodeStore(db, nodes: [disabled(withoutHex(DefaultNode.entry)), a]) { state in
         state.push.$enabled.withLock { $0 = true }
         state.push.$hubHex.withLock { $0 = nodeHexA }
     }
@@ -6760,5 +6762,67 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     var renamed = a
     renamed.name = "Renamed"
     await store.send(.updateNode(renamed)) { $0.$nodes.withLock { $0[1].name = "Renamed" } }
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Backlog 19: a persisted list that carries no push hex (an earlier dev build) is repaired at
+/// launch, not only on the next edit.
+@MainActor @Test func nodeFixLaunchRestoresTheDefaultHexWhenNoneIsCarried() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [withoutHex(DefaultNode.entry)])
+    await store.send(.onLaunch)
+    #expect(store.state.nodes[0].pushHubHex == DefaultNode.pushHubHex)
+    await store.receive(.push(.hubChanged(host: "gaefu.ddns.net", port: 4242)))
+    await store.receive(.push(.setHubHex(DefaultNode.pushHubHex)))
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Backlog 8: a hex persisted uppercase by an older build equals the migrated lowercase one; no
+/// spurious `setHubHex` (which would forget the registration).
+@MainActor @Test func nodeFixUppercaseStoredHexSendsNoSetHubHex() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex.uppercased() }
+        state.push.$enabled.withLock { $0 = true }
+        state.push.status = .registered(Date(timeIntervalSince1970: 1700000000))
+    }
+    await store.send(.connectTapped)
+    await store.receive(.push(.hubChanged(host: "gaefu.ddns.net", port: 4242)))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.push.status == .registered(Date(timeIntervalSince1970: 1700000000)),
+            "a setHubHex would have marked the registration as hub-changed")
+}
+
+/// Backlog 20: with no TCP slot at all a foreground still re-points push.
+@MainActor @Test func nodeFixForegroundWithNoSlotsStillRepointsPush() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = nodeStore(db, nodes: [disabled(DefaultNode.entry)]) { state in
+        state.$listenEnabled.withLock { $0 = true }
+        state.$listenPort.withLock { $0 = 5151 }
+    }
+    await store.send(.foregrounded)
+    await store.receive(.push(.hubChanged(host: "", port: 0)))
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Backlog 6: a registration buffered behind a down push node reads "Waiting for <node>…".
+@MainActor @Test func nodeFixBufferedRegistrationShowsWaitingForTheNode() async {
+    let db = try! AppDatabase.makeInMemory()
+    let hub = Data(repeating: 0xC1, count: 16)
+    let store = nodeStore(db, nodes: [DefaultNode.entry]) { state in
+        state.push.$enabled.withLock { $0 = true }
+        state.push.$hubHex.withLock { $0 = DefaultNode.pushHubHex }   // already pointed: no setHubHex on connect
+        state.push.status = .registering
+    }
+    await connectNodes(store)
+    await store.send(.push(.delegate(.sendRegistration(hub: hub, path: "/register", data: Data([1]))))) {
+        $0.pendingPushRegistration = PendingPushRegistration(hub: hub, path: "/register", data: Data([1]))
+    }
+    #expect(store.state.pushStatusText == "Waiting for Gaefu…")
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp)))))) {
+        $0.pendingPushRegistration = nil
+    }
+    #expect(store.state.pushStatusText == "Registering…")
     await store.skipReceivedActions(strict: false)
 }

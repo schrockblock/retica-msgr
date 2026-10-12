@@ -261,6 +261,15 @@ public struct AppFeature {
 
         public var enabledNodes: [NodeEntry] { nodes.filter(\.enabled) }
 
+        /// The push status line for Settings: while a registration waits for the push node's socket
+        /// (`pendingPushRegistration`), say so instead of an open-ended "Registering…" (backlog item 6).
+        public var pushStatusText: String {
+            if pendingPushRegistration != nil, push.status == .registering, let node = pushNode {
+                return "Waiting for \(node.name)…"
+            }
+            return push.status.displayText
+        }
+
         /// The propagation node to use: the default's while one exists and the toggle is on, else
         /// the stored hex ("" when none). Read through the dependency so tests can supply a default.
         public var effectivePropagationNodeHex: String {
@@ -532,6 +541,9 @@ public struct AppFeature {
             switch action {
             case .onLaunch:
                 migrateNodesIfNeeded(&state, makeID: { uuid() })
+                // Amendment A13 at launch too (backlog item 19): a list persisted with no push hex
+                // at all (an earlier dev build) regains the default now, not on the next edit.
+                state.$nodes.withLock { $0 = NodeRules.restoringDefaultPushHex($0) }
                 // Amendment A10 (final-review M1): only show "Connecting…" when something will
                 // actually dial — an empty/all-disabled node list with the listener and BLE both
                 // off would otherwise leave the UI stuck on "Connecting…" forever.
@@ -2622,7 +2634,7 @@ private func syncEndpointNodes(_ state: inout AppFeature.State) -> (removals: Ef
 }
 
 /// `.connect` for each of `ids` (slots `syncEndpointNodes` just added, or nodes found down).
-private func connectEffects(_ ids: [InterfaceID]) -> Effect<AppFeature.Action> {
+private func connectEffects(_ ids: some Collection<InterfaceID>) -> Effect<AppFeature.Action> {
     .merge(ids.map { .send(.node(.client(.endpoint(.tcpClients(.element(id: $0, action: .connect)))))) })
 }
 
@@ -2645,7 +2657,8 @@ private func pushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature.Act
         effects.append(.send(.push(.setEnabled(false))))
     }
     effects.append(.send(.push(.hubChanged(host: node?.host ?? "", port: node?.port ?? 0))))
-    if state.push.hubHex != hex {
+    // Case-insensitive: an uppercase hex persisted by an older build is the same hub (item 8).
+    if state.push.hubHex.lowercased() != hex {
         effects.append(.send(.push(.setHubHex(hex))))
     }
     // Concatenated, not merged: the tests (and the push feature's own bookkeeping) rely on
@@ -2691,7 +2704,7 @@ private func redialDownNodes(_ state: inout AppFeature.State) -> Effect<AppFeatu
        !state.enabledNodes.isEmpty || state.listenEnabled || state.bleEnabled {
         state.connection = .connecting
     }
-    var dials: [Effect<AppFeature.Action>] = [connectEffects(Array(down))]
+    var dials: [Effect<AppFeature.Action>] = [connectEffects(down)]
     if state.node.client.endpoint.tcpServer != nil {
         dials.append(.send(.node(.client(.endpoint(.tcpServer(.start))))))
     }

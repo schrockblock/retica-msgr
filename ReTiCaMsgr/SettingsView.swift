@@ -175,7 +175,7 @@ struct SettingsView: View {
                         Text("Push node: \(pushNode.name)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text(store.push.status.displayText)
+                        Text(store.pushStatusText)
                             .font(.caption)
                             .foregroundStyle(pushStatusIsFailure ? .red : .secondary)
                     } else {
@@ -184,8 +184,8 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                     Text("Notifications only ever say \"New message\"; nothing about the sender or the "
-                         + "content leaves the device unencrypted. A changed push node takes effect on the "
-                         + "next launch.")
+                         + "content leaves the device unencrypted. Changing the push node re-registers with "
+                         + "the new hub as soon as it is reachable.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
