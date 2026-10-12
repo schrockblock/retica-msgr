@@ -31,12 +31,20 @@ private func healthyState() -> AppFeature.State {
     return state
 }
 
-/// A pass-through to the shared `TransportEndpoint` of a state, so callers can mutate it in
-/// place (router, link plane, client slots) without reaching through the node/client chain.
+/// Reaches the shared `TransportEndpoint` of a state for in-place edits (router, link plane). It
+/// builds no slot: set a node's socket status with `setNodeStatus`, which traps when the slot
+/// was never built instead of silently no-oping through `tcpClients[id:]?`.
 @MainActor
-private func withTCP(_ state: inout AppFeature.State,
-                     _ body: (inout TransportEndpoint.State) -> Void) {
+private func withEndpoint(_ state: inout AppFeature.State,
+                          _ body: (inout TransportEndpoint.State) -> Void) {
     body(&state.node.client.endpoint)
+}
+
+/// A node's socket status; traps instead of silently no-oping when the slot was never built.
+@MainActor
+private func setNodeStatus(_ state: inout AppFeature.State, _ id: InterfaceID, _ status: TCPClientInterface.Status) {
+    precondition(state.node.client.endpoint.tcpClients[id: id] != nil, "no slot for \(id.rawValue)")
+    state.node.client.endpoint.tcpClients[id: id]?.interface.status = status
 }
 
 private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> DiagnosticsSnapshot.Layer {
@@ -59,7 +67,7 @@ private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> Diagnost
 // Reported as a DISAGREEMENT, not masked by the milder "connecting" rule beneath it.
 @MainActor @Test func socketIsAProblemWhenAppSaysConnectedButInterfaceIsNot() {
     var state = healthyState()
-    withTCP(&state) { $0.tcpClients[id: gaefuID]?.interface.status = .connecting }
+    setNodeStatus(&state, gaefuID, .connecting)
     let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
     #expect(socket.health == .problem)
     #expect(socket.reason == "app reports connected, nodes report gaefu.ddns.net:4242=connecting")
@@ -67,7 +75,7 @@ private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> Diagnost
 
 @MainActor @Test func socketIsAProblemWhenInterfaceIsOnlineButTransportHasNoInterfaces() {
     var state = healthyState()
-    withTCP(&state) { $0.transport.interfaces = [:] }
+    withEndpoint(&state) { $0.transport.interfaces = [:] }
     let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
     #expect(socket.health == .problem)
     #expect(socket.reason == "socket is up but Transport has no registered interface")
@@ -76,7 +84,7 @@ private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> Diagnost
 @MainActor @Test func socketWarnsWhileBothAgreeConnecting() {
     var state = healthyState()
     state.connection = .connecting
-    withTCP(&state) { $0.tcpClients[id: gaefuID]?.interface.status = .connecting }
+    setNodeStatus(&state, gaefuID, .connecting)
     let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
     #expect(socket.health == .warn)
     #expect(socket.reason == "connecting")
@@ -118,7 +126,7 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
 
 @MainActor @Test func pathsWarnWhenALearnedPathNamesAnInterfaceThatIsGone() {
     var state = healthyState()
-    withTCP(&state) { tcp in
+    withEndpoint(&state) { tcp in
         // A path heard on an interface that no longer exists. `learned` is non-destructive,
         // so this is the ORDINARY state after a socket drop — not a contrived one.
         tcp.transport.learned[peerHash] = LearnedDestination(
@@ -133,7 +141,7 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
 
 @MainActor @Test func pathsAreOkWhenEveryPathNamesALiveInterface() {
     var state = healthyState()
-    withTCP(&state) { tcp in
+    withEndpoint(&state) { tcp in
         tcp.transport.learned[peerHash] = LearnedDestination(
             identity: Identity(), appData: nil, ratchet: nil,
             interfaceID: gaefuID, hops: 0, nextHop: nil, announceEmitted: 0)
@@ -153,7 +161,7 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
 @MainActor @Test func pathsDoNotBlameTheInterfaceWhenTheSocketIsDownAndNoInterfacesRemain() {
     var state = healthyState()
     state.connection = .disconnected
-    withTCP(&state) { tcp in
+    withEndpoint(&state) { tcp in
         tcp.tcpClients[id: gaefuID]?.interface.status = .disconnected
         tcp.transport.learned[peerHash] = LearnedDestination(
             identity: Identity(), appData: nil, ratchet: nil,
@@ -180,7 +188,7 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
 @MainActor @Test func pathsWarnWhenTheSocketIsDownEvenIfNothingWasEverLearned() {
     var state = healthyState()
     state.connection = .disconnected
-    withTCP(&state) { tcp in
+    withEndpoint(&state) { tcp in
         tcp.tcpClients[id: gaefuID]?.interface.status = .disconnected
         tcp.transport.interfaces = [:]
     }
@@ -207,7 +215,7 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
     var state = healthyState()
     state.node.client.learnedPeers[peerHash] = LXMFNode.LearnedPeer(
         displayName: "Sideband", stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
-    withTCP(&state) { tcp in
+    withEndpoint(&state) { tcp in
         tcp.transport.learned[peerHash] = LearnedDestination(
             identity: Identity(), appData: nil, ratchet: nil,
             interfaceID: gaefuID, hops: 0, nextHop: nil, announceEmitted: 0)
@@ -444,7 +452,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 // pairing ever changes this test changes with it rather than pinning a fiction.
 @MainActor @Test func linksWarnWhenAnOutboundLinkIsStillPendingEstablishment() {
     var state = healthyState()
-    withTCP(&state) { tcp in
+    withEndpoint(&state) { tcp in
         var link = LinkSession.State(
             initiatorTo: Identity(), destinationHash: peerHash, interfaceID: gaefuID)
         link.linkID = Data(repeating: 0x0C, count: 16)
@@ -466,7 +474,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 
 @MainActor @Test func linksWarnWithPluralGrammarWhenMultipleOutboundLinksAreStillEstablishing() {
     var state = healthyState()
-    withTCP(&state) { tcp in
+    withEndpoint(&state) { tcp in
         var link1 = LinkSession.State(
             initiatorTo: Identity(), destinationHash: peerHash, interfaceID: gaefuID)
         link1.linkID = Data(repeating: 0x0C, count: 16)
@@ -487,7 +495,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 // A predicate that dropped the role clause would pass the test above and fail here.
 @MainActor @Test func linksAreOkWhenAPendingLinkIsInboundNotOutbound() {
     var state = healthyState()
-    withTCP(&state) { tcp in
+    withEndpoint(&state) { tcp in
         var link = LinkSession.State(
             responderFor: Identity(), destinationHash: peerHash, interfaceID: gaefuID)
         link.linkID = Data(repeating: 0x0D, count: 16)
@@ -505,7 +513,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 
 @MainActor @Test func textIncludesTheTimestampLayerTitlesAndHealthMarkers() {
     var state = healthyState()
-    withTCP(&state) { $0.tcpClients[id: gaefuID]?.interface.status = .connecting }
+    setNodeStatus(&state, gaefuID, .connecting)
     let text = DiagnosticsSnapshot(from: state, at: fixedDate).text
 
     #expect(text.contains("ReTiCaMsgr diagnostics"))
@@ -570,7 +578,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
           let ifac = IFAC(networkName: ifacName, passphrase: ifacPass, size: 16)
     else { fatalError("fixture could not build its key material") }
 
-    withTCP(&state) { tcp in
+    withEndpoint(&state) { tcp in
         var link = LinkSession.State(
             responderFor: owning,
             destinationHash: peerHash,
@@ -795,4 +803,14 @@ private func withPi(_ state: inout AppFeature.State, status: TCPClientInterface.
     #expect(socket.rows.contains(DiagnosticsSnapshot.Row("nodes", "(none enabled)")))
     #expect(socket.health == .warn)
     #expect(socket.reason == "disconnected")
+}
+
+/// Backlog 17: the app says connected while no node slot exists at all (a BLE peer, say) — the
+/// disagreement names the empty node set rather than an empty string.
+@MainActor @Test func nodeDiagSocketReportsNoneWhenConnectedWithoutSlots() {
+    var state = AppFeature.State(identity: Identity())
+    state.connection = .connected
+    let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
+    #expect(socket.health == .problem)
+    #expect(socket.reason == "app reports connected, nodes report none")
 }
