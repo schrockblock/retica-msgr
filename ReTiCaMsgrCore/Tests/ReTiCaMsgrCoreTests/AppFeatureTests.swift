@@ -6826,3 +6826,63 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     #expect(store.state.pushStatusText == "Registering…")
     await store.skipReceivedActions(strict: false)
 }
+
+/// `makeStore` with a listener that counts its `listen` calls (backlog 3).
+@MainActor
+private func countingStore(_ db: any DatabaseWriter, listens: LockIsolated<Int>,
+                           configure: (inout AppFeature.State) -> Void) -> TestStoreOf<AppFeature> {
+    var initial = AppFeature.State(identity: Identity())
+    configure(&initial)
+    let store = TestStore(initialState: initial) {
+        AppFeature()
+    } withDependencies: {
+        $0.defaultDatabase = db
+        $0.attachmentStore = AttachmentStore.testValue
+        $0.date = .constant(Date(timeIntervalSince1970: 1700000000))
+        $0.transportDate = .constant(Date(timeIntervalSince1970: 1700000000))
+        $0.uuid = .incrementing
+        $0.continuousClock = TestClock()
+        $0.tcpConnection = TCPConnection(open: { _, _ in AsyncStream { _ in } }, send: { _ in }, close: { })
+        $0.tcpListener = TCPListener(listen: { _ in listens.withValue { $0 += 1 }; return AsyncStream { _ in } },
+                                     send: { _, _ in }, close: { _ in }, stop: { })
+        $0.bleDriver = BLEDriver(start: { _ in AsyncStream { _ in } }, readIdentity: { _ in }, openChannel: { _ in },
+                                 send: { _, _ in }, closeChannel: { _ in }, stop: { })
+        $0.pushPlatform = PushPlatform(requestAuthorization: { true }, registerForRemoteNotifications: {},
+                                       unregisterForRemoteNotifications: {})
+    }
+    store.exhaustivity = .off
+    return store
+}
+
+/// Backlog 3: a foreground with one node down must not re-`listen` (that drops accepted direct
+/// connections); only a stopped listener restarts.
+@MainActor @Test func nodeFixForegroundRestartsOnlyAStoppedListener() async {
+    let db = try! AppDatabase.makeInMemory()
+    let listens = LockIsolated(0)
+    let store = countingStore(db, listens: listens) { state in
+        state.$nodes.withLock { $0 = [DefaultNode.entry] }
+        state.$listenEnabled.withLock { $0 = true }
+        state.$listenPort.withLock { $0 = 5151 }
+        state.node.client.endpoint.tcpServer = TCPServerEndpoint.State(port: 5151)
+        state.node.client.endpoint.tcpServer?.interface.status = .listening
+    }
+    await store.send(.foregrounded)
+    await store.receive { isConnect(gaefuID, $0) }
+    await store.skipReceivedActions(strict: false)
+    #expect(listens.value == 0, "a listening slot is left alone")
+
+    // The same foreground with the listener stopped restarts it.
+    let stopped = countingStore(db, listens: listens) { state in
+        state.$nodes.withLock { $0 = [DefaultNode.entry] }
+        state.$listenEnabled.withLock { $0 = true }
+        state.$listenPort.withLock { $0 = 5151 }
+        state.node.client.endpoint.tcpServer = TCPServerEndpoint.State(port: 5151)
+    }
+    await stopped.send(.foregrounded)
+    await stopped.receive { if case .node(.client(.endpoint(.tcpServer(.start)))) = $0 { return true }; return false }
+    await stopped.skipReceivedActions(strict: false)
+    #expect(listens.value == 1)
+}
+// No BLE counterpart: `BLEInterface` itself ignores `.start` unless it is stopped or terminally
+// unavailable (BLEInterface.swift `case .start` guard), so a foreground `.ble(.start)` on a
+// running slot is already a no-op — a driver-start count cannot tell the two apart.
