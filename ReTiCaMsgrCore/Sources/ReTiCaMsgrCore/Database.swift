@@ -226,6 +226,13 @@ public enum AppDatabase {
                 t.column("updatedAt", .datetime).notNull()
             }
         }
+        m.registerMigration("createBlockedPeers") { db in
+            // Blocked senders (spec 2026-10-15 §2): the row is the block. Nothing else is stored.
+            try db.create(table: "blockedPeers") { t in
+                t.primaryKey("peerHex", .text).notNull()
+                t.column("blockedAt", .datetime).notNull()
+            }
+        }
         return m
     }
 
