@@ -153,6 +153,23 @@ struct SettingsView: View {
                     }
                 }
 
+                Section {
+                    // Standard Toggle in a Form row: the whole row is already hittable.
+                    Toggle("Connect through a Meshtastic radio", isOn: $store.meshtasticEnabled)
+                    LabeledContent("Radio", value: store.meshtasticRadioLabel)
+                    // A standard Form button row is hittable across its width already.
+                    Button("Choose radio…") { store.send(.chooseRadioTapped) }
+                } header: {
+                    Text("Meshtastic")
+                } footer: {
+                    Text("Sends and receives messages over LoRa through a Meshtastic radio paired with "
+                         + "this device over Bluetooth. Set the radio to a Short preset (ShortTurbo or "
+                         + "ShortFast): longer presets are too slow for most messages. The radio must not "
+                         + "be connected to another app, such as the Meshtastic app, at the same time. "
+                         + "Choosing a radio pauses Bluetooth connections to nearby devices until the list "
+                         + "closes. Off by default. Takes effect on the next Connect.")
+                }
+
                 Section("Relay") {
                     Toggle("Relay traffic for other nodes", isOn: Binding(
                         get: { store.relayEnabled },
@@ -295,6 +312,10 @@ struct SettingsView: View {
             }
             .sheet(item: $editingNode) { node in
                 NodeFormView(store: store, existing: node)
+            }
+            // Driven by state: a swipe sends `.radioPicker(.dismiss)`, like Cancel and a pick.
+            .sheet(item: $store.scope(state: \.radioPicker, action: \.radioPicker)) { pickerStore in
+                RadioPickerView(store: pickerStore)
             }
             // Seed the field from persisted state, so opening Settings with a name set does not
             // show a blank box whose Save button would clear it. (The propagation-node field above
