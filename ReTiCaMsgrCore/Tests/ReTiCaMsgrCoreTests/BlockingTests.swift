@@ -181,3 +181,79 @@ func mirror(_ store: TestStoreOf<AppFeature>) -> Set<String> {
     await store.send(.reportDraftReady(draft)) { $0.reportDraft = draft }
     await store.send(.reportDismissed) { $0.reportDraft = nil }
 }
+
+private func blockUUID(_ n: Int) -> UUID {
+    UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012d", n))")!
+}
+
+@MainActor @Test func blockedPeerSendTappedSendsNothing() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db) { s in
+        s.openPeerHex = blockPeerA
+        s.blockedPeers = [blockPeerA]
+        s.draft = "hello"
+    }
+    store.exhaustivity = .on
+    await store.send(.sendTapped)
+    #expect(store.state.draft == "hello")
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    await store.finish()
+}
+
+@MainActor @Test func blockedPeerDraftTypedBeforeBlockIsNotSent() async throws {
+    // Review Focus 1: the block lands first, then the queued tap.
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db) { s in
+        s.openPeerHex = blockPeerA
+        s.draft = "hello"
+    }
+    await store.send(.blockPeer(blockPeerA))
+    await store.receive { if case .node(.client(.ignoreDestination)) = $0 { return true }; return false }
+    await store.send(.sendTapped)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    await store.finish()
+}
+
+@MainActor @Test func blockedPeerReactionSendsNothing() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let hash = String(repeating: "1", count: 64)
+    let row = Message(id: blockUUID(1), peerHex: blockPeerA, isOutgoing: false, body: "hi",
+                      timestamp: blockT0, status: MessageStatus.received, validated: true, messageHash: hash)
+    try await db.write { try Message.insert { row }.execute($0) }
+    let store = makeBlockStore(db) { s in
+        s.openPeerHex = blockPeerA
+        s.blockedPeers = [blockPeerA]
+        s.threadMessages = [row]
+    }
+    store.exhaustivity = .on
+    await store.send(.reactionSelected(messageHash: hash, emoji: "👍"))
+    #expect(try await db.read { try Reaction.all.fetchAll($0) }.isEmpty)
+    await store.finish()
+}
+
+@MainActor @Test func blockedPeerExpiryChangeSendsNothing() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db) { s in
+        s.openPeerHex = blockPeerA
+        s.blockedPeers = [blockPeerA]
+        s.openConversationExpiryLoaded = true
+    }
+    store.exhaustivity = .on
+    await store.send(.expirySelected(seconds: 3600))
+    #expect(store.state.openConversationExpiry == nil)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    await store.finish()
+}
+
+@MainActor @Test func unblockedPeerSendTappedStillSends() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db) { s in
+        s.openPeerHex = blockPeerA
+        s.blockedPeers = [blockPeerB]
+        s.draft = "hello"
+    }
+    await store.send(.sendTapped)
+    await store.receive { if case .node(.client(.sendMessage)) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.count == 1)
+}

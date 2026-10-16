@@ -1256,6 +1256,7 @@ public struct AppFeature {
                 guard !text.isEmpty || pending != nil,
                       !state.attachmentPreparing,
                       let peerHex = state.openPeerHex,
+                      !state.isBlocked(peerHex),            // spec 2026-10-15 §2: no sends to a blocked peer
                       let peer = Data(hexString: peerHex) else { return .none }
                 // A reply carries the original's full hash and a trimmed quote in the standard LXMF
                 // fields 0x30 / 0x31. The quote is trimmed once, and the same string goes on the wire
@@ -1399,6 +1400,8 @@ public struct AppFeature {
                         try await reloadThread(database, peerHex, send)
                     }])
                 }
+                // Spec 2026-10-15 §2: a reaction is a message, none to a blocked peer.
+                guard !state.isBlocked(peerHex) else { return .none }
                 let me = state.myAddressHex
                 let mine = state.threadReactionRows.first { $0.messageHash == messageHash && $0.reactorHex == me }
                 // Same emoji again = remove (Signal/iMessage toggle).
@@ -1849,6 +1852,7 @@ public struct AppFeature {
 
             case let .expirySelected(seconds):
                 guard let peerHex = state.openPeerHex, let peer = Data(hexString: peerHex) else { return .none }
+                guard !state.isBlocked(peerHex) else { return .none }   // spec 2026-10-15 §2
                 let seconds = ExpiryWire.clamp(seconds)
                 // Amendment A14: picking the value already in force sends and stores nothing.
                 guard seconds != (state.openConversationExpiry ?? 0) else { return .none }
