@@ -1,0 +1,190 @@
+import Testing
+import Foundation
+import ComposableArchitecture
+import Sharing
+import SQLiteData
+import ReTiCA
+import ReTiCAInterfaces
+import ReTiCANode
+import ReTiCATransport
+import ReTiCAPush
+import ReTiCAPushCore
+@testable import ReTiCaMsgrCore
+
+let blockPeerA = String(repeating: "a", count: 32)
+let blockPeerB = String(repeating: "b", count: 32)
+let blockT0 = Date(timeIntervalSince1970: 1_700_000_000)
+
+/// Same hermetic store as `makeStore` in AppFeatureTests (private there), with a unique temporary
+/// `PushStorage` so the mirror can be read back from its suite.
+@MainActor
+func makeBlockStore(_ db: any DatabaseWriter, identity: Identity = Identity(),
+                    configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
+    var initial = AppFeature.State(identity: identity, pushStorage: .temporary())
+    configure?(&initial)
+    let store = TestStore(initialState: initial) {
+        AppFeature()
+    } withDependencies: {
+        $0.defaultDatabase = db
+        $0.attachmentStore = AttachmentStore.testValue
+        $0.date = .constant(blockT0)
+        $0.transportDate = .constant(blockT0)
+        $0.uuid = .incrementing
+        $0.continuousClock = TestClock()
+        $0.tcpConnection = TCPConnection(open: { _, _ in AsyncStream { _ in } }, send: { _ in }, close: { })
+        $0.tcpListener = TCPListener(listen: { _ in AsyncStream { _ in } }, send: { _, _ in }, close: { _ in }, stop: { })
+        $0.bleDriver = BLEDriver(start: { _ in AsyncStream { _ in } }, readIdentity: { _ in }, openChannel: { _ in },
+                                 send: { _, _ in }, closeChannel: { _ in }, stop: { })
+        $0.pushPlatform = PushPlatform(requestAuthorization: { true }, registerForRemoteNotifications: {},
+                                       unregisterForRemoteNotifications: {})
+    }
+    store.exhaustivity = .off
+    return store
+}
+
+func blockedRows(_ db: any DatabaseWriter) throws -> [BlockedPeer] {
+    try db.read { try BlockedPeer.all($0) }
+}
+
+func mirror(_ store: TestStoreOf<AppFeature>) -> Set<String> {
+    store.state.push.storage.blockedSenders.load()
+}
+
+@MainActor @Test func blockPeerWritesRowMirrorAndNode() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db)
+    await store.send(.blockPeer(blockPeerA)) {
+        $0.blockedPeers = [blockPeerA]
+        $0.blockedPeerRows = [BlockedPeer(peerHex: blockPeerA, blockedAt: blockT0)]
+    }
+    await store.receive { action in
+        if case let .node(.client(.ignoreDestination(hash))) = action {
+            #expect(hash == Data(hexString: blockPeerA))
+            return true
+        }
+        return false
+    }
+    #expect(try blockedRows(db).map(\.peerHex) == [blockPeerA])
+    #expect(mirror(store) == [blockPeerA])
+    #expect(store.state.isBlocked(blockPeerA))
+    await store.finish()
+}
+
+@MainActor @Test func blockPeerLowercasesAndIsIdempotent() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db)
+    await store.send(.blockPeer(blockPeerA.uppercased()))
+    await store.receive { if case .node(.client(.ignoreDestination)) = $0 { return true }; return false }
+    await store.send(.blockPeer(blockPeerA))
+    #expect(store.state.blockedPeers == [blockPeerA])
+    #expect(store.state.blockedPeerRows.count == 1)
+    #expect(try blockedRows(db).count == 1)
+    #expect(store.state.isBlocked(blockPeerA.uppercased()))
+    await store.finish()
+}
+
+@MainActor @Test func blockPeerMalformedHexDoesNothing() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db)
+    store.exhaustivity = .on
+    await store.send(.blockPeer("zz"))
+    await store.send(.blockPeer(String(repeating: "a", count: 30)))
+    #expect(try blockedRows(db).isEmpty)
+    #expect(mirror(store).isEmpty)
+    await store.finish()
+}
+
+@MainActor @Test func unblockPeerDeletesRowMirrorAndNode() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await db.write { db in
+        try BlockedPeer.insertIfAbsent(BlockedPeer(peerHex: blockPeerA, blockedAt: blockT0), db)
+        try BlockedPeer.insertIfAbsent(BlockedPeer(peerHex: blockPeerB, blockedAt: blockT0), db)
+    }
+    let store = makeBlockStore(db)
+    await store.send(.blockedPeersLoaded(try blockedRows(db)))
+    await store.send(.unblockPeer(blockPeerA)) {
+        $0.blockedPeers = [blockPeerB]
+        $0.blockedPeerRows = [BlockedPeer(peerHex: blockPeerB, blockedAt: blockT0)]
+    }
+    await store.receive { action in
+        if case let .node(.client(.unignoreDestination(hash))) = action {
+            #expect(hash == Data(hexString: blockPeerA))
+            return true
+        }
+        return false
+    }
+    #expect(try blockedRows(db).map(\.peerHex) == [blockPeerB])
+    #expect(mirror(store) == [blockPeerB])
+    await store.finish()
+}
+
+@MainActor @Test func unblockPeerWithNoRowStillTellsTheNode() async throws {
+    // An older launch may have the hex in state but no row (or the reverse); unblock is total.
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db) { $0.blockedPeers = [blockPeerA] }
+    await store.send(.unblockPeer(blockPeerA)) { $0.blockedPeers = [] }
+    await store.receive { if case .node(.client(.unignoreDestination)) = $0 { return true }; return false }
+    #expect(mirror(store).isEmpty)
+    await store.finish()
+}
+
+@MainActor @Test func blockedPeersLoadedSetsStateAndMirror() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db) { $0.blockedPeers = [blockPeerB] }
+    store.state.push.storage.blockedSenders.save([blockPeerB])   // a stale mirror
+    let rows = [BlockedPeer(peerHex: blockPeerA, blockedAt: blockT0)]
+    store.exhaustivity = .on
+    await store.send(.blockedPeersLoaded(rows)) {
+        $0.blockedPeers = [blockPeerA]
+        $0.blockedPeerRows = rows
+    }
+    await store.finish()
+    #expect(mirror(store) == [blockPeerA])
+}
+
+/// Spec A5: the blocked-peer load runs ahead of everything else at launch, and the node learns
+/// the set from the same effect, right after `blockedPeersLoaded`, before the node starts or the
+/// push inbox drains.
+@MainActor @Test func launchLoadsBlockedPeersBeforeAnythingElse() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await db.write { try BlockedPeer.insertIfAbsent(BlockedPeer(peerHex: blockPeerA, blockedAt: blockT0), $0) }
+    let store = makeBlockStore(db)
+    let order = LockIsolated<[String]>([])
+    await store.send(.onLaunch)
+    await store.receive { action in
+        if case let .blockedPeersLoaded(rows) = action {
+            #expect(rows.map(\.peerHex) == [blockPeerA])
+            order.withValue { if $0.last != "loaded" { $0.append("loaded") } }   // the predicate may run more than once
+            return true
+        }
+        return false
+    }
+    await store.receive { action in
+        if case let .node(.client(.rehydrateIgnoredDestinations(set))) = action {
+            #expect(set == [Data(hexString: blockPeerA)!])
+            order.withValue { if $0.last != "rehydrate" { $0.append("rehydrate") } }
+            return true
+        }
+        return false
+    }
+    // The first launch effect that is NOT ours: the node start. It must come after both.
+    await store.receive { action in
+        if case .node(.client(.endpoint(.start))) = action {
+            order.withValue { if $0.last != "start" { $0.append("start") } }
+            return true
+        }
+        return false
+    }
+    #expect(order.value == ["loaded", "rehydrate", "start"])
+    #expect(store.state.blockedPeers == [blockPeerA])
+    #expect(mirror(store) == [blockPeerA])
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func reportDraftReadyAndDismissed() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db)
+    let draft = ReportDraft(peerHex: blockPeerA, recipient: "", subject: "s", body: "b")
+    await store.send(.reportDraftReady(draft)) { $0.reportDraft = draft }
+    await store.send(.reportDismissed) { $0.reportDraft = nil }
+}

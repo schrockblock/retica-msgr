@@ -226,6 +226,16 @@ public struct AppFeature {
         // and seedReachablePeers). A peer outside it gets a path request on receipt / open
         // (`pathRequestIfUnreachable`); the answer lands here via pathLearned. Session-only.
         public var reachablePeers: Set<String> = []
+        /// Blocked senders (spec 2026-10-15 §2): lowercase lxmf.delivery hashes, mirrored from the
+        /// `blockedPeers` table on launch and on every change. The node's ignore list and the
+        /// extension's app-group list are both derived from this.
+        public var blockedPeers: Set<String> = []
+        /// The same rows with their dates, newest first, for the Settings list.
+        public var blockedPeerRows: [BlockedPeer] = []
+        /// A report waiting for the mail composer; nil when none is showing.
+        public var reportDraft: ReportDraft? = nil
+
+        public func isBlocked(_ hex: String) -> Bool { blockedPeers.contains(hex.lowercased()) }
         // Announce-row tap outcomes, keyed by the peer's delivery-destination hash hex. Session-only.
         public var publicKeyRequests: [String: PublicKeyRequestStatus] = [:]
         @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
@@ -502,6 +512,13 @@ public struct AppFeature {
         case contactLinkSheetAppeared
         case importCandidatesFound([ImportCandidate])
         case importContactLinks
+        // Blocking (spec 2026-10-15 §2, §3), handled in `BlockingReducer`.
+        case blockPeer(String)
+        case unblockPeer(String)
+        case blockedPeersLoaded([BlockedPeer])
+        case reportPeer(String)
+        case reportDraftReady(ReportDraft)
+        case reportDismissed
         case setDisplayName(String)
         case syncTapped
         case announceTapped
@@ -648,7 +665,11 @@ public struct AppFeature {
                     state.connection = .connecting
                 }
                 let sync = syncEndpointNodes(&state)
-                return .merge(
+                return .concatenate(
+                    // Spec 2026-10-15 A5: the node must know the blocklist before it starts and
+                    // before the push inbox drains. `reloadBlockedPeers` sends the node action itself.
+                    .run { [database] send in try await reloadBlockedPeers(database, send) },
+                    .merge(
                     // Removals first (`.concatenate`): a departing slot must be gone before
                     // `.start` could dial it.
                     .concatenate(sync.removals, .send(.node(.client(.endpoint(.start))))),
@@ -750,7 +771,7 @@ public struct AppFeature {
                         // only orphans older than the grace interval go.
                         try await database.write { try Reaction.pruneOrphans(olderThan: cutoff, $0) }
                     }
-                )
+                ))
 
             case .foregrounded:
                 // Only re-dial when the TCP socket specifically is down. iOS tears the TCP socket
@@ -2238,6 +2259,10 @@ public struct AppFeature {
                  .contactLinksLoaded, .setContactMirror, .contactLinkSheetAppeared, .importCandidatesFound,
                  .importContactLinks:
                 return .none
+
+            // The blocking arms live in `BlockingReducer` (AppFeature+Blocking.swift).
+            case .blockPeer, .unblockPeer, .blockedPeersLoaded, .reportPeer, .reportDraftReady, .reportDismissed:
+                return .none
             }
         }
 
@@ -2350,6 +2375,7 @@ public struct AppFeature {
         }
 
         ContactLinksReducer()
+        BlockingReducer()
     }
 
     /// The open thread is being looked at again (`.foregrounded`, `.chatAppeared`): stamp its
