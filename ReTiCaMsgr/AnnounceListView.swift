@@ -28,6 +28,7 @@ struct AnnounceListView: View {
 
     private var detectedAnnounces: [DetectedAnnounce] {
         store.state.node.client.learnedPeers
+            .filter { hash, _ in !store.state.isBlocked(toHex(hash)) }
             .map { hash, peer in
                 DetectedAnnounce(
                     id: hash,

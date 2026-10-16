@@ -16,6 +16,7 @@ struct RootView: View {
                     .tabItem { Label("Settings", systemImage: "gear") }
             }
             .modifier(LinkPromptsModifier(store: store))
+            .modifier(ReportPromptsModifier(store: store))
         } else if case .loading = runtime.state {
             ProgressView()
         } else {

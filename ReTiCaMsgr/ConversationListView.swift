@@ -61,6 +61,13 @@ struct ConversationListView: View {
                                     .padding(.vertical, 2)
                                     .background(Capsule().fill(Color.accentColor.opacity(0.2)))
                             }
+                            if convo.kind == .peer, store.state.isBlocked(convo.peerHex) {
+                                Text("Blocked")
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.red.opacity(0.15)))
+                            }
                             if store.state.contactLinks[convo.peerHex]?.isConflicted == true {
                                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.caption)
                             }

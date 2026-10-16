@@ -40,6 +40,7 @@ struct PeerInfoView: View {
                         }
                     }
                 }
+                SafetySection(store: store, peerHex: peerHex)
             }
             .navigationTitle("Chat info")
             .navigationBarTitleDisplayMode(.inline)

@@ -225,6 +225,18 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Safety") {
+                    NavigationLink { BlockedAddressesView(store: store) } label: {
+                        HStack {
+                            Label("Blocked Addresses", systemImage: "hand.raised")
+                            Spacer()
+                            if !store.blockedPeerRows.isEmpty {
+                                Text("\(store.blockedPeerRows.count)").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
                 Section("Run as Propagation Node") {
                     Toggle("Act as a propagation node", isOn: Binding(
                         get: { store.nodeModeEnabled },

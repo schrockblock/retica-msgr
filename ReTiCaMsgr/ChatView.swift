@@ -152,7 +152,9 @@ struct ChatView: View {
                 )
             }
 
-            if isGroup, store.openGroup?.state == GroupState.invited {
+            if !isGroup, let peer = store.openPeerHex, store.state.isBlocked(peer) {
+                BlockedBar(onUnblock: { store.send(.unblockPeer(peer)) })
+            } else if isGroup, store.openGroup?.state == GroupState.invited {
                 InviteBar(groupName: store.openGroup?.name ?? "the group",
                           onAccept: { store.send(.acceptInvite) },
                           onDecline: { store.send(.declineInvite) })
