@@ -142,7 +142,7 @@ struct ChatView: View {
                 )
             }
 
-            if showAttachmentBar {
+            if showAttachmentBar, isGroup || !store.state.isBlocked(store.openPeerHex ?? "") {
                 AttachmentComposerBar(
                     pending: store.pendingAttachment,
                     preparing: store.attachmentPreparing,
@@ -219,7 +219,9 @@ struct ChatView: View {
                     HStack(spacing: 16) {
                         Button { showingPeerInfo = true } label: { Image(systemName: "info.circle") }
                             .accessibilityLabel("Chat info")
-                        ExpiryMenu(current: store.openConversationExpiry) { store.send(.expirySelected(seconds: $0)) }
+                        if !store.state.isBlocked(store.openPeerHex ?? "") {
+                            ExpiryMenu(current: store.openConversationExpiry) { store.send(.expirySelected(seconds: $0)) }
+                        }
                     }
                 }
             }

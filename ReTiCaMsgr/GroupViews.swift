@@ -183,6 +183,7 @@ struct GroupInfoView: View {
     @State private var newName = ""
     @State private var confirmingDelete = false
     @State private var confirmingLeave = false
+    @State private var pendingBlock: PendingBlock? = nil
 
     private var group: ChatGroup? { store.openGroup }
     private var isCreator: Bool { store.isOpenGroupCreator }
@@ -223,6 +224,9 @@ struct GroupInfoView: View {
                                 if member.memberHex == group?.creatorHex {
                                     Text("Creator").font(.caption).foregroundStyle(.secondary)
                                 }
+                                if store.state.isBlocked(member.memberHex) {
+                                    Text("Blocked").font(.caption).foregroundStyle(.red)
+                                }
                             }
                             if member.memberHex != store.myAddressHex {
                                 ContactLinkRow(store: store, peerHex: member.memberHex)
@@ -232,6 +236,20 @@ struct GroupInfoView: View {
                         .swipeActions {
                             if isCreator, isActive, member.memberHex != store.myAddressHex {
                                 Button("Remove", role: .destructive) { store.send(.removeGroupMember(member.memberHex)) }
+                            }
+                            if member.memberHex != store.myAddressHex {
+                                if store.state.isBlocked(member.memberHex) {
+                                    Button("Unblock") { store.send(.unblockPeer(member.memberHex)) }.tint(.accentColor)
+                                } else {
+                                    Button("Block", role: .destructive) {
+                                        pendingBlock = PendingBlock(peerHex: member.memberHex, report: false)
+                                    }
+                                    if BlockUI.canReport {
+                                        Button("Report", role: .destructive) {
+                                            pendingBlock = PendingBlock(peerHex: member.memberHex, report: true)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -283,6 +301,9 @@ struct GroupInfoView: View {
                     dismiss()
                 }
             }
+            .blockConfirmation(store: store, pending: $pendingBlock)
+            // A7: group members are blocked from here, so this sheet hosts the report composer too.
+            .modifier(ReportPromptsModifier(store: store))
         }
     }
 }

@@ -61,10 +61,10 @@ func mirror(_ store: TestStoreOf<AppFeature>) -> Set<String> {
     await store.receive(.node(.client(.ignoreDestination(Data(hexString: blockPeerA)!)))) {
         $0.node.client.ignoredDestinations = [Data(hexString: blockPeerA)!]
     }
-    #expect(try blockedRows(db).map(\.peerHex) == [blockPeerA])
-    #expect(mirror(store) == [blockPeerA])
     #expect(store.state.isBlocked(blockPeerA))
     await store.finish()
+    #expect(try blockedRows(db).map(\.peerHex) == [blockPeerA])
+    #expect(mirror(store) == [blockPeerA])
 }
 
 @MainActor @Test func blockPeerLowercasesAndIsIdempotent() async throws {
@@ -75,9 +75,9 @@ func mirror(_ store: TestStoreOf<AppFeature>) -> Set<String> {
     await store.send(.blockPeer(blockPeerA))
     #expect(store.state.blockedPeers == [blockPeerA])
     #expect(store.state.blockedPeerRows.count == 1)
-    #expect(try blockedRows(db).count == 1)
     #expect(store.state.isBlocked(blockPeerA.uppercased()))
     await store.finish()
+    #expect(try blockedRows(db).count == 1)
 }
 
 @MainActor @Test func blockPeerMalformedHexDoesNothing() async throws {
@@ -110,9 +110,9 @@ func mirror(_ store: TestStoreOf<AppFeature>) -> Set<String> {
         }
         return false
     }
+    await store.finish()
     #expect(try blockedRows(db).map(\.peerHex) == [blockPeerB])
     #expect(mirror(store) == [blockPeerB])
-    await store.finish()
 }
 
 @MainActor @Test func unblockPeerWithNoRowStillTellsTheNode() async throws {
@@ -121,8 +121,30 @@ func mirror(_ store: TestStoreOf<AppFeature>) -> Set<String> {
     let store = makeBlockStore(db) { $0.blockedPeers = [blockPeerA] }
     await store.send(.unblockPeer(blockPeerA)) { $0.blockedPeers = [] }
     await store.receive { if case .node(.client(.unignoreDestination)) = $0 { return true }; return false }
-    #expect(mirror(store).isEmpty)
     await store.finish()
+    #expect(mirror(store).isEmpty)
+}
+
+@MainActor @Test func blockPeerSelfIsRefused() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let identity = Identity()
+    let store = makeBlockStore(db, identity: identity)
+    store.exhaustivity = .on
+    await store.send(.blockPeer(store.state.myAddressHex))
+    #expect(try blockedRows(db).isEmpty)
+    await store.finish()
+}
+
+@MainActor @Test func reportAndBlockBlocksEvenWhenTheDraftIsDismissed() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeBlockStore(db)
+    await store.send(.blockPeer(blockPeerA))
+    await store.send(.reportPeer(blockPeerA))
+    await store.receive { if case .reportDraftReady = $0 { return true }; return false }
+    await store.send(.reportDismissed) { $0.reportDraft = nil }
+    await store.finish()
+    #expect(store.state.isBlocked(blockPeerA))
+    #expect(try blockedRows(db).map(\.peerHex) == [blockPeerA])
 }
 
 @MainActor @Test func blockedPeersLoadedSetsStateAndMirror() async throws {

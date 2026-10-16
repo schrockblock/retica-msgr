@@ -9,35 +9,52 @@ import ReTiCaMsgrCore
 struct SafetySection: View {
     let store: StoreOf<AppFeature>
     let peerHex: String
-    @State private var confirming: PendingBlock? = nil
-
-    private enum PendingBlock: Identifiable { case block, reportAndBlock; var id: Self { self } }
-    private var canReport: Bool { !SupportContact.reportAddress.isEmpty }
+    @State private var pending: PendingBlock? = nil
 
     var body: some View {
         Section("Safety") {
             if store.state.isBlocked(peerHex) {
                 Button("Unblock") { store.send(.unblockPeer(peerHex)) }
-                if canReport {
+                if BlockUI.canReport {
                     Button("Report") { store.send(.reportPeer(peerHex)) }
                 }
             } else {
-                Button("Block", role: .destructive) { confirming = .block }
-                if canReport {
-                    Button("Report and block", role: .destructive) { confirming = .reportAndBlock }
+                Button("Block", role: .destructive) { pending = PendingBlock(peerHex: peerHex, report: false) }
+                if BlockUI.canReport {
+                    Button("Report and block", role: .destructive) { pending = PendingBlock(peerHex: peerHex, report: true) }
                 }
             }
         }
-        .confirmationDialog("Block this address?", isPresented: Binding(
-            get: { confirming != nil },
-            set: { if !$0 { confirming = nil } }
-        ), titleVisibility: .visible, presenting: confirming) { pending in
-            Button(pending == .reportAndBlock ? "Report and block" : "Block", role: .destructive) {
-                confirming = nil
-                store.send(.blockPeer(peerHex))
-                if pending == .reportAndBlock { store.send(.reportPeer(peerHex)) }
+        .blockConfirmation(store: store, pending: $pending)
+    }
+}
+
+/// A block the user is about to confirm: which address, and whether a report follows.
+struct PendingBlock: Identifiable, Equatable {
+    let peerHex: String
+    let report: Bool
+    var id: String { "\(peerHex)-\(report)" }
+}
+
+enum BlockUI {
+    /// Report actions exist only once the support address is filled in.
+    static var canReport: Bool { !SupportContact.reportAddress.isEmpty }
+}
+
+extension View {
+    /// The block confirmation dialog (spec §3), shared by the peer info Safety section and the
+    /// group member rows (A7). `pending` drives presentation; confirming blocks and, if asked, reports.
+    func blockConfirmation(store: StoreOf<AppFeature>, pending: Binding<PendingBlock?>) -> some View {
+        confirmationDialog("Block this address?", isPresented: Binding(
+            get: { pending.wrappedValue != nil },
+            set: { if !$0 { pending.wrappedValue = nil } }
+        ), titleVisibility: .visible, presenting: pending.wrappedValue) { choice in
+            Button(choice.report ? "Report and block" : "Block", role: .destructive) {
+                pending.wrappedValue = nil
+                store.send(.blockPeer(choice.peerHex))
+                if choice.report { store.send(.reportPeer(choice.peerHex)) }
             }
-            Button("Cancel", role: .cancel) { confirming = nil }
+            Button("Cancel", role: .cancel) { pending.wrappedValue = nil }
         } message: { _ in
             Text("Messages from this address will no longer arrive. The conversation stays, and you can unblock it here later.")
         }
@@ -95,7 +112,7 @@ struct BlockedAddressesView: View {
 
 /// Presents the report draft (spec §3 "Report flow"): the mail composer when the device can send
 /// mail, otherwise a `mailto:` URL. Either way the user sees the full text before sending, and
-/// dismissal clears the draft. Attached once at the root like `LinkPromptsModifier`.
+/// dismissal clears the draft. Hosted by each sheet that can start a report (`PeerInfoView`, `GroupInfoView`), never at the root: those sheets are already presenting, so a root host could not present over them.
 struct ReportPromptsModifier: ViewModifier {
     @Bindable var store: StoreOf<AppFeature>
     @Environment(\.openURL) private var openURL

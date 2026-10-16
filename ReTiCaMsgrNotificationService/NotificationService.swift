@@ -3,7 +3,7 @@ import ReTiCaMsgrPushService
 
 /// Runs for every push with `mutable-content: 1` (spec 2026-10-01 §1, §3; spec 2026-10-15 §4).
 /// Stashes the packets and proves them to the hub, then hands back the ORIGINAL content, unless
-/// every attributable packet came from a blocked sender: then it hands back EMPTY content, which
+/// every packet in the push could be attributed and every one came from a blocked sender (spec A6): then it hands back EMPTY content, which
 /// hides the banner once `com.apple.developer.usernotifications.filtering` is in the profile and
 /// before that iOS shows the original content anyway. Nothing but the sender hash is decrypted here.
 final class NotificationService: UNNotificationServiceExtension {

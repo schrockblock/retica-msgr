@@ -5,9 +5,9 @@ import ReTiCAPushCore
 
 /// The blocking and report arms of `AppFeature` (spec 2026-10-15 §2, §3), composed into
 /// `AppFeature.body` after `ContactLinksReducer`; the main reducer treats every action handled
-/// here as a no-op. The `blockedPeers` table is the truth: each arm writes it, mirrors the hex set
-/// into the app-group `BlockedSenderStore` the extension reads, and tells the node, in that order
-/// inside one effect so a test that has seen the node action knows the mirror is written.
+/// here as a no-op. The `blockedPeers` table is the truth: each arm tells the node first (it cannot
+/// fail), then writes the row, then mirrors the hex set into the app-group `BlockedSenderStore`;
+/// tests read the mirror after the effect finishes.
 struct BlockingReducer: Reducer {
     @Dependency(\.defaultDatabase) var database
     @Dependency(\.date) var date
@@ -18,6 +18,9 @@ struct BlockingReducer: Reducer {
             case let .blockPeer(raw):
                 let hex = raw.lowercased()
                 guard let hash = Data(hexString: hex), hash.count == 16 else { return .none }
+                // A7: never block yourself (a self-chat or a shared identity would drop your own traffic).
+                // A7: never block yourself (a self-chat or a shared identity would drop your own traffic).
+                guard hex != state.myAddressHex.lowercased() else { return .none }
                 guard !state.blockedPeers.contains(hex) else { return .none }
                 state.blockedPeers.insert(hex)
                 let row = BlockedPeer(peerHex: hex, blockedAt: date.now)
@@ -25,9 +28,9 @@ struct BlockingReducer: Reducer {
                 let mirror = state.blockedPeers
                 let store = state.push.storage.blockedSenders
                 return .run { [database] send in
+                    await send(.node(.client(.ignoreDestination(hash))))
                     try await database.write { try BlockedPeer.insertIfAbsent(row, $0) }
                     store.save(mirror)
-                    await send(.node(.client(.ignoreDestination(hash))))
                 }
 
             case let .unblockPeer(raw):
@@ -38,9 +41,9 @@ struct BlockingReducer: Reducer {
                 let mirror = state.blockedPeers
                 let store = state.push.storage.blockedSenders
                 return .run { [database] send in
+                    await send(.node(.client(.unignoreDestination(hash))))
                     try await database.write { try BlockedPeer.delete(peerHex: hex, $0) }
                     store.save(mirror)
-                    await send(.node(.client(.unignoreDestination(hash))))
                 }
 
             case let .blockedPeersLoaded(rows):
