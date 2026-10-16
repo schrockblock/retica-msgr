@@ -115,6 +115,8 @@ final class AppRuntime {
             }
             // The package's liveValue only reports an issue: the app owns UIKit.
             $0.pushPlatform = .uiKit
+            // Explicit for the same hosted-XCTest reason as `\.date`: its testValue is unimplemented.
+            $0.radioScanner = .liveValue
             // A purged attachment's decoded images leave the app's cache with its file (A17).
             $0.attachmentCacheEvictor = AttachmentCacheEvictor { ids in
                 await ThumbnailCache.shared.evict(attachmentIds: ids)

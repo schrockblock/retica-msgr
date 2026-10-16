@@ -280,9 +280,10 @@ public struct AppFeature {
         /// `.radioPicker(.dismiss)` (swipe, Cancel, or a pick), which is where paused BLE resumes:
         /// never set this to nil directly.
         @Presents public var radioPicker: RadioPickerFeature.State?
-        /// The picker stopped a running BLE interface so its scan owns FCB's one scan (spec §2),
-        /// and `.radioPicker(.dismiss)` restarts it and clears this. `redialDownNodes` leaves BLE
-        /// alone while it is set. Session-only.
+        /// BLE should be (re)started when the picker closes: set when the picker stopped a running
+        /// BLE interface so its scan owns FCB's one scan (spec §2), and when `redialDownNodes`
+        /// (foreground, push wake) wanted to start BLE while the picker was open and deferred it.
+        /// `.radioPicker(.dismiss)` performs that start and clears this. Session-only.
         public var blePausedForRadioScan = false
         /// The radio's state for Diagnostics. Session-only. Lane E fills it from the Meshtastic
         /// endpoint's delegates. This build leaves it at its defaults (offline).
@@ -2963,10 +2964,16 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
        restartListener || server.interface.status != .listening {
         dials.append(.send(.node(.client(.endpoint(.tcpServer(.start))))))
     }
-    // Not while the radio picker holds BLE paused (spec 2026-10-16 §7, Review Focus 1): a restart
-    // here would take FCB's one scan from the picker. Its dismiss restarts BLE.
-    if state.node.client.endpoint.ble != nil, !state.blePausedForRadioScan {
-        dials.append(.send(.node(.client(.endpoint(.ble(.start))))))
+    // Never while the radio picker is open (spec 2026-10-16 §7, Review Focus 1): a restart here
+    // would take FCB's one scan from the picker, whether or not the picker itself paused BLE (a
+    // Disconnect-stopped or unavailable BLE is not paused). The start is deferred, not dropped:
+    // marking BLE paused makes the picker's `.radioPicker(.dismiss)` perform it.
+    if state.node.client.endpoint.ble != nil {
+        if state.radioPicker != nil {
+            state.blePausedForRadioScan = true
+        } else {
+            dials.append(.send(.node(.client(.endpoint(.ble(.start))))))
+        }
     }
     return .concatenate(sync.removals, .merge(dials), heldPushSyncEffects(state))
 }

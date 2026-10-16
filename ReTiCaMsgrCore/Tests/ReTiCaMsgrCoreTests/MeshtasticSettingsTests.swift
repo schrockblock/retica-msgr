@@ -251,10 +251,23 @@ func meshPickerFlowEveryExitResumesPausedBLE(_ exit: PickerExit) async {
     #expect(await waitUntil { terminated.value })
 }
 
-/// Review Focus 1. SEEDED, not driven, on purpose: the pause itself is proven by
-/// `meshPickerFlowPausesRunningBLE`, and seeding keeps this test's only failure mode the
-/// `redialDownNodes` guard (the one-batch mutation rule in Step 6). An empty node list means no
-/// TCP slots, which is the case where `redialDownNodes` always reaches the BLE restart.
+/// Waits until `redialDownNodes` has run past its dials, then takes in whatever has arrived since.
+/// It concatenates removals, then the dials (a BLE start among them), then the push re-point, whose
+/// first action is `.push(.hubChanged)`, so receiving that proves the dials were emitted. But
+/// `BLEEndpoint` forwards an endpoint-level start to the interface's `.ble(.start)` through a
+/// further effect, queued AFTER `hubChanged`, and only that one changes `status`.
+/// `skipReceivedActions(strict: false)` yields, then drains the actions that have ARRIVED by then
+/// (not every action that will ever arrive), which here includes that forwarded start.
+@MainActor
+private func awaitRedial(_ store: TestStoreOf<AppFeature>) async {
+    await store.receive { if case .push(.hubChanged) = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Review Focus 1, with the picker's own pause SEEDED: the pause itself is proven by
+/// `meshPickerFlowPausesRunningBLE`. An empty node list means no TCP slots, which is the case where
+/// `redialDownNodes` always reaches the BLE restart. The driven cases (BLE the picker did NOT
+/// pause) follow.
 @MainActor @Test func meshPickerFlowForegroundWhileOpenKeepsBLEPaused() async {
     let store = meshStore { state in
         withBLE(&state, .stopped)
@@ -262,12 +275,58 @@ func meshPickerFlowEveryExitResumesPausedBLE(_ exit: PickerExit) async {
         state.blePausedForRadioScan = true
     }
     await store.send(.foregrounded)
-    // `redialDownNodes` concatenates removals, then the dials (BLE start among them), then the push
-    // re-point, whose first action is `.push(.hubChanged)`. Receiving it proves the redial ran past
-    // the dials. But `BLEEndpoint` forwards an endpoint-level start to the interface's `.ble(.start)`
-    // through a further effect, queued AFTER `hubChanged`, and only that one changes `status`. So
-    // drain the rest before reading the status, or a BLE start would go unseen.
-    await store.receive { if case .push(.hubChanged) = $0 { return true }; return false }
-    await store.skipReceivedActions(strict: false)
+    await awaitRedial(store)
     #expect(store.state.node.client.endpoint.ble?.ble.status == .stopped)
+}
+
+/// Final-review F1: BLE stopped by Disconnect is not paused by the picker, and a foreground while
+/// the picker is open must still not start it (it would take FCB's one scan from the picker).
+@MainActor @Test func meshPickerFlowForegroundWhileOpenDoesNotStartStoppedBLE() async {
+    let store = meshStore { withBLE(&$0, .stopped) }
+    await store.send(.chooseRadioTapped)
+    await store.send(.foregrounded)
+    await awaitRedial(store)
+    #expect(store.state.node.client.endpoint.ble?.ble.status == .stopped)
+}
+
+/// Final-review F1: the start the foreground wanted is deferred to the picker's close, not lost.
+@MainActor @Test func meshPickerFlowDismissPerformsTheStartAForegroundDeferred() async {
+    let store = meshStore { withBLE(&$0, .stopped) }
+    await store.send(.chooseRadioTapped)
+    await store.send(.foregrounded)
+    await awaitRedial(store)
+    await store.send(.radioPicker(.dismiss))
+    await store.receive(isBLEStart)
+    #expect(store.state.node.client.endpoint.ble?.ble.status == .starting)
+}
+
+/// Final-review F1: a terminally unavailable BLE is not paused either, and `BLEInterface` would
+/// accept a start from it, so a foreground while the picker is open must not send one.
+@MainActor @Test func meshPickerFlowForegroundWhileOpenDoesNotStartUnavailableBLE() async {
+    let store = meshStore { withBLE(&$0, .unavailable(.unauthorized)) }
+    await store.send(.chooseRadioTapped)
+    await store.send(.foregrounded)
+    await awaitRedial(store)
+    #expect(store.state.node.client.endpoint.ble?.ble.status == .unavailable(.unauthorized))
+}
+
+/// Final-review F1: a push wake reaches `redialDownNodes` too.
+@MainActor @Test func meshPickerFlowPushWakeWhileOpenDoesNotStartStoppedBLE() async {
+    let store = meshStore { withBLE(&$0, .stopped) }
+    await store.send(.chooseRadioTapped)
+    await store.send(.pushWake)
+    await awaitRedial(store)
+    #expect(store.state.node.client.endpoint.ble?.ble.status == .stopped)
+}
+
+/// Final-review F2: with no other interface up, the pause leaves `connection` disconnected (the
+/// default here, and what the stop's peer-offline produces when BLE peers were the only ones up).
+/// Resuming BLE on close must show "Connecting…", not Disconnected with a Connect button.
+@MainActor @Test func meshPickerFlowResumingBLEShowsConnecting() async {
+    let store = meshStore { withBLE(&$0, .online) }
+    await store.send(.chooseRadioTapped)
+    await store.receive(isBLEStop)
+    #expect(store.state.connection == .disconnected)
+    await store.send(.radioPicker(.dismiss))
+    #expect(store.state.connection == .connecting)
 }

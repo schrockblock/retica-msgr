@@ -61,10 +61,17 @@ struct MeshtasticSettingsReducer: Reducer {
             case .radioPicker(.dismiss):
                 // Every way out arrives here: the sheet's swipe, Cancel and a pick (the child's
                 // `dismiss()`). The presentation reducer cancels the scan right after this arm.
-                // Restart only what was paused, and only if its slot is still there.
+                // Start only BLE that was paused or whose start a wake deferred, and only if its slot
+                // is still there.
                 guard state.blePausedForRadioScan else { return .none }
                 state.blePausedForRadioScan = false
                 guard state.node.client.endpoint.ble != nil else { return .none }
+                // The pause's stop took BLE peers down, and if they were the only interfaces up,
+                // `connection` went to disconnected. BLE is about to dial again, so show
+                // "Connecting…" as Connect does, not Disconnected with a Connect button.
+                if state.connectedInterfaces.isEmpty {
+                    state.connection = .connecting
+                }
                 return .send(.node(.client(.endpoint(.ble(.start)))))
 
             default:
