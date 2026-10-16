@@ -276,6 +276,14 @@ public struct AppFeature {
         /// The chosen radio's advertised name when it was picked, for the Settings row only.
         /// Unauthenticated text from the air: never put it in a diagnostics reason.
         @Shared(.appStorage("meshtasticRadioName")) public var meshtasticRadioName: String? = nil
+        /// The radio picker sheet (spec 2026-10-16 §7), nil when closed. Closed ONLY through
+        /// `.radioPicker(.dismiss)` (swipe, Cancel, or a pick), which is where paused BLE resumes:
+        /// never set this to nil directly.
+        @Presents public var radioPicker: RadioPickerFeature.State?
+        /// The picker stopped a running BLE interface so its scan owns FCB's one scan (spec §2),
+        /// and `.radioPicker(.dismiss)` restarts it and clears this. `redialDownNodes` leaves BLE
+        /// alone while it is set. Session-only.
+        public var blePausedForRadioScan = false
 
         /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
         /// link write. The one source for "what do we call this peer" when a link exists.
@@ -591,6 +599,10 @@ public struct AppFeature {
         /// Not part of the public-facing action surface; callers should send `.backgrounded` for
         /// an explicit flush.
         case _flushLearnedDestinations
+        /// "Choose radio…" in Settings (spec 2026-10-16 §7): opens the radio picker and pauses a
+        /// running BLE interface. Handled in `MeshtasticSettingsReducer`.
+        case chooseRadioTapped
+        case radioPicker(PresentationAction<RadioPickerFeature.Action>)
         case node(LXMFServiceNode.Action)
         case binding(BindingAction<State>)
     }
@@ -2282,6 +2294,10 @@ public struct AppFeature {
             // The blocking arms live in `BlockingReducer` (AppFeature+Blocking.swift).
             case .blockPeer, .unblockPeer, .blockedPeersLoaded, .reportPeer, .reportDraftReady, .reportDismissed:
                 return .none
+
+            // The Meshtastic picker arms live in `MeshtasticSettingsReducer` (AppFeature+Meshtastic.swift).
+            case .chooseRadioTapped, .radioPicker:
+                return .none
             }
         }
 
@@ -2395,6 +2411,7 @@ public struct AppFeature {
 
         ContactLinksReducer()
         BlockingReducer()
+        MeshtasticSettingsReducer()
     }
 
     /// The open thread is being looked at again (`.foregrounded`, `.chatAppeared`): stamp its
@@ -2943,7 +2960,9 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
        restartListener || server.interface.status != .listening {
         dials.append(.send(.node(.client(.endpoint(.tcpServer(.start))))))
     }
-    if state.node.client.endpoint.ble != nil {
+    // Not while the radio picker holds BLE paused (spec 2026-10-16 §7, Review Focus 1): a restart
+    // here would take FCB's one scan from the picker. Its dismiss restarts BLE.
+    if state.node.client.endpoint.ble != nil, !state.blePausedForRadioScan {
         dials.append(.send(.node(.client(.endpoint(.ble(.start))))))
     }
     return .concatenate(sync.removals, .merge(dials), heldPushSyncEffects(state))
