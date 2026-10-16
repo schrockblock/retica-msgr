@@ -56,6 +56,7 @@ public struct DiagnosticsSnapshot: Equatable {
         self.layers = [
             Self.socketLayer(state),
             Self.bleLayer(state),
+            Self.meshtasticLayer(state),
             Self.identityLayer(state),
             Self.pathsLayer(state),
             Self.peersLayer(state, at: date),
@@ -210,6 +211,83 @@ extension DiagnosticsSnapshot {
         case .unsupported:  return "unsupported"
         case .other:        return "other"
         }
+    }
+}
+
+// MARK: - Meshtastic
+
+extension DiagnosticsSnapshot {
+    /// The Meshtastic radio (spec 2026-10-16 §7 lane D), fed from `AppFeature.State.meshtasticStatus`.
+    ///
+    /// UNTRUSTED TEXT: the radio's advertised name (`meshtasticRadioLabel`) and the `.other`
+    /// adapter payload are rendered in ROWS only, which `text` escapes. Never in `reason`, which
+    /// it does not (`meshDiagAHostileRadioNameCannotForgeLines`). Unlike `bleLayer`, the `.other`
+    /// payload IS shown: Contract 2's loud "ReTiCAMeshtasticLive not installed" lives there.
+    static func meshtasticLayer(_ state: AppFeature.State) -> Layer {
+        let title = "Meshtastic"
+        let enabled = state.meshtasticEnabled
+        var rows = [Row("meshtastic", enabled ? "on" : "off")]
+        guard enabled else {
+            // Off by choice is not a fault.
+            return Layer(title: title, health: .ok, reason: nil, rows: rows)
+        }
+
+        let status = state.meshtasticStatus
+        let radio = state.meshtasticRadioUUID
+        rows.append(Row("radio", radio == nil ? "(none chosen)" : state.meshtasticRadioLabel))
+        if let radio { rows.append(Row("radio id", radio.uuidString)) }
+        rows.append(Row("status", status.online ? "online" : "offline"))
+        if let reason = status.offlineReason { rows.append(Row("offline reason", reason)) }
+        if let cause = status.adapterUnavailable { rows.append(Row("adapter", describeMeshtastic(cause))) }
+        if let node = status.myNodeNum { rows.append(Row("node", meshtasticNodeName(node))) }
+        rows.append(Row("preset", meshtasticPresetName(status.modemPreset)))
+        let counters = status.counters
+        rows.append(contentsOf: [
+            Row("reassembled", String(counters.completed)),
+            Row("malformed", String(counters.malformed)),
+            Row("evicted", String(counters.evicted)),
+            Row("timed out", String(counters.timedOut)),
+            Row("oversize", String(counters.oversize)),
+            Row("queue full", String(counters.queueFull)),
+            Row("send failed", String(counters.sendFailed)),
+        ])
+
+        guard radio != nil else {
+            return Layer(title: title, health: .warn,
+                         reason: "no radio chosen — choose one in Settings", rows: rows)
+        }
+        if status.adapterUnavailable != nil {
+            return Layer(title: title, health: .problem,
+                         reason: "the Bluetooth path to the radio is unavailable", rows: rows)
+        }
+        guard status.online else {
+            return Layer(title: title, health: .warn, reason: "radio not connected", rows: rows)
+        }
+        return Layer(title: title, health: .ok, reason: nil, rows: rows)
+    }
+
+    /// The cause name, and for `.other` its payload too (see `meshtasticLayer`).
+    static func describeMeshtastic(_ cause: BLEAdapterUnavailable) -> String {
+        switch cause {
+        case .poweredOff:          return "powered off"
+        case .unauthorized:        return "unauthorized"
+        case .unsupported:         return "unsupported"
+        case let .other(detail):   return detail.map { "other: \($0)" } ?? "other"
+        }
+    }
+
+    /// Meshtastic's own node naming: `!` and 8 lowercase hex digits.
+    static func meshtasticNodeName(_ num: UInt32) -> String {
+        String(format: "!%08x", num)
+    }
+
+    /// The preset's name and raw value. Raw values from spec Contract 3's table
+    /// (`Config.LoRaConfig.ModemPreset`). A value this build does not know shows raw.
+    static func meshtasticPresetName(_ raw: Int?) -> String {
+        guard let raw else { return "unknown" }
+        let names = [0: "LongFast", 1: "LongSlow", 3: "MediumSlow", 4: "MediumFast",
+                     5: "ShortSlow", 6: "ShortFast", 7: "LongModerate", 8: "ShortTurbo"]
+        return names[raw].map { "\($0) (\(raw))" } ?? "unknown (\(raw))"
     }
 }
 

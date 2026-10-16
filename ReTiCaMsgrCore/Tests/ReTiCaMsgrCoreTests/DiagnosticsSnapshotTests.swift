@@ -438,7 +438,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 @MainActor @Test func snapshotHasAllLayersInOrder() {
     let snapshot = DiagnosticsSnapshot(from: healthyState(), at: fixedDate)
     #expect(snapshot.layers.map(\.title)
-            == ["Socket", "Bluetooth", "Identity", "Paths", "Peers", "Links", "Delivery"])
+            == ["Socket", "Bluetooth", "Meshtastic", "Identity", "Paths", "Peers", "Links", "Delivery"])
 }
 
 // C1. `.pending`, not `.handshake`. The two statuses are ROLE-DISJOINT in `LinkSession`:
@@ -813,4 +813,124 @@ private func withPi(_ state: inout AppFeature.State, status: TCPClientInterface.
     let socket = layer(DiagnosticsSnapshot(from: state, at: fixedDate), "Socket")
     #expect(socket.health == .problem)
     #expect(socket.reason == "app reports connected, nodes report none")
+}
+
+// MARK: - Meshtastic (spec 2026-10-16 §7 lane D)
+
+private let meshRadio = UUID(uuidString: "6A1B2C3D-0000-4000-8000-00000000AB01")!
+
+/// Non-fatal lookup: a missing layer fails the assertion instead of crashing the suite.
+private func meshLayer(_ snap: DiagnosticsSnapshot) -> DiagnosticsSnapshot.Layer? {
+    snap.layers.first { $0.title == "Meshtastic" }
+}
+
+private func meshRow(_ layer: DiagnosticsSnapshot.Layer?, _ label: String) -> String? {
+    layer?.rows.first { $0.label == label }?.value
+}
+
+/// A healthy state with the Meshtastic settings set, its `@Shared(.appStorage)` keys in a fresh
+/// suite so no test sees another's.
+@MainActor
+private func meshState(enabled: Bool = true, radio: UUID? = meshRadio, name: String? = "Base camp",
+                       status: MeshtasticStatus = MeshtasticStatus()) -> AppFeature.State {
+    var state = withDependencies { $0.defaultAppStorage = .inMemory } operation: { healthyState() }
+    state.$meshtasticEnabled.withLock { $0 = enabled }
+    state.$meshtasticRadioID.withLock { $0 = radio?.uuidString }
+    state.$meshtasticRadioName.withLock { $0 = name }
+    state.meshtasticStatus = status
+    return state
+}
+
+/// Off by choice is not a fault, like Bluetooth.
+@MainActor @Test func meshDiagIsOffAndOkWhenDisabled() {
+    let layer = meshLayer(DiagnosticsSnapshot(from: meshState(enabled: false), at: fixedDate))
+    #expect(layer?.health == .ok)
+    #expect(meshRow(layer, "meshtastic") == "off")
+}
+
+@MainActor @Test func meshDiagWarnsWhenNoRadioIsChosen() {
+    let layer = meshLayer(DiagnosticsSnapshot(from: meshState(radio: nil), at: fixedDate))
+    #expect(layer?.health == .warn)
+    #expect(layer?.reason?.contains("no radio") == true)
+}
+
+@MainActor @Test func meshDiagWarnsWhileTheRadioIsOffline() {
+    let status = MeshtasticStatus(online: false, offlineReason: "link lost")
+    let layer = meshLayer(DiagnosticsSnapshot(from: meshState(status: status), at: fixedDate))
+    #expect(layer?.health == .warn)
+    #expect(layer?.reason == "radio not connected")
+    #expect(meshRow(layer, "offline reason") == "link lost")
+}
+
+@MainActor @Test func meshDiagIsOkWhenOnline() {
+    let status = MeshtasticStatus(online: true, modemPreset: 6, myNodeNum: 0xABCD)
+    let layer = meshLayer(DiagnosticsSnapshot(from: meshState(status: status), at: fixedDate))
+    #expect(layer?.health == .ok)
+    #expect(layer?.reason == nil)
+}
+
+/// Meshtastic names nodes `!` + 8 lowercase hex digits. Matching it lets a reader find the same
+/// node in the Meshtastic app.
+@MainActor @Test func meshDiagShowsTheNodeNumberInMeshtasticForm() {
+    let status = MeshtasticStatus(online: true, myNodeNum: 0x0000_ABCD)
+    let layer = meshLayer(DiagnosticsSnapshot(from: meshState(status: status), at: fixedDate))
+    #expect(meshRow(layer, "node") == "!0000abcd")
+}
+
+@MainActor @Test func meshDiagNamesThePreset() {
+    let status = MeshtasticStatus(online: true, modemPreset: 6)
+    let layer = meshLayer(DiagnosticsSnapshot(from: meshState(status: status), at: fixedDate))
+    #expect(meshRow(layer, "preset") == "ShortFast (6)")
+}
+
+/// A preset newer than this build still shows its raw value, never a guess.
+@MainActor @Test func meshDiagShowsAnUnknownPresetRaw() {
+    let status = MeshtasticStatus(online: true, modemPreset: 9)
+    let layer = meshLayer(DiagnosticsSnapshot(from: meshState(status: status), at: fixedDate))
+    #expect(meshRow(layer, "preset") == "unknown (9)")
+}
+
+@MainActor @Test func meshDiagAdapterUnavailableIsAProblem() {
+    let status = MeshtasticStatus(online: false, adapterUnavailable: .unauthorized)
+    let layer = meshLayer(DiagnosticsSnapshot(from: meshState(status: status), at: fixedDate))
+    #expect(layer?.health == .problem)
+}
+
+/// Contract 2's liveValue is loud on purpose: its message must reach the screen.
+@MainActor @Test func meshDiagShowsTheUninstalledDriverMessage() {
+    let status = MeshtasticStatus(online: false, adapterUnavailable: .other("ReTiCAMeshtasticLive not installed"))
+    let layer = meshLayer(DiagnosticsSnapshot(from: meshState(status: status), at: fixedDate))
+    #expect(meshRow(layer, "adapter") == "other: ReTiCAMeshtasticLive not installed")
+}
+
+@MainActor @Test func meshDiagRendersEveryCounter() {
+    let counters = MeshtasticStatus.Counters(malformed: 1, evicted: 2, timedOut: 3, oversize: 4,
+                                             completed: 5, queueFull: 6, sendFailed: 7)
+    let layer = meshLayer(DiagnosticsSnapshot(from: meshState(status: MeshtasticStatus(counters: counters)),
+                                              at: fixedDate))
+    #expect(meshRow(layer, "malformed") == "1")
+    #expect(meshRow(layer, "evicted") == "2")
+    #expect(meshRow(layer, "timed out") == "3")
+    #expect(meshRow(layer, "oversize") == "4")
+    #expect(meshRow(layer, "reassembled") == "5")
+    #expect(meshRow(layer, "queue full") == "6")
+    #expect(meshRow(layer, "send failed") == "7")
+}
+
+/// Review Focus 3: the advertised name is attacker-controlled. Rows are escaped by `text`, the
+/// reason is not, so the name must never reach a reason. Same shape as
+/// `aHostilePeerDisplayNameCannotForgeLinesInTheExport`.
+@MainActor @Test func meshDiagAHostileRadioNameCannotForgeLines() {
+    let forged = "SOCKET  [ok] all good"
+    let hostile = meshState(name: "Mallory\n  \(forged)")
+    let benign = meshState(name: "Mallory")
+    // Precondition: the hostile name really reached a row.
+    #expect(meshLayer(DiagnosticsSnapshot(from: hostile, at: fixedDate))?
+        .rows.contains { $0.value.contains("\n") } == true)
+    let text = DiagnosticsSnapshot(from: hostile, at: fixedDate).text
+    let control = DiagnosticsSnapshot(from: benign, at: fixedDate).text
+    #expect(text.split(separator: "\n", omittingEmptySubsequences: false).count
+            == control.split(separator: "\n", omittingEmptySubsequences: false).count)
+    #expect(!text.contains("\n  \(forged)"))
+    #expect(text.contains("Mallory\\n"))
 }

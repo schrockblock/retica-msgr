@@ -284,6 +284,9 @@ public struct AppFeature {
         /// and `.radioPicker(.dismiss)` restarts it and clears this. `redialDownNodes` leaves BLE
         /// alone while it is set. Session-only.
         public var blePausedForRadioScan = false
+        /// The radio's state for Diagnostics. Session-only. Lane E fills it from the Meshtastic
+        /// endpoint's delegates. This build leaves it at its defaults (offline).
+        public var meshtasticStatus = MeshtasticStatus()
 
         /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
         /// link write. The one source for "what do we call this peer" when a link exists.
