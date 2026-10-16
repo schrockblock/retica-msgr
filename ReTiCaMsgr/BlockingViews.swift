@@ -31,15 +31,14 @@ struct SafetySection: View {
         .confirmationDialog("Block this address?", isPresented: Binding(
             get: { confirming != nil },
             set: { if !$0 { confirming = nil } }
-        ), titleVisibility: .visible) {
-            Button(confirming == .reportAndBlock ? "Report and block" : "Block", role: .destructive) {
-                let pending = confirming
+        ), titleVisibility: .visible, presenting: confirming) { pending in
+            Button(pending == .reportAndBlock ? "Report and block" : "Block", role: .destructive) {
                 confirming = nil
                 store.send(.blockPeer(peerHex))
                 if pending == .reportAndBlock { store.send(.reportPeer(peerHex)) }
             }
             Button("Cancel", role: .cancel) { confirming = nil }
-        } message: {
+        } message: { _ in
             Text("Messages from this address will no longer arrive. The conversation stays, and you can unblock it here later.")
         }
     }
@@ -150,7 +149,7 @@ struct ReportMailSheet: UIViewControllerRepresentable {
         init(onFinish: @escaping () -> Void) { self.onFinish = onFinish }
         func mailComposeController(_ controller: MFMailComposeViewController,
                                    didFinishWith result: MFMailComposeResult, error: (any Error)?) {
-            controller.dismiss(animated: true)
+            // SwiftUI owns the sheet: clearing the draft dismisses it.
             onFinish()
         }
     }

@@ -15,9 +15,7 @@ struct RootView: View {
                 SettingsView(store: store)
                     .tabItem { Label("Settings", systemImage: "gear") }
             }
-            .modifier(LinkPromptsModifier(store: store))
-            .modifier(ReportPromptsModifier(store: store))
-        } else if case .loading = runtime.state {
+            .modifier(LinkPromptsModifier(store: store))        } else if case .loading = runtime.state {
             ProgressView()
         } else {
             IdentityRecoveryView(runtime: runtime)

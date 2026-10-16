@@ -5,7 +5,7 @@ import ReTiCaMsgrPushService
 /// Stashes the packets and proves them to the hub, then hands back the ORIGINAL content, unless
 /// every attributable packet came from a blocked sender: then it hands back EMPTY content, which
 /// hides the banner once `com.apple.developer.usernotifications.filtering` is in the profile and
-/// changes nothing before that. Nothing but the sender hash is decrypted here.
+/// before that iOS shows the original content anyway. Nothing but the sender hash is decrypted here.
 final class NotificationService: UNNotificationServiceExtension {
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var originalContent: UNNotificationContent?

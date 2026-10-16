@@ -48,6 +48,8 @@ struct PeerInfoView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
             .onAppear { store.send(.contactLinkSheetAppeared) }
+            // Hosted here, not at the root: this view is itself a sheet, and the report is only started from it.
+            .modifier(ReportPromptsModifier(store: store))
         }
     }
 }
