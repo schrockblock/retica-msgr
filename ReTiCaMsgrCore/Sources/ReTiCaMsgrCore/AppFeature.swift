@@ -265,6 +265,17 @@ public struct AppFeature {
         /// Connect. The live FCB/CoreBluetooth driver is auto-wired via `\.bleDriver` — nothing to
         /// inject.
         @Shared(.appStorage("bleEnabled")) public var bleEnabled: Bool = false
+        /// Opt-in: also reach Reticulum through a Meshtastic radio paired over Bluetooth (spec
+        /// 2026-10-16 §7). OFF by default. Like `bleEnabled`, it is read at connect time, and the
+        /// endpoint slot itself is wired by lane E (`syncEndpointNodes`): this build stores the
+        /// choice and shows it in Settings and Diagnostics.
+        @Shared(.appStorage("meshtasticEnabled")) public var meshtasticEnabled: Bool = false
+        /// The chosen radio's CoreBluetooth peripheral UUID as a string, nil when none is chosen.
+        /// Read it through `meshtasticRadioUUID`, which treats a non-UUID string as no radio.
+        @Shared(.appStorage("meshtasticRadioID")) public var meshtasticRadioID: String? = nil
+        /// The chosen radio's advertised name when it was picked, for the Settings row only.
+        /// Unauthenticated text from the air: never put it in a diagnostics reason.
+        @Shared(.appStorage("meshtasticRadioName")) public var meshtasticRadioName: String? = nil
 
         /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
         /// link write. The one source for "what do we call this peer" when a link exists.
