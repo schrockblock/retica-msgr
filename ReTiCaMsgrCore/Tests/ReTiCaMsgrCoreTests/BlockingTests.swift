@@ -257,3 +257,45 @@ private func blockUUID(_ n: Int) -> UUID {
     await store.skipReceivedActions(strict: false)
     #expect(try await db.read { try Message.all.fetchAll($0) }.count == 1)
 }
+
+@MainActor @Test func reportPeerBuildsADraftFromInboundRowsAndAttachments() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let theirs = Message(id: blockUUID(1), peerHex: blockPeerA, isOutgoing: false, body: "threat",
+                         timestamp: blockT0, status: MessageStatus.received, validated: true,
+                         messageHash: String(repeating: "1", count: 64))
+    let mine = Message(id: blockUUID(2), peerHex: blockPeerA, isOutgoing: true, body: "mine",
+                       timestamp: blockT0 + 1, status: MessageStatus.sent, validated: false,
+                       messageHash: String(repeating: "2", count: 64))
+    let photo = Message(id: blockUUID(3), peerHex: blockPeerA, isOutgoing: false, body: "",
+                        timestamp: blockT0 + 2, status: MessageStatus.received, validated: true,
+                        messageHash: String(repeating: "3", count: 64))
+    let other = Message(id: blockUUID(4), peerHex: blockPeerB, isOutgoing: false, body: "elsewhere",
+                        timestamp: blockT0 + 3, status: MessageStatus.received, validated: true,
+                        messageHash: String(repeating: "4", count: 64))
+    try await db.write { db in
+        for row in [theirs, mine, photo, other] { try Message.insert { row }.execute(db) }
+        try Attachment.insert {
+            Attachment(id: blockUUID(9), messageId: photo.id, kind: AttachmentKind.image, name: "photo.jpg",
+                       format: "jpeg", size: 10, width: 1, height: 1, path: "x")
+        }.execute(db)
+    }
+    let store = makeBlockStore(db) { s in
+        s.node.client.learnedPeers[Data(hexString: blockPeerA)!] = LXMFNode.LearnedPeer(
+            displayName: "Mallory", stampCost: nil, supportsCompression: false, learnedAt: blockT0)
+    }
+    await store.send(.reportPeer(blockPeerA))
+    await store.receive { action in
+        if case let .reportDraftReady(draft) = action {
+            #expect(draft.peerHex == blockPeerA)
+            #expect(draft.body.contains("Announced name: Mallory"))
+            #expect(draft.body.contains("] (attachment: photo.jpg)"))
+            #expect(draft.body.contains("] threat"))
+            #expect(!draft.body.contains("mine"))
+            #expect(!draft.body.contains("elsewhere"))
+            return true
+        }
+        return false
+    }
+    #expect(store.state.reportDraft?.peerHex == blockPeerA)
+    await store.finish()
+}
