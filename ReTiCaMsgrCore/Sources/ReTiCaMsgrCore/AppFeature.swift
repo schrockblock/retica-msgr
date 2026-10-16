@@ -668,7 +668,11 @@ public struct AppFeature {
                 return .concatenate(
                     // Spec 2026-10-15 A5: the node must know the blocklist before it starts and
                     // before the push inbox drains. `reloadBlockedPeers` sends the node action itself.
-                    .run { [database] send in try await reloadBlockedPeers(database, send) },
+                    .run { [database] send in
+                        try await reloadBlockedPeers(database, send)
+                    } catch: { error, _ in
+                        AppFeature.inbound.error("blocked peers failed to load, node starts with an empty ignore list: \(String(describing: error), privacy: .public)")
+                    },
                     .merge(
                     // Removals first (`.concatenate`): a departing slot must be gone before
                     // `.start` could dial it.

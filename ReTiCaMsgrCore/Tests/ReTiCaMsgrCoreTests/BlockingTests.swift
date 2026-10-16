@@ -53,16 +53,13 @@ func mirror(_ store: TestStoreOf<AppFeature>) -> Set<String> {
 @MainActor @Test func blockPeerWritesRowMirrorAndNode() async throws {
     let db = try AppDatabase.makeInMemory()
     let store = makeBlockStore(db)
+    store.exhaustivity = .on
     await store.send(.blockPeer(blockPeerA)) {
         $0.blockedPeers = [blockPeerA]
         $0.blockedPeerRows = [BlockedPeer(peerHex: blockPeerA, blockedAt: blockT0)]
     }
-    await store.receive { action in
-        if case let .node(.client(.ignoreDestination(hash))) = action {
-            #expect(hash == Data(hexString: blockPeerA))
-            return true
-        }
-        return false
+    await store.receive(.node(.client(.ignoreDestination(Data(hexString: blockPeerA)!)))) {
+        $0.node.client.ignoredDestinations = [Data(hexString: blockPeerA)!]
     }
     #expect(try blockedRows(db).map(\.peerHex) == [blockPeerA])
     #expect(mirror(store) == [blockPeerA])
@@ -149,12 +146,11 @@ func mirror(_ store: TestStoreOf<AppFeature>) -> Set<String> {
     let db = try AppDatabase.makeInMemory()
     try await db.write { try BlockedPeer.insertIfAbsent(BlockedPeer(peerHex: blockPeerA, blockedAt: blockT0), $0) }
     let store = makeBlockStore(db)
-    let order = LockIsolated<[String]>([])
     await store.send(.onLaunch)
+    // The three receives are the assertion: in .off mode an early .endpoint(.start) is skipped while looking for .blockedPeersLoaded, and the third receive then times out.
     await store.receive { action in
         if case let .blockedPeersLoaded(rows) = action {
             #expect(rows.map(\.peerHex) == [blockPeerA])
-            order.withValue { if $0.last != "loaded" { $0.append("loaded") } }   // the predicate may run more than once
             return true
         }
         return false
@@ -162,7 +158,6 @@ func mirror(_ store: TestStoreOf<AppFeature>) -> Set<String> {
     await store.receive { action in
         if case let .node(.client(.rehydrateIgnoredDestinations(set))) = action {
             #expect(set == [Data(hexString: blockPeerA)!])
-            order.withValue { if $0.last != "rehydrate" { $0.append("rehydrate") } }
             return true
         }
         return false
@@ -170,12 +165,10 @@ func mirror(_ store: TestStoreOf<AppFeature>) -> Set<String> {
     // The first launch effect that is NOT ours: the node start. It must come after both.
     await store.receive { action in
         if case .node(.client(.endpoint(.start))) = action {
-            order.withValue { if $0.last != "start" { $0.append("start") } }
             return true
         }
         return false
     }
-    #expect(order.value == ["loaded", "rehydrate", "start"])
     #expect(store.state.blockedPeers == [blockPeerA])
     #expect(mirror(store) == [blockPeerA])
     await store.skipReceivedActions(strict: false)

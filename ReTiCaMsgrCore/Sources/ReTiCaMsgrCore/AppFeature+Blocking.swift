@@ -47,8 +47,8 @@ struct BlockingReducer: Reducer {
                 // State and mirror only. The node's rehydrate is sent by `reloadBlockedPeers`
                 // right after this action, inside the launch effect that runs ahead of the node
                 // start and the inbox drain (spec A5).
-                state.blockedPeerRows = rows
-                state.blockedPeers = Set(rows.map { $0.peerHex.lowercased() })
+                state.blockedPeerRows = rows.map { var row = $0; row.peerHex = row.peerHex.lowercased(); return row }
+                state.blockedPeers = Set(state.blockedPeerRows.map(\.peerHex))
                 let mirror = state.blockedPeers
                 let store = state.push.storage.blockedSenders
                 return .run { _ in store.save(mirror) }
@@ -64,7 +64,7 @@ struct BlockingReducer: Reducer {
                         let attachments = ids.isEmpty ? [] : try Attachment.where { $0.messageId.in(ids) }.fetchAll(db)
                         return (rows, attachments)
                     }
-                    let names = Dictionary(uniqueKeysWithValues: attachments.map { ($0.messageId, $0.name) })
+                    let names = Dictionary(attachments.map { ($0.messageId, $0.name) }, uniquingKeysWith: { first, _ in first })
                     await send(.reportDraftReady(ReportDraft.compose(peerHex: hex, announcedName: announcedName,
                                                                      messages: rows, attachmentNames: names,
                                                                      composedAt: now)))
