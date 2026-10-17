@@ -117,6 +117,9 @@ final class AppRuntime {
             $0.pushPlatform = .uiKit
             // Explicit for the same hosted-XCTest reason as `\.date`: its testValue is unimplemented.
             $0.radioScanner = .liveValue
+            // The live Meshtastic driver over the app's ONE MeshtasticSession (spec 2026-10-16 §7
+            // lane E). Lazy: no CoreBluetooth work until a radio slot starts.
+            MeshtasticLiveWiring.installDriver(into: &$0)
             // A purged attachment's decoded images leave the app's cache with its file (A17).
             $0.attachmentCacheEvictor = AttachmentCacheEvictor { ids in
                 await ThumbnailCache.shared.evict(attachmentIds: ids)

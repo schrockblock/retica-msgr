@@ -288,6 +288,9 @@ public struct AppFeature {
         /// The radio's state for Diagnostics. Session-only. Lane E fills it from the Meshtastic
         /// endpoint's delegates. This build leaves it at its defaults (offline).
         public var meshtasticStatus = MeshtasticStatus()
+        /// A radio slot replacement in flight (spec Contract 3): the old slot was sent `.stop` and is
+        /// dropped at its `.radioOffline`. Session-only.
+        public var meshtasticSwap: MeshtasticSlotSwap? = nil
 
         /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
         /// link write. The one source for "what do we call this peer" when a link exists.
@@ -688,7 +691,7 @@ public struct AppFeature {
                 // Amendment A10 (final-review M1): only show "Connecting…" when something will
                 // actually dial — an empty/all-disabled node list with the listener and BLE both
                 // off would otherwise leave the UI stuck on "Connecting…" forever.
-                if !state.enabledNodes.isEmpty || state.listenEnabled || state.bleEnabled {
+                if state.somethingWillDial {
                     state.connection = .connecting
                 }
                 let sync = syncEndpointNodes(&state)
@@ -703,7 +706,7 @@ public struct AppFeature {
                     .merge(
                     // Removals first (`.concatenate`): a departing slot must be gone before
                     // `.start` could dial it.
-                    .concatenate(sync.removals, .send(.node(.client(.endpoint(.start))))),
+                    .concatenate(sync.removals, sync.meshtastic, .send(.node(.client(.endpoint(.start))))),
                     pushSyncEffects(state),
                     .send(.push(.appLaunched)),
                     .run { [database] send in try await reloadConversations(database, send) },
@@ -910,12 +913,12 @@ public struct AppFeature {
             case .connectTapped:
                 // Amendment A10 (final-review M1): only show "Connecting…" when something will
                 // actually dial.
-                if !state.enabledNodes.isEmpty || state.listenEnabled || state.bleEnabled {
+                if state.somethingWillDial {
                     state.connection = .connecting
                 }
                 let sync = syncEndpointNodes(&state)
                 return .merge(
-                    .concatenate(sync.removals, .send(.node(.client(.endpoint(.start))))),
+                    .concatenate(sync.removals, sync.meshtastic, .send(.node(.client(.endpoint(.start))))),
                     heldPushSyncEffects(state)
                 )
 
@@ -2416,6 +2419,7 @@ public struct AppFeature {
         ContactLinksReducer()
         BlockingReducer()
         MeshtasticSettingsReducer()
+        MeshtasticRadioReducer()
     }
 
     /// The open thread is being looked at again (`.foregrounded`, `.chatAppeared`): stamp its
@@ -2794,8 +2798,10 @@ private func migrateNodesIfNeeded(_ state: inout AppFeature.State, makeID: () ->
 /// entry is gone, disabled or edited (an edit of host or port changes the id), and a slot that
 /// still has an enabled entry kept as it is, so a re-dial never tears down a live socket. The
 /// listener and BLE slots follow their settings exactly as before. Returns the removal effects
-/// (callers `.concatenate` them before any dial) and the ids of the slots added.
-private func syncEndpointNodes(_ state: inout AppFeature.State) -> (removals: Effect<AppFeature.Action>, added: [InterfaceID]) {
+/// (callers `.concatenate` them before any dial), the ids of the slots added, and the radio
+/// slot's effect (run with the removals).
+private func syncEndpointNodes(_ state: inout AppFeature.State)
+    -> (removals: Effect<AppFeature.Action>, added: [InterfaceID], meshtastic: Effect<AppFeature.Action>) {
     let wanted = state.enabledNodes
     var wantedIDs = Set(wanted.map(\.interfaceID))
     // The slot an in-flight `/unregister` runs over is kept until it settles (backlog item 1):
@@ -2840,10 +2846,15 @@ private func syncEndpointNodes(_ state: inout AppFeature.State) -> (removals: Ef
         state.node.client.endpoint.ble = nil
     }
 
+    // The Meshtastic radio slot follows `meshtasticEnabled` + `meshtasticRadioUUID` (spec 2026-10-16
+    // §7 lane E). Dropping a running slot is the amended Contract 3 protocol — `.stop`, wait for
+    // `.radioOffline`, then replace — so it is an effect the caller runs, never a direct `= nil`.
+    let meshtastic = syncMeshtasticSlot(&state)
+
     let removals: Effect<AppFeature.Action> = .merge(stale.map {
         .send(.node(.client(.endpoint(.removeTCPClient($0)))))
     })
-    return (removals, added)
+    return (removals, added, meshtastic)
 }
 
 /// `.connect` for each of `ids` (slots `syncEndpointNodes` just added, or nodes found down).
@@ -2894,7 +2905,7 @@ private func heldPushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature
 /// (`.concatenate`), so a departing slot is never dialed and the receives are deterministic.
 private func nodeChangeEffects(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
-    return .concatenate(sync.removals, connectEffects(sync.added), heldPushSyncEffects(state))
+    return .concatenate(sync.removals, sync.meshtastic, connectEffects(sync.added), heldPushSyncEffects(state))
 }
 
 /// After a node edit (backlog item 1). When push is on and the edit moved the push role off a hub
@@ -2952,11 +2963,11 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
     let sync = syncEndpointNodes(&state)
     let down = state.node.client.endpoint.tcpClients.ids.filter { !state.connectedInterfaces.contains($0) }
     let noClientSlots = state.node.client.endpoint.tcpClients.isEmpty
-    guard !down.isEmpty || noClientSlots else { return sync.removals }
-    // Final-review M1: "nothing is up" alone is not enough — with no enabled node, no listener
-    // and no BLE, nothing here is going to dial, and `.connecting` would never resolve.
-    if state.connectedInterfaces.isEmpty,
-       !state.enabledNodes.isEmpty || state.listenEnabled || state.bleEnabled {
+    guard !down.isEmpty || noClientSlots else { return .concatenate(sync.removals, sync.meshtastic) }
+    // Final-review M1: "nothing is up" alone is not enough — with no enabled node, no listener, no
+    // BLE and no Meshtastic radio, nothing here is going to dial, and `.connecting` would never
+    // resolve.
+    if state.connectedInterfaces.isEmpty, state.somethingWillDial {
         state.connection = .connecting
     }
     var dials: [Effect<AppFeature.Action>] = [connectEffects(down)]
@@ -2975,7 +2986,7 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
             dials.append(.send(.node(.client(.endpoint(.ble(.start))))))
         }
     }
-    return .concatenate(sync.removals, .merge(dials), heldPushSyncEffects(state))
+    return .concatenate(sync.removals, sync.meshtastic, .merge(dials), heldPushSyncEffects(state))
 }
 
 // Seed `reachablePeers` (the Send gate, "a send would route now") from learned destinations that
