@@ -911,6 +911,10 @@ public struct AppFeature {
                 }
 
             case .connectTapped:
+                // Never while the radio picker is open (spec 2026-10-16 §7 lane E): `.endpoint(.start)`
+                // would restart a BLE interface the picker paused and take FCB's one scan from it.
+                // The Connect button sits behind the sheet; the tap is dropped, not deferred.
+                guard state.radioPicker == nil else { return .none }
                 // Amendment A10 (final-review M1): only show "Connecting…" when something will
                 // actually dial.
                 if state.somethingWillDial {
@@ -924,6 +928,8 @@ public struct AppFeature {
 
             case .disconnectTapped:
                 state.connection = .disconnected
+                // A radio swap that finishes after this leaves the new radio stopped.
+                state.meshtasticSwap?.startNext = false
                 return .send(.node(.client(.endpoint(.stop))))
 
             case let .node(.client(.endpoint(.transport(.interfaceConnected(interfaceID, _))))):
@@ -2961,9 +2967,17 @@ private func propagationChangeEffects(_ state: AppFeature.State, from before: St
 /// The push re-point is held while an `/unregister` is in flight (`heldPushSyncEffects`).
 private func redialDownNodes(_ state: inout AppFeature.State, restartListener: Bool) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
+    // Restart a stopped or unavailable radio (spec 2026-10-16 §7 lane E). `.start` is ignored by a
+    // connecting or online interface, and MeshtasticKit reconnects a dropped radio itself. Never
+    // the slot a swap is replacing: a `.start` reaching it during its `driver.stop()` would restart
+    // the old radio. Unlike BLE it is not deferred while the picker is open: a MeshtasticSession
+    // connects by retrieval and never scans.
+    let radioRestart: Effect<AppFeature.Action> =
+        state.meshtasticSwap == nil && state.node.client.endpoint.meshtastic != nil
+            ? .send(.node(.client(.endpoint(.meshtastic(.start))))) : .none
     let down = state.node.client.endpoint.tcpClients.ids.filter { !state.connectedInterfaces.contains($0) }
     let noClientSlots = state.node.client.endpoint.tcpClients.isEmpty
-    guard !down.isEmpty || noClientSlots else { return .concatenate(sync.removals, sync.meshtastic) }
+    guard !down.isEmpty || noClientSlots else { return .concatenate(sync.removals, sync.meshtastic, radioRestart) }
     // Final-review M1: "nothing is up" alone is not enough — with no enabled node, no listener, no
     // BLE and no Meshtastic radio, nothing here is going to dial, and `.connecting` would never
     // resolve.
@@ -2986,7 +3000,7 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
             dials.append(.send(.node(.client(.endpoint(.ble(.start))))))
         }
     }
-    return .concatenate(sync.removals, sync.meshtastic, .merge(dials), heldPushSyncEffects(state))
+    return .concatenate(sync.removals, sync.meshtastic, .merge(dials + [radioRestart]), heldPushSyncEffects(state))
 }
 
 // Seed `reachablePeers` (the Send gate, "a send would route now") from learned destinations that
