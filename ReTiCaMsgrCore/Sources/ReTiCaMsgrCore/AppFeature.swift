@@ -285,6 +285,10 @@ public struct AppFeature {
         /// (foreground, push wake) wanted to start BLE while the picker was open and deferred it.
         /// `.radioPicker(.dismiss)` performs that start and clears this. Session-only.
         public var blePausedForRadioScan = false
+        /// `bleEnabled` went off while the BLE slot was running: the slot was sent `.stop` and is
+        /// dropped once its interface is idle (`BLESlotReducer`). Cleared when the setting comes
+        /// back on before then, which keeps the slot. Session-only.
+        public var bleSlotRemovalPending = false
         /// The radio's state for Diagnostics, from the Meshtastic endpoint's delegates and counters (MeshtasticRadioReducer). Session-only.
         public var meshtasticStatus = MeshtasticStatus()
         /// A radio slot replacement in flight (spec Contract 3): the old slot was sent `.stop` and is
@@ -2436,6 +2440,7 @@ public struct AppFeature {
         BlockingReducer()
         MeshtasticSettingsReducer()
         MeshtasticRadioReducer()
+        BLESlotReducer()
     }
 
     /// The open thread is being looked at again (`.foregrounded`, `.chatAppeared`): stamp its
@@ -2813,8 +2818,9 @@ private func migrateNodesIfNeeded(_ state: inout AppFeature.State, makeID: () ->
 /// `interfaceID` (built here, `reconnectOnDrop: true`), `removeTCPClient` for every slot whose
 /// entry is gone, disabled or edited (an edit of host or port changes the id), and a slot that
 /// still has an enabled entry kept as it is, so a re-dial never tears down a live socket. The
-/// listener and BLE slots follow their settings exactly as before. Returns the removal effects
-/// (callers `.concatenate` them before any dial), the ids of the slots added, and the radio
+/// listener and BLE slots follow their settings exactly as before (a running BLE slot is stopped
+/// before it is dropped). Returns the removal effects, including that BLE `.stop` (callers
+/// `.concatenate` them before any dial), the ids of the slots added, and the radio
 /// slot's effect (run with the removals).
 private func syncEndpointNodes(_ state: inout AppFeature.State)
     -> (removals: Effect<AppFeature.Action>, added: [InterfaceID], meshtastic: Effect<AppFeature.Action>) {
@@ -2853,13 +2859,21 @@ private func syncEndpointNodes(_ state: inout AppFeature.State)
     state.bluetoothAlert = nil
 
     // Add or remove the BLE slot to match the current setting (A1). PRESERVE a running slot: a
-    // fresh BLEEndpoint.State would reset `peerInterfaces` and drop every live BLE peer.
+    // fresh BLEEndpoint.State would reset `peerInterfaces` and drop every live BLE peer. Removing
+    // a slot that is not idle is `.stop` first, drop once idle (`advanceBLESlotRemoval`): a direct
+    // `= nil` cancels the interface's effects without running `driver.stop()`, so the adapter
+    // keeps scanning and advertising, and its peers stay registered in Transport.
+    var bleRemoval: Effect<AppFeature.Action> = .none
     if bleEnabled {
+        // Back on before a removal finished: keep the slot. Its stop runs to completion, and a
+        // `.start` sent meanwhile is deferred by the interface until that stop returns.
+        state.bleSlotRemovalPending = false
         if state.node.client.endpoint.ble == nil {
             state.node.client.endpoint.ble = BLEEndpoint.State(localIdentity: state.identity.hash)
         }
-    } else {
-        state.node.client.endpoint.ble = nil
+    } else if state.node.client.endpoint.ble != nil {
+        state.bleSlotRemovalPending = true
+        bleRemoval = advanceBLESlotRemoval(&state)
     }
 
     // The Meshtastic radio slot follows `meshtasticEnabled` + `meshtasticRadioUUID` (spec 2026-10-16
@@ -2869,7 +2883,7 @@ private func syncEndpointNodes(_ state: inout AppFeature.State)
 
     let removals: Effect<AppFeature.Action> = .merge(stale.map {
         .send(.node(.client(.endpoint(.removeTCPClient($0)))))
-    })
+    } + [bleRemoval])
     return (removals, added, meshtastic)
 }
 
@@ -3003,7 +3017,8 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
     // Never while the radio picker is open (spec 2026-10-16 §7, Review Focus 1): a restart here
     // would take FCB's one scan from the picker, whether or not the picker itself paused BLE (a
     // Disconnect-stopped or unavailable BLE is not paused). The start is deferred, not dropped:
-    // marking BLE paused makes the picker's `.radioPicker(.dismiss)` perform it.
+    // marking BLE paused makes the picker's `.radioPicker(.dismiss)` perform it. A slot being
+    // removed may get this start too: `BLESlotReducer` stops it again at once.
     if state.node.client.endpoint.ble != nil {
         if state.radioPicker != nil {
             state.blePausedForRadioScan = true

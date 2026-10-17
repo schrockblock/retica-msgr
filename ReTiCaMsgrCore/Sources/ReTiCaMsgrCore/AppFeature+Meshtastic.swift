@@ -65,7 +65,8 @@ struct MeshtasticSettingsReducer: Reducer {
                 // is still there.
                 guard state.blePausedForRadioScan else { return .none }
                 state.blePausedForRadioScan = false
-                guard state.node.client.endpoint.ble != nil else { return .none }
+                // Not a slot being removed (the setting went off): it is waiting to be dropped.
+                guard state.node.client.endpoint.ble != nil, !state.bleSlotRemovalPending else { return .none }
                 // The pause's stop took BLE peers down, and if they were the only interfaces up,
                 // `connection` went to disconnected. BLE is about to dial again, so show
                 // "Connecting…" as Connect does, not Disconnected with a Connect button.
