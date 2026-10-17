@@ -87,6 +87,8 @@ import ReTiCANode
     #expect(store.state.blePausedForRadioScan)
 }
 
+/// A swap finishing after Disconnect installs the new radio stopped, and `connection` stays
+/// Disconnected rather than showing Connecting… for a radio that is not dialing.
 @MainActor @Test func meshRedialDisconnectDuringASwapLeavesTheNewRadioStopped() async {
     let radio = MeshRadioHarness()
     let store = meshRadioStore(radio: meshSlotRadioA, harness: radio)
@@ -103,4 +105,5 @@ import ReTiCANode
     #expect(store.state.node.client.endpoint.meshtastic?.interface.config.radio == meshSlotRadioB)
     #expect(store.state.node.client.endpoint.meshtastic?.interface.status == .stopped)
     #expect(radio.calls.value == [.start(meshSlotRadioA), .stop])
+    #expect(store.state.connection == .disconnected, "a swap finishing after Disconnect must not show Connecting…")
 }

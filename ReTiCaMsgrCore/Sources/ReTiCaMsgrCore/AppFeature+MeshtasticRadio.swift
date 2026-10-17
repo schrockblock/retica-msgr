@@ -53,16 +53,25 @@ func syncMeshtasticSlot(_ state: inout AppFeature.State) -> Effect<AppFeature.Ac
 }
 
 /// At `.radioOffline`: completes a pending swap once the old slot is idle. A slot that is NOT idle
-/// was restarted after the stop (a `.start` reached it mid-stop and ran when the stop returned —
-/// the interface reports offline before that restart): stop it again; the swap completes at the
-/// next `.radioOffline`.
+/// at its `.radioOffline` has a restart QUEUED (a `.start` reached it mid-stop; since ReTiCA
+/// 0cd3fef the interface queues the restart behind this offline rather than running it). Stopping
+/// it again clears that queue and the swap completes at the next `.radioOffline` — Contract 3:
+/// only an idle slot is dropped.
 func finishMeshtasticSwap(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
     guard let swap = state.meshtasticSwap else { return .none }
     if let slot = state.node.client.endpoint.meshtastic, !slot.interface.isIdle {
         return .send(.node(.client(.endpoint(.meshtastic(.stop)))))
     }
     state.meshtasticSwap = nil
-    return installMeshtasticSlot(&state, swap.next, start: swap.startNext)
+    let install = installMeshtasticSlot(&state, swap.next, start: swap.startNext)
+    // The old radio's drop may have emptied `connectedInterfaces` and shown "Disconnected" with a
+    // Connect button; a new radio starting now is a dial in progress, so show Connecting… (as
+    // Connect does, and as lane D's picker dismiss does for BLE). Not after a Disconnect
+    // (`startNext` false): the new radio stays stopped and "Disconnected" is right.
+    if swap.startNext, swap.next != nil, state.connectedInterfaces.isEmpty {
+        state.connection = .connecting
+    }
+    return install
 }
 
 /// Replaces the radio slot. Callers guarantee the current slot is absent or idle. The old slot's
@@ -106,7 +115,10 @@ struct MeshtasticRadioReducer: Reducer {
             }
             let live = state.node.client.endpoint.meshtastic.map { MeshtasticStatus.Counters($0.counters) }
                 ?? MeshtasticStatus.Counters()
-            state.meshtasticStatus.counters = state.meshtasticRetiredCounters + live
+            let total = state.meshtasticRetiredCounters + live
+            if state.meshtasticStatus.counters != total {
+                state.meshtasticStatus.counters = total
+            }
             return effect
         }
     }

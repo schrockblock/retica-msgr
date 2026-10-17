@@ -41,7 +41,8 @@ import ReTiCANode
 }
 
 /// Contract 3: `.stop`, wait for `.radioOffline`, THEN nil — an online slot nil'd at once would
-/// leave its interface registered in Transport.
+/// leave its interface registered in Transport. With no radio left to dial, `connection` stays
+/// Disconnected after the swap finishes.
 @MainActor @Test func meshSlotDisablingStopsTheRadioBeforeDroppingTheSlot() async {
     let radio = MeshRadioHarness()
     let store = meshRadioStore(radio: meshSlotRadioA, harness: radio)
@@ -58,8 +59,11 @@ import ReTiCANode
     #expect(store.state.node.client.endpoint.meshtastic == nil)
     #expect(store.state.node.client.endpoint.interfaces[meshSlotIDA] == nil)
     #expect(radio.calls.value == [.start(meshSlotRadioA), .stop])
+    #expect(store.state.connection == .disconnected, "no radio left to dial")
 }
 
+/// The old radio's drop empties the connected set; the new radio starting at the swap's finish
+/// is a dial in progress, so `connection` reads Connecting…, not Disconnected.
 @MainActor @Test func meshSlotChangingTheRadioStartsTheNewRadioOnlyAfterTheOldStopped() async {
     let radio = MeshRadioHarness()
     let store = meshRadioStore(radio: meshSlotRadioA, harness: radio)
@@ -74,6 +78,8 @@ import ReTiCANode
     await store.receive({ isRadioOffline($0) }, timeout: .seconds(2))
     await radio.waitForStarts(2)
     #expect(radio.calls.value == [.start(meshSlotRadioA), .stop, .start(meshSlotRadioB)])
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.connection == .connecting, "a new radio is dialing: show Connecting…")
 }
 
 /// Review Focus 3: not online yet (connecting), still not idle — the swap waits for its stop.
@@ -111,8 +117,9 @@ import ReTiCANode
 }
 
 /// Review Focus 5. Connect's `.endpoint(.start)` reaches the old slot mid-stop; the interface
-/// restarts it after its stop returns and reports offline first, so the app sees a NON-idle slot
-/// at `.radioOffline` and stops it again.
+/// QUEUES that restart and reports offline first, so the app sees a NON-idle slot at
+/// `.radioOffline` and stops it again (that second `.stop` is the second `stop` in the pinned
+/// sequence below), and the queued restart never runs.
 @MainActor @Test func meshSlotConnectDuringASwapNeverStartsTwiceWithoutAStop() async {
     let radio = MeshRadioHarness()
     let store = meshRadioStore(radio: meshSlotRadioA, harness: radio)

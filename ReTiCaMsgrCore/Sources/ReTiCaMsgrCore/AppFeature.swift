@@ -971,7 +971,8 @@ public struct AppFeature {
                         : .send(.node(.client(.registerDelivery))),
                     // C1: Transport records a packet hash before it looks for a local destination,
                     // so any packet the inject arm had to stash (no delivery destination yet) must
-                    // be re-drained now that registerDelivery (just above) has set one. Idempotent —
+                    // be re-drained now that a delivery destination exists (registered on the first
+                    // interface-up, re-announced on later ones). Idempotent —
                     // the inbox is usually already empty.
                     .send(.push(.drainInbox)),
                     // Answer peers' /publicKey requests (the app's requestResponder dependency
@@ -2974,6 +2975,7 @@ private func propagationChangeEffects(_ state: AppFeature.State, from before: St
 /// restart; `down.isEmpty` alone would now skip it in that case, so `noClientSlots` keeps the
 /// restart reachable. `connection` goes to connecting only when nothing is up (amendment A10).
 /// The push re-point is held while an `/unregister` is in flight (`heldPushSyncEffects`).
+/// Also restarts a stopped or unavailable Meshtastic radio slot (never one a swap is replacing).
 private func redialDownNodes(_ state: inout AppFeature.State, restartListener: Bool) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
     // Restart a stopped or unavailable radio (spec 2026-10-16 §7 lane E). `.start` is ignored by a
