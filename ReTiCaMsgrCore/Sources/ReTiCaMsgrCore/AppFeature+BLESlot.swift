@@ -6,8 +6,9 @@ import ReTiCANode
 /// One step of a BLE slot removal (`bleSlotRemovalPending`, set by `syncEndpointNodes` when
 /// `bleEnabled` is off). An idle slot (`BLEInterface.State.isIdle`: stopped, its `driver.stop()`
 /// returned) is dropped now; any other slot is sent `.stop` and dropped at a later step. Never
-/// drop a slot that is not idle: `ifLet` would cancel the `driver.stop()` in flight, and a slot
-/// dropped before it was stopped leaves the adapter scanning and its peers registered.
+/// drop a slot that is not idle: one dropped before it was stopped leaves the adapter scanning and
+/// its peers registered, and one dropped mid-stop (`.stopped` but still `stopping`) gets its
+/// `.driverStopped` with no state, while a new slot's start could race that stop.
 func advanceBLESlotRemoval(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
     guard state.bleSlotRemovalPending, let slot = state.node.client.endpoint.ble else {
         state.bleSlotRemovalPending = false

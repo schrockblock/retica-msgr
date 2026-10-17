@@ -21,10 +21,14 @@ enum BLESlotCall: Equatable { case start, stopEntered, stopReturned }
 
 /// A mock BLE driver shaped like the live adapter: every `start` opens a FRESH session stream, and
 /// `stop` records `.stopEntered`, blocks while stops are held, finishes the session and records
-/// `.stopReturned`.
+/// `.stopReturned`. A `stop` whose effect is cancelled (its slot dropped while it runs) sets
+/// `stopCancelled`; the stop itself carries on, as the live adapter's would.
 final class BLESlotHarness: Sendable {
     let calls = LockIsolated<[BLESlotCall]>([])
     let sessions = LockIsolated<[AsyncStream<BLEDriverEvent>.Continuation]>([])
+    let stopCancelled = LockIsolated(false)
+    /// Interface-level `.ble(.start)` actions the store reduced (`bleSlotStore`'s recorder).
+    let interfaceStarts = LockIsolated(0)
     private let held = LockIsolated(false)
 
     var driver: BLEDriver {
@@ -38,7 +42,13 @@ final class BLESlotHarness: Sendable {
             readIdentity: { _ in }, openChannel: { _ in }, send: { _, _ in }, closeChannel: { _ in },
             stop: { [self] in
                 calls.withValue { $0.append(.stopEntered) }
-                while held.value { await Task.yield() }
+                await withTaskCancellationHandler {
+                    // Polls with a sleep, not a bare `Task.yield()` spin, so a held stop does not
+                    // keep a cooperative-pool thread busy while the rest of the suite runs.
+                    while held.value { try? await Task.sleep(for: .milliseconds(1)) }
+                } onCancel: {
+                    stopCancelled.setValue(true)
+                }
                 sessions.value.last?.finish()
                 calls.withValue { $0.append(.stopReturned) }
             })
@@ -68,7 +78,16 @@ private func bleSlotStore(_ ble: BLESlotHarness) -> TestStoreOf<AppFeature> {
     initial.$bleEnabled.withLock { $0 = true }
     let db = try! AppDatabase.makeInMemory()
     let store = TestStore(initialState: initial) {
-        AppFeature()
+        CombineReducers {
+            AppFeature()
+            // Counts what reaches the interface, which a `.off` TestStore cannot assert absent.
+            Reduce<AppFeature.State, AppFeature.Action> { _, action in
+                if case .node(.client(.endpoint(.ble(.ble(.start))))) = action {
+                    ble.interfaceStarts.withValue { $0 += 1 }
+                }
+                return .none
+            }
+        }
     } withDependencies: {
         $0.defaultAppStorage = defaults
         $0.defaultDatabase = db
@@ -133,6 +152,7 @@ private func bleSlotBringPeerOnline(_ store: TestStoreOf<AppFeature>, _ ble: BLE
     #expect(!store.state.bleSlotRemovalPending)
     await store.skipReceivedActions(strict: false)
     #expect(ble.calls.value == [.start, .stopEntered, .stopReturned])
+    #expect(!ble.stopCancelled.value, "the driver stop was cancelled")
 }
 
 /// Back on while the stop is in flight: the slot is kept, and the foreground's start (deferred by
@@ -181,6 +201,35 @@ private func bleSlotBringPeerOnline(_ store: TestStoreOf<AppFeature>, _ ble: BLE
     #expect(ble.calls.value == [.start, .stopEntered, .stopReturned], "calls: \(ble.calls.value)")
 }
 
+/// A second sync while the removal's stop is held re-advances the removal. The interface reads
+/// `.stopped` then, but it is not idle (`stopping`): dropping it on `.stopped` alone would leave
+/// the `driver.stop()` in flight with no slot to report to. The slot must survive every advance
+/// until the stop returns, and the stop must never be cancelled.
+@MainActor @Test func bleSlotASyncDuringTheHeldStopDoesNotDropTheSlot() async {
+    let ble = BLESlotHarness()
+    let store = bleSlotStore(ble)
+    await bleSlotBringPeerOnline(store, ble)
+    ble.holdStops()
+    await store.send(.binding(.set(\.bleEnabled, false)))
+    await store.send(.foregrounded)
+    await ble.waitForCall(.stopEntered)
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.ble?.ble.status == .stopped)
+    await store.send(.connectTapped)
+    await store.send(.foregrounded)
+    await Task.megaYield()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.ble != nil, "dropped by a sync while its stop was in flight")
+    #expect(store.state.bleSlotRemovalPending)
+    ble.releaseStops()
+    await ble.waitForCall(.stopReturned)
+    for _ in 0..<20 { await Task.megaYield() }
+    await store.skipReceivedActions(strict: false)
+    #expect(!ble.stopCancelled.value, "the driver stop was cancelled")
+    #expect(store.state.node.client.endpoint.ble == nil)
+    #expect(ble.calls.value == [.start, .stopEntered, .stopReturned], "calls: \(ble.calls.value)")
+}
+
 /// The radio picker's pause stops BLE WITHOUT dropping the slot, and closing the picker starts it
 /// again on the same slot.
 @MainActor @Test func bleSlotPickerPauseKeepsTheSlotAndResumesIt() async {
@@ -208,6 +257,8 @@ private func bleSlotBringPeerOnline(_ store: TestStoreOf<AppFeature>, _ ble: BLE
     await ble.waitForCall(.stopEntered)
     await store.send(.binding(.set(\.bleEnabled, false)))
     await store.send(.foregrounded)
+    await store.skipReceivedActions(strict: false)
+    let startsBeforeDismiss = ble.interfaceStarts.value
     await store.send(.radioPicker(.dismiss))
     await store.skipReceivedActions(strict: false)
     #expect(store.state.connection != .connecting, "Connecting… for a BLE slot being removed")
@@ -215,6 +266,8 @@ private func bleSlotBringPeerOnline(_ store: TestStoreOf<AppFeature>, _ ble: BLE
     await store.receive(isDriverStopped, timeout: .seconds(2))
     for _ in 0..<20 { await Task.megaYield() }
     await store.skipReceivedActions(strict: false)
+    // The driver call log cannot show this: `BLESlotReducer` would re-stop a start before it ran.
+    #expect(ble.interfaceStarts.value == startsBeforeDismiss, "the picker resumed a slot being removed")
     #expect(store.state.node.client.endpoint.ble == nil)
     #expect(ble.calls.value == [.start, .stopEntered, .stopReturned], "calls: \(ble.calls.value)")
 }
