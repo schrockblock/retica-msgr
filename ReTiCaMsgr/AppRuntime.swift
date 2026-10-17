@@ -115,8 +115,9 @@ final class AppRuntime {
             }
             // The package's liveValue only reports an issue: the app owns UIKit.
             $0.pushPlatform = .uiKit
-            // Explicit for the same hosted-XCTest reason as `\.date`: its testValue is unimplemented.
-            $0.radioScanner = .liveValue
+            // Explicit for the same hosted-XCTest reason as `\.date` (its testValue is unimplemented):
+            // the live radio scan over MeshtasticKit (spec 2026-10-16 §7 lane E).
+            MeshtasticLiveWiring.installScanner(into: &$0)
             // The live Meshtastic driver over the app's ONE MeshtasticSession (spec 2026-10-16 §7
             // lane E). Lazy: no CoreBluetooth work until a radio slot starts.
             MeshtasticLiveWiring.installDriver(into: &$0)

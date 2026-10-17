@@ -17,4 +17,11 @@ public enum MeshtasticLiveWiring {
             send: { await driver.send($0) },
             stop: { await driver.stop() })
     }
+
+    /// The live radio picker scan: MeshtasticKit's scanner over FCB's live central, finishing only
+    /// when scanning stopped for good (`MeshtasticLive.scanRadios()`). Gated on lane F: FCB has
+    /// one scan per process, and before lane F a BLE stop could end it.
+    public static func installScanner(into values: inout DependencyValues) {
+        values.radioScanner = .meshtastic { MeshtasticLive.scanRadios() }
+    }
 }

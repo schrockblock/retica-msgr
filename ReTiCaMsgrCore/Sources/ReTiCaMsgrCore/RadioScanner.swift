@@ -1,5 +1,6 @@
 import Foundation
 import ComposableArchitecture
+import MeshtasticKit
 
 /// One Meshtastic radio heard advertising during a scan (spec 2026-10-16 §7 lane D). Mirrors
 /// MeshtasticKit's `DiscoveredRadio` (spec Contract 1) field for field, so lane E's live value is
@@ -41,9 +42,8 @@ public struct RadioScanner: Sendable {
 }
 
 extension RadioScanner: DependencyKey {
-    /// LOUD stub until lane E installs the MeshtasticKit-backed scanner (a map over
-    /// `MeshtasticScanner.scan(central:)`, installed in `AppRuntime` with
-    /// `$0.radioScanner = …` or by replacing this value). It is not a silent no-op: the stream
+    /// LOUD stub for hosts that install no scanner (previews, tests). The app installs
+    /// `MeshtasticLiveWiring.installScanner(into:)`. It is not a silent no-op: the stream
     /// finishes at once, so the picker reaches `scanEnded` and shows
     /// `RadioPickerFeature.scanEndedEmptyMessage` instead of a spinner that never resolves.
     /// `radioPickerUninstalledLiveScannerEndsTheScan` pins this.
@@ -69,5 +69,26 @@ extension DependencyValues {
     public var radioScanner: RadioScanner {
         get { self[RadioScanner.self] }
         set { self[RadioScanner.self] = newValue }
+    }
+}
+
+extension RadioScanner {
+    /// The live scanner (spec 2026-10-16 §7 lane E): each MeshtasticKit `DiscoveredRadio` from
+    /// `radios()` as a `RadioScanResult`, field for field. Finishes when the source does — the
+    /// live source (`MeshtasticLive.scanRadios()`) only when scanning stopped for good — and
+    /// cancelling the consumer ends the source's scan.
+    public static func meshtastic(_ radios: @escaping @Sendable () -> AsyncStream<DiscoveredRadio>) -> RadioScanner {
+        RadioScanner(scan: {
+            let upstream = radios()
+            return AsyncStream { continuation in
+                let task = Task {
+                    for await radio in upstream {
+                        continuation.yield(RadioScanResult(id: radio.id, name: radio.name, rssi: radio.rssi))
+                    }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        })
     }
 }
