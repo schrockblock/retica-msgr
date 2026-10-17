@@ -53,3 +53,21 @@ public struct MeshtasticStatus: Equatable, Sendable {
         self.counters = counters
     }
 }
+
+extension MeshtasticStatus.Counters {
+    /// The endpoint's public counters (spec Contract 3), field for field.
+    public init(_ counters: MeshtasticCounters) {
+        self.init(malformed: counters.malformed, evicted: counters.evicted, timedOut: counters.timedOut,
+                  oversize: counters.oversize, completed: counters.completed,
+                  queueFull: counters.queueFull, sendFailed: counters.sendFailed)
+    }
+
+    public static func + (lhs: Self, rhs: Self) -> Self {
+        Self(malformed: lhs.malformed + rhs.malformed, evicted: lhs.evicted + rhs.evicted,
+             timedOut: lhs.timedOut + rhs.timedOut, oversize: lhs.oversize + rhs.oversize,
+             completed: lhs.completed + rhs.completed, queueFull: lhs.queueFull + rhs.queueFull,
+             sendFailed: lhs.sendFailed + rhs.sendFailed)
+    }
+
+    public static func += (lhs: inout Self, rhs: Self) { lhs = lhs + rhs }
+}

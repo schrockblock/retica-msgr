@@ -65,26 +65,49 @@ func finishMeshtasticSwap(_ state: inout AppFeature.State) -> Effect<AppFeature.
     return installMeshtasticSlot(&state, swap.next, start: swap.startNext)
 }
 
-/// Replaces the radio slot. Callers guarantee the current slot is absent or idle.
+/// Replaces the radio slot. Callers guarantee the current slot is absent or idle. The old slot's
+/// counters are carried, and the per-radio status fields reset.
 func installMeshtasticSlot(_ state: inout AppFeature.State, _ config: MeshtasticDriverConfig?,
                            start: Bool) -> Effect<AppFeature.Action> {
+    if let old = state.node.client.endpoint.meshtastic {
+        state.meshtasticRetiredCounters += MeshtasticStatus.Counters(old.counters)
+    }
     state.node.client.endpoint.meshtastic = config.map { MeshtasticEndpoint.State(config: $0) }
+    state.meshtasticStatus = MeshtasticStatus(counters: state.meshtasticRetiredCounters)
     guard config != nil, start else { return .none }
     return .send(.node(.client(.endpoint(.meshtastic(.start)))))
 }
 
-/// The radio's delegates (spec Contract 3), composed into `AppFeature.body` after
+/// The radio's delegates (spec Contract 3) → `MeshtasticStatus`, swap completion at
+/// `.radioOffline`, and the counters refreshed on EVERY radio action (they change with each
+/// fragment, and no delegate reports them). Composed into `AppFeature.body` after
 /// `MeshtasticSettingsReducer`.
 struct MeshtasticRadioReducer: Reducer {
     var body: some ReducerOf<AppFeature> {
         Reduce { state, action in
-            guard isRadioOfflineAction(action) else { return .none }
-            return finishMeshtasticSwap(&state)
+            guard case let .node(.client(.endpoint(.meshtastic(radioAction)))) = action else { return .none }
+            var effect: Effect<AppFeature.Action> = .none
+            switch radioAction {
+            case let .delegate(.radioOnline(myNodeNum, modemPreset)):
+                state.meshtasticStatus.online = true
+                state.meshtasticStatus.myNodeNum = myNodeNum
+                state.meshtasticStatus.modemPreset = modemPreset
+                state.meshtasticStatus.offlineReason = nil
+                state.meshtasticStatus.adapterUnavailable = nil
+            case let .delegate(.radioOffline(reason)):
+                state.meshtasticStatus.online = false
+                state.meshtasticStatus.offlineReason = reason
+                effect = finishMeshtasticSwap(&state)
+            case let .delegate(.adapterUnavailable(cause)):
+                state.meshtasticStatus.online = false
+                state.meshtasticStatus.adapterUnavailable = cause
+            default:
+                break
+            }
+            let live = state.node.client.endpoint.meshtastic.map { MeshtasticStatus.Counters($0.counters) }
+                ?? MeshtasticStatus.Counters()
+            state.meshtasticStatus.counters = state.meshtasticRetiredCounters + live
+            return effect
         }
-    }
-
-    private func isRadioOfflineAction(_ action: AppFeature.Action) -> Bool {
-        if case .node(.client(.endpoint(.meshtastic(.delegate(.radioOffline))))) = action { return true }
-        return false
     }
 }

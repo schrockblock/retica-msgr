@@ -285,12 +285,14 @@ public struct AppFeature {
         /// (foreground, push wake) wanted to start BLE while the picker was open and deferred it.
         /// `.radioPicker(.dismiss)` performs that start and clears this. Session-only.
         public var blePausedForRadioScan = false
-        /// The radio's state for Diagnostics. Session-only. Lane E fills it from the Meshtastic
-        /// endpoint's delegates. This build leaves it at its defaults (offline).
+        /// The radio's state for Diagnostics, from the Meshtastic endpoint's delegates and counters (MeshtasticRadioReducer). Session-only.
         public var meshtasticStatus = MeshtasticStatus()
         /// A radio slot replacement in flight (spec Contract 3): the old slot was sent `.stop` and is
         /// dropped at its `.radioOffline`. Session-only.
         public var meshtasticSwap: MeshtasticSlotSwap? = nil
+        /// Counters of radio slots already replaced, so Diagnostics stays cumulative since launch
+        /// (`MeshtasticStatus.Counters`) across a radio change. Session-only.
+        public var meshtasticRetiredCounters = MeshtasticStatus.Counters()
 
         /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
         /// link write. The one source for "what do we call this peer" when a link exists.
@@ -957,9 +959,16 @@ public struct AppFeature {
                 // not just in the setter, so a whitespace-only name persisted by an older build
                 // still announces as nil.
                 let launchName = state.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let alreadyRegistered = state.node.client.deliveryDestinationHash != nil
                 var effects: [Effect<Action>] = [
                     .send(.node(.client(.setDisplayName(launchName.isEmpty ? nil : launchName, stampCost: nil)))),
-                    .send(.node(.client(.registerDelivery))),
+                    // Contract 4 (spec 2026-10-16): only the FIRST interface registers the delivery
+                    // destination, which announces on whatever is up then. Every later interface-up
+                    // re-announces on THAT interface only, so a radio coming up never re-broadcasts
+                    // on every other interface and a TCP reconnect never puts an announce on the radio.
+                    alreadyRegistered
+                        ? .send(.node(.client(.announceDeliveryOnInterface(interfaceID))))
+                        : .send(.node(.client(.registerDelivery))),
                     // C1: Transport records a packet hash before it looks for a local destination,
                     // so any packet the inject arm had to stash (no delivery destination yet) must
                     // be re-drained now that registerDelivery (just above) has set one. Idempotent —
