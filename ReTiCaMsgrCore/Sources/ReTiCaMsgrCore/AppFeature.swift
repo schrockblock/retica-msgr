@@ -141,7 +141,13 @@ public struct AppFeature {
         /// the Settings permission surface (A5). Session-only — cleared on each connect attempt so a
         /// resolved denial doesn't stick, and re-set if the adapter is still unavailable.
         public var bluetoothAlert: BluetoothAlert? = nil
+        /// The open conversation's composer text. Loaded from `drafts` on open and written back to
+        /// it on every edit, so leaving the chat or the app keeps it.
         public var draft = ""
+        /// Unsent composer text by conversation key, persisted as JSON. A send removes its entry.
+        @Shared(.fileStorage(AppFeature.draftsFileURL)) public var drafts: [String: ConversationDraft] = [:]
+        /// The conversation list as shown: `conversations` with each draft applied.
+        public var conversationRows: [Conversation] { Conversation.applyingDrafts(conversations, drafts) }
         /// The message being replied to, or nil. Session-only.
         public var replyTarget: ReplyTarget? = nil
         /// The attachment waiting in the composer, its in-flight preparation, and the last error.
@@ -236,6 +242,21 @@ public struct AppFeature {
         public var reportDraft: ReportDraft? = nil
 
         public func isBlocked(_ hex: String) -> Bool { blockedPeers.contains(hex.lowercased()) }
+
+        /// Opening a conversation: its saved draft goes back into the composer.
+        mutating func loadDraft(_ key: String) {
+            draft = drafts[key]?.text ?? ""
+        }
+
+        /// Writes the composer text to the open conversation's draft; empty text removes it.
+        mutating func saveDraft(now: Date) {
+            guard let key = openPeerHex else { return }
+            let text = draft
+            let isGroup = openConversationKind == .group
+            $drafts.withLock {
+                $0[key] = text.isEmpty ? nil : ConversationDraft(text: text, updatedAt: now, isGroup: isGroup)
+            }
+        }
         // Announce-row tap outcomes, keyed by the peer's delivery-destination hash hex. Session-only.
         public var publicKeyRequests: [String: PublicKeyRequestStatus] = [:]
         @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
@@ -673,6 +694,7 @@ public struct AppFeature {
 
     /// Where the node list lives: `<Application Support>/nodes.json`.
     public static let nodesFileURL = URL.applicationSupportDirectory.appending(path: "nodes.json")
+    public static let draftsFileURL = URL.applicationSupportDirectory.appending(path: "drafts.json")
 
     /// How long one registration attempt may take, path request to response.
     static let pushRegistrationTimeout: Duration = .seconds(20)
@@ -904,7 +926,10 @@ public struct AppFeature {
                     closeHubSocket,
                     .run { [database] _ in
                         try await writeLearnedDestinations(learnedToFlush, to: database)
-                    }
+                    },
+                    // File storage writes a second after the last edit; write the drafts now, in
+                    // case the process is suspended and killed before that second passes.
+                    .run { [drafts = state.$drafts] _ in try await drafts.save() }
                 )
 
             case ._flushLearnedDestinations:
@@ -1042,6 +1067,7 @@ public struct AppFeature {
 
             case let .openConversation(peerHex):
                 state.openPeerHex = peerHex
+                state.loadDraft(peerHex)
                 state.chatVisible = true
                 state.openConversationKind = .peer
                 state.openGroup = nil
@@ -1094,6 +1120,7 @@ public struct AppFeature {
             case let .openGroupConversation(groupHex):
                 guard let data = Data(hexString: groupHex), data.count == GroupWire.idLength else { return .none }
                 state.openPeerHex = groupHex
+                state.loadDraft(groupHex)
                 state.openConversationKind = .group
                 state.chatVisible = true
                 state.openGroup = nil
@@ -1140,6 +1167,7 @@ public struct AppFeature {
                 let deliveries = others.sorted().map { GroupDelivery.waiting(messageId: line.id, memberHex: $0) }
                 // Open the new group as `startConversation` opens a peer.
                 state.openPeerHex = groupHex
+                state.loadDraft(groupHex)
                 state.openConversationKind = .group
                 state.chatVisible = true
                 state.openGroup = group
@@ -1266,6 +1294,7 @@ public struct AppFeature {
             case let .startConversation(hex):
                 guard let data = Data(hexString: hex), data.count == 16 else { return .none }
                 state.openPeerHex = hex
+                state.loadDraft(hex)
                 state.chatVisible = true
                 state.openConversationKind = .peer
                 state.openGroup = nil
@@ -1335,6 +1364,7 @@ public struct AppFeature {
                 let attachmentStore = self.attachmentStore
                 let attachmentCacheEvictor = self.attachmentCacheEvictor
                 state.draft = ""
+                state.saveDraft(now: now)
                 state.replyTarget = nil
                 state.pendingAttachment = nil
                 state.attachmentError = nil
@@ -1562,6 +1592,12 @@ public struct AppFeature {
                 // comes back, and the attachment has to be picked again.
                 state.attachmentError = AttachmentPreparation.storeFailed
                 state.draft = draft
+                state.saveDraft(now: date.now)
+                return .none
+
+            case .binding(\.draft):
+                // Every edit is saved, so backgrounding or leaving the chat loses nothing.
+                state.saveDraft(now: date.now)
                 return .none
 
             case let .node(.client(.endpoint(.delegate(.pathLearned(h, _))))):
@@ -2637,6 +2673,7 @@ public struct AppFeature {
             groupHex: groupHex, groupPostId: postId.hexString)
         let deliveries = others.sorted().map { GroupDelivery.waiting(messageId: row.id, memberHex: $0) }
         state.draft = ""
+        state.saveDraft(now: now)
         state.replyTarget = nil
         state.attachmentError = nil
         let reachable = others.intersection(state.reachablePeers)

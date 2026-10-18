@@ -14,16 +14,19 @@ public struct Conversation: Identifiable, Equatable, Sendable {
     public var groupState: String?
     public var lastBody: String
     public var lastTimestamp: Date
+    /// Unsent composer text, set by `applyingDrafts`; nil when there is none.
+    public var draft: String?
     public var id: String { peerHex }
 
     public init(peerHex: String, kind: Kind = .peer, title: String? = nil, groupState: String? = nil,
-                lastBody: String, lastTimestamp: Date) {
+                lastBody: String, lastTimestamp: Date, draft: String? = nil) {
         self.peerHex = peerHex
         self.kind = kind
         self.title = title
         self.groupState = groupState
         self.lastBody = lastBody
         self.lastTimestamp = lastTimestamp
+        self.draft = draft
     }
 }
 

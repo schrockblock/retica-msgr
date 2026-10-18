@@ -39,7 +39,7 @@ struct ConversationListView: View {
 
     var body: some View {
         NavigationStack {
-            List(store.conversations) { convo in
+            List(store.conversationRows) { convo in
                 Button {
                     store.send(convo.kind == .group ? .openGroupConversation(convo.peerHex) : .openConversation(convo.peerHex))
                 } label: {
@@ -76,7 +76,7 @@ struct ConversationListView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
-                        Text(convo.lastBody)
+                        Text(convo.preview)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)

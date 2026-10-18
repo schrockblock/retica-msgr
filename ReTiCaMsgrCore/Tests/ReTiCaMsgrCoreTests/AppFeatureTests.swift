@@ -3229,6 +3229,10 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
     await store.receive(.attachmentSendFailed(draft: "cap")) {
         $0.attachmentError = AttachmentPreparation.storeFailed
         $0.draft = "cap"
+        // The caption that came back is saved as the conversation's draft again.
+        $0.$drafts.withLock {
+            $0[peerA] = ConversationDraft(text: "cap", updatedAt: Date(timeIntervalSince1970: 1700000000))
+        }
     }
     // Exhaustive probe: no sendMessage, no reload followed.
     await store.send(.replyCancelled)
@@ -3309,6 +3313,10 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
     await store.receive(.attachmentSendFailed(draft: "cap")) {
         $0.attachmentError = AttachmentPreparation.storeFailed
         $0.draft = "cap"
+        // The caption that came back is saved as the conversation's draft again.
+        $0.$drafts.withLock {
+            $0[peerA] = ConversationDraft(text: "cap", updatedAt: Date(timeIntervalSince1970: 1700000000))
+        }
     }
     // Exhaustive probe: no sendMessage, no reload followed.
     await store.send(.replyCancelled)
@@ -7134,4 +7142,81 @@ private func answerUnregister(_ store: TestStoreOf<AppFeature>, hub: Data) async
     await store.send(.foregrounded)
     await store.skipReceivedActions(strict: false)
     #expect(listens.value == 1)
+}
+
+// MARK: - Drafts
+
+/// Typing saves the text; leaving the chat empties the composer but keeps the draft, the list
+/// shows it, and opening the chat again puts it back.
+@MainActor @Test func draftSurvivesLeavingAndReopeningTheChat() async {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [msg(1, peerA, "hi", 1000, outgoing: false, status: MessageStatus.received)])
+    let store = makeStore(db, identity: Identity())
+    await store.send(.openConversation(peerA))
+    await store.send(.binding(.set(\.draft, "half a thought")))
+    #expect(store.state.drafts[peerA]?.text == "half a thought")
+    await store.send(.closeConversation)
+    #expect(store.state.draft == "")
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.conversationRows.first { $0.peerHex == peerA }?.preview == "Draft: half a thought")
+    await store.send(.openConversation(peerA))
+    #expect(store.state.draft == "half a thought")
+    await store.skipReceivedActions(strict: false)
+}
+
+/// Each conversation keeps its own draft: opening another one starts empty.
+@MainActor @Test func draftsAreKeptPerConversation() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.openConversation(peerA))
+    await store.send(.binding(.set(\.draft, "for A")))
+    await store.send(.closeConversation)
+    await store.send(.startConversation(peerB))
+    #expect(store.state.draft == "")
+    await store.send(.binding(.set(\.draft, "for B")))
+    await store.send(.closeConversation)
+    await store.send(.openConversation(peerA))
+    #expect(store.state.draft == "for A")
+    await store.send(.closeConversation)
+    await store.send(.openConversation(peerB))
+    #expect(store.state.draft == "for B")
+    await store.skipReceivedActions(strict: false)
+}
+
+/// The drafts live in shared file storage, so a fresh state (a relaunch) reads them back.
+@MainActor @Test func draftIsPersistedForTheNextLaunch() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.openConversation(peerA))
+    await store.send(.binding(.set(\.draft, "keep me")))
+    await store.skipReceivedActions(strict: false)
+    let relaunched = AppFeature.State(identity: Identity())
+    #expect(relaunched.drafts[peerA]?.text == "keep me")
+}
+
+/// Sending the message removes its draft, and erasing the text removes it too.
+@MainActor @Test func sendingOrErasingRemovesTheDraft() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())
+    await store.send(.openConversation(peerA))
+    await store.send(.binding(.set(\.draft, "hello")))
+    await store.send(.sendTapped)
+    #expect(store.state.drafts[peerA] == nil)
+    await store.send(.binding(.set(\.draft, "x")))
+    #expect(store.state.drafts[peerA]?.text == "x")
+    await store.send(.binding(.set(\.draft, "")))
+    #expect(store.state.drafts[peerA] == nil)
+    await store.skipReceivedActions(strict: false)
+}
+
+/// A group's draft is marked as a group's, so it never makes a peer row of its own.
+@MainActor @Test func groupDraftIsMarkedAsAGroups() async {
+    let db = try! AppDatabase.makeInMemory()
+    let groupHex = String(repeating: "9", count: 32)
+    let store = makeStore(db, identity: Identity())
+    await store.send(.openGroupConversation(groupHex))
+    await store.send(.binding(.set(\.draft, "to the group")))
+    #expect(store.state.drafts[groupHex]?.isGroup == true)
+    #expect(store.state.conversationRows.isEmpty)
+    await store.skipReceivedActions(strict: false)
 }

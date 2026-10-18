@@ -57,3 +57,43 @@ import Foundation
     let orphan = Conversation.list(from: [row("aa", "x", t0, group: "ff")])
     #expect(orphan.first?.title == "Group")
 }
+
+// MARK: - Drafts
+
+/// A row with a draft previews it; one without keeps its last message; whitespace is no draft.
+@Test func applyingDraftsPreviewsTheDraftOnItsRow() {
+    let a = String(repeating: "a", count: 32)
+    let b = String(repeating: "b", count: 32)
+    let c = String(repeating: "c", count: 32)
+    let t = Date(timeIntervalSince1970: 1000)
+    let rows = [
+        Conversation(peerHex: a, lastBody: "last from a", lastTimestamp: t.addingTimeInterval(2)),
+        Conversation(peerHex: b, lastBody: "last from b", lastTimestamp: t.addingTimeInterval(1)),
+        Conversation(peerHex: c, lastBody: "last from c", lastTimestamp: t),
+    ]
+    let shown = Conversation.applyingDrafts(rows, [
+        a: ConversationDraft(text: "unsent", updatedAt: t),
+        c: ConversationDraft(text: "  \n", updatedAt: t),
+    ])
+    #expect(shown.map(\.peerHex) == [a, b, c])
+    #expect(shown.map(\.preview) == ["Draft: unsent", "last from b", "last from c"])
+}
+
+/// A peer with only a draft gets its own row, dated by the draft; a group's draft or an invalid
+/// key does not.
+@Test func applyingDraftsAddsADraftOnlyPeerRow() {
+    let a = String(repeating: "a", count: 32)
+    let fresh = String(repeating: "d", count: 32)
+    let group = String(repeating: "9", count: 32)
+    let t = Date(timeIntervalSince1970: 1000)
+    let rows = [Conversation(peerHex: a, lastBody: "old", lastTimestamp: t)]
+    let shown = Conversation.applyingDrafts(rows, [
+        fresh: ConversationDraft(text: "hello?", updatedAt: t.addingTimeInterval(5)),
+        group: ConversationDraft(text: "group text", updatedAt: t.addingTimeInterval(9), isGroup: true),
+        "zz": ConversationDraft(text: "bad key", updatedAt: t.addingTimeInterval(9)),
+    ])
+    #expect(shown.map(\.peerHex) == [fresh, a])
+    #expect(shown.first?.kind == .peer)
+    #expect(shown.first?.preview == "Draft: hello?")
+    #expect(shown.first?.lastTimestamp == t.addingTimeInterval(5))
+}
