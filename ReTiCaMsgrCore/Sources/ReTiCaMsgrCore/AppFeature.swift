@@ -681,6 +681,7 @@ public struct AppFeature {
     @Dependency(\.continuousClock) var clock
     @Dependency(\.attachmentStore) var attachmentStore
     @Dependency(\.attachmentCacheEvictor) var attachmentCacheEvictor
+    @Dependency(\.avatarStore) var avatarStore
 
     /// Path expiry for pruning `learnedDestinationRows`, taken from the library rather than copied.
     ///
@@ -1203,6 +1204,9 @@ public struct AppFeature {
                 let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
                 // Spec §3: members with no path get a request now; their copies wait.
                 let pathRequests = others.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
+                let myVersion = state.myPhotoVersion
+                let imageAllowed = state.profilePhotoMayRide
+                let avatarStore = self.avatarStore
                 let write: Effect<Action> = .run { [database] send in
                     try await database.write { db in
                         try ChatGroup.upsert(group, db)
@@ -1213,7 +1217,9 @@ public struct AppFeature {
                     }
                     _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
                                                              myName: myName, alsoViaPropagation: alsoViaPropagation,
-                                                             now: now, send)
+                                                             now: now, myVersion: myVersion,
+                                                             myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                                                             imageAllowed: imageAllowed, send)
                     try await reloadThread(database, groupHex, send)
                     try await reloadConversations(database, send)
                 }
@@ -1381,6 +1387,11 @@ public struct AppFeature {
                 let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
                 let attachmentStore = self.attachmentStore
                 let attachmentCacheEvictor = self.attachmentCacheEvictor
+                // My profile photo (spec 2026-10-19): the plan is built in the effect from the
+                // peer's delivery row; the image rides only off the slow radio path.
+                let myVersion = state.myPhotoVersion
+                let imageAllowed = state.profilePhotoMayRide
+                let avatarStore = self.avatarStore
                 state.draft = ""
                 state.saveDraft(now: now)
                 state.replyTarget = nil
@@ -1394,13 +1405,20 @@ public struct AppFeature {
                         .run { [database, replyFields, replyToHash, replyQuote] send in
                             let expiry = try await resolveExpiry(knownExpiry, peerHex: peerHex, database)
                             let expiryFields = expiry.map { ExpiryWire.encode(seconds: $0) } ?? []
+                            let plan = try await profilePhotoPlan(database, avatarStore, peerHex: peerHex,
+                                                                  myVersion: myVersion, imageAllowed: imageAllowed)
                             let (msg, row) = Self.outgoing(
                                 identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
-                                fields: replyFields + expiryFields, alsoViaPropagation: alsoViaPropagation,
+                                fields: replyFields + expiryFields + plan.fields, alsoViaPropagation: alsoViaPropagation,
                                 replyToHash: replyToHash, replyQuote: replyQuote,
                                 expirySeconds: expiry,
                                 expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
-                            try await database.write { try Message.insert { row }.execute($0) }
+                            try await database.write { db in
+                                try Message.insert { row }.execute(db)
+                                if let version = plan.pendingVersion {
+                                    try ProfilePhotoDelivery.markPending(peerHex, version: version, hash: row.messageHash, db)
+                                }
+                            }
                             await send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation))))
                             try await reloadThread(database, peerHex, send)
                             try await reloadConversations(database, send)
@@ -1423,9 +1441,12 @@ public struct AppFeature {
                         let attachmentFields = pending.isImage
                             ? AttachmentWire.encodeImage(pending.data)
                             : AttachmentWire.encodeFile(name: pending.name, data: pending.data)
+                        let plan = try await profilePhotoPlan(database, avatarStore, peerHex: peerHex,
+                                                              myVersion: myVersion, imageAllowed: imageAllowed)
                         let (msg, row) = Self.outgoing(
                             identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
-                            fields: attachmentFields + replyFields + expiryFields, alsoViaPropagation: alsoViaPropagation,
+                            fields: attachmentFields + replyFields + expiryFields + plan.fields,
+                            alsoViaPropagation: alsoViaPropagation,
                             replyToHash: replyToHash, replyQuote: replyQuote,
                             expirySeconds: expiry,
                             expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
@@ -1447,6 +1468,9 @@ public struct AppFeature {
                             try await database.write { db in
                                 try Message.insert { row }.execute(db)
                                 try Attachment.insert { attachment }.execute(db)
+                                if let version = plan.pendingVersion {
+                                    try ProfilePhotoDelivery.markPending(peerHex, version: version, hash: messageHash, db)
+                                }
                             }
                         } catch {
                             AppFeature.inbound.error("attachment send: database write failed for \(String(messageHash.prefix(8)), privacy: .public): \(String(describing: error), privacy: .public)")
@@ -2175,6 +2199,8 @@ public struct AppFeature {
                             .execute(db)
                         // A group copy carries its own hash in its delivery row (spec §3).
                         try GroupDelivery.applyOutcome(hash: hex, .stored, at: milestoneAt ?? .distantPast, db)
+                        // A propagation node holding it counts as delivered for my photo (spec 2026-10-19).
+                        try ProfilePhotoDelivery.applyOutcome(hash: hex, confirmed: true, db)
                     }
                     try await reloadConversations(database, send)
                     if let openPeer {
@@ -2209,6 +2235,7 @@ public struct AppFeature {
                             .update { $0.deliveredAt = milestoneAt }
                             .execute(db)
                         try GroupDelivery.applyOutcome(hash: hex, .delivered, at: milestoneAt ?? .distantPast, db)
+                        try ProfilePhotoDelivery.applyOutcome(hash: hex, confirmed: true, db)
                     }
                     try await reloadConversations(database, send)
                     if let openPeer {
@@ -2548,6 +2575,8 @@ public struct AppFeature {
                     .execute(db)
                 try GroupDelivery.applyOutcome(hash: hex, status == MessageStatus.cancelled ? .cancelled : .failed,
                                                at: milestoneAt ?? .distantPast, db)
+                // The photo it carried did not arrive: the next message attaches it again.
+                try ProfilePhotoDelivery.applyOutcome(hash: hex, confirmed: false, db)
             }
             try await reloadConversations(database, send)
             if let openPeer {
@@ -2610,9 +2639,11 @@ public struct AppFeature {
     /// fields follow the row's kind: a post carries its reply fields then the group and post ids,
     /// a roster line the group's current roster (an empty one, with the delete body, once the
     /// group is dissolved), a leave line the leave marker. `timestamp` is the dispatch time, so a
-    /// re-sent copy has a fresh hash. nil when an id does not decode.
+    /// re-sent copy has a fresh hash. nil when an id does not decode. `profileFields` (my profile
+    /// photo, spec 2026-10-19) are appended to a post copy only.
     static func groupCopy(of row: Message, to member: Data, group: ChatGroup, members: [String],
-                          identity: Identity, myName: String, timestamp: Double) -> LXMessage? {
+                          identity: Identity, myName: String, timestamp: Double,
+                          profileFields: [MsgPackValue.IntPair] = []) -> LXMessage? {
         guard let groupId = Data(hexString: group.groupHex), groupId.count == GroupWire.idLength else { return nil }
         let title = Data(GroupWire.trimName(group.name).utf8)
         let body: String
@@ -2635,7 +2666,7 @@ public struct AppFeature {
                 replyFields = ReplyWire.encode(replyTo: replyTo, quote: row.replyQuote ?? "")
             }
             body = row.body
-            fields = replyFields + GroupWire.encodePost(groupId: groupId, postId: postId)
+            fields = replyFields + GroupWire.encodePost(groupId: groupId, postId: postId) + profileFields
         }
         return LXMessage.create(source: identity, destinationHash: member, timestamp: timestamp,
                                 title: title, content: Data(body.utf8), fields: fields)
@@ -2652,10 +2683,15 @@ public struct AppFeature {
         let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
         let openPeer = state.openPeerHex
         let now = date.now
+        let myVersion = state.myPhotoVersion
+        let imageAllowed = state.profilePhotoMayRide
+        let avatarStore = self.avatarStore
         return .run { [database] send in
             let sent = try await dispatchWaitingGroupCopies(database, members: members, identity: identity,
                                                             myName: myName, alsoViaPropagation: alsoViaPropagation,
-                                                            now: now, groupHex: groupHex, send)
+                                                            now: now, groupHex: groupHex, myVersion: myVersion,
+                                                            myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                                                            imageAllowed: imageAllowed, send)
             guard sent > 0 else { return }
             try await reloadConversations(database, send)
             if let openPeer { try await reloadThread(database, openPeer, send) }
@@ -2704,6 +2740,9 @@ public struct AppFeature {
         let identity = state.identity
         let myName = state.myName
         let pathRequests = others.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
+        let myVersion = state.myPhotoVersion
+        let imageAllowed = state.profilePhotoMayRide
+        let avatarStore = self.avatarStore
         let write: Effect<Action> = .run { [database] send in
             try await database.write { db in
                 try Message.insert { row }.execute(db)
@@ -2712,7 +2751,9 @@ public struct AppFeature {
             }
             _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
                                                      myName: myName, alsoViaPropagation: alsoViaPropagation,
-                                                     now: now, send)
+                                                     now: now, myVersion: myVersion,
+                                                     myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                                                     imageAllowed: imageAllowed, send)
             try await reloadThread(database, groupHex, send)
             try await reloadConversations(database, send)
         }
@@ -2811,6 +2852,10 @@ public struct AppFeature {
         let myName = state.myName
         let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
         let pathRequests = recipients.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
+        // The roster/leave copy carries no photo, but a waiting post for the same member may go too.
+        let myVersion = state.myPhotoVersion
+        let imageAllowed = state.profilePhotoMayRide
+        let avatarStore = self.avatarStore
         let write: Effect<Action> = .run { [database] send in
             try await database.write { db in
                 guard var group = try ChatGroup.fetch(groupHex, db) else { return }
@@ -2823,7 +2868,9 @@ public struct AppFeature {
             }
             _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
                                                      myName: myName, alsoViaPropagation: alsoViaPropagation,
-                                                     now: now, send)
+                                                     now: now, myVersion: myVersion,
+                                                     myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                                                     imageAllowed: imageAllowed, send)
             try await reloadThread(database, groupHex, send)
             try await reloadConversations(database, send)
         }
@@ -3151,10 +3198,13 @@ private func reloadThread(_ database: any DatabaseWriter, _ key: String, _ send:
 /// `failed` control copy (roster or leave, amendment A16) for one of them is re-sent the same
 /// way, since the control change is what that member is behind on; a failed post is not. With
 /// `groupHex` set, only that group's rows are considered. Each row's message gets its derived
-/// status refreshed. Returns how many copies went out.
+/// status refreshed. Returns how many copies went out. A post copy carries my profile photo per
+/// member (spec 2026-10-19), planned against that member's delivery row and marked pending in the
+/// same write; roster and leave copies never do.
 private func dispatchWaitingGroupCopies(_ database: any DatabaseWriter, members: Set<String>,
                                         identity: Identity, myName: String, alsoViaPropagation: Bool,
                                         now: Date, groupHex onlyGroupHex: String? = nil,
+                                        myVersion: String, myPhoto: Data?, imageAllowed: Bool,
                                         _ send: Send<AppFeature.Action>) async throws -> Int {
     guard !members.isEmpty else { return 0 }
     let memberList = Array(members)
@@ -3176,10 +3226,20 @@ private func dispatchWaitingGroupCopies(_ database: any DatabaseWriter, members:
             if let onlyGroupHex, groupHex != onlyGroupHex { continue }
             if delivery.status == MessageStatus.failed, row.groupControl == nil { continue }
             let roster = try GroupMember.members(of: groupHex, db)
+            var plan = ProfilePhotoOutbox.Plan()
+            if row.groupControl == nil {
+                plan = ProfilePhotoOutbox.plan(myVersion: myVersion, myPhoto: myPhoto,
+                                               delivery: try ProfilePhotoDelivery.fetch(delivery.memberHex, db),
+                                               imageAllowed: imageAllowed)
+            }
             guard let copy = AppFeature.groupCopy(of: row, to: member, group: group, members: roster,
                                                   identity: identity, myName: myName,
-                                                  timestamp: now.timeIntervalSince1970)
+                                                  timestamp: now.timeIntervalSince1970,
+                                                  profileFields: plan.fields)
             else { continue }
+            if let version = plan.pendingVersion {
+                try ProfilePhotoDelivery.markPending(delivery.memberHex, version: version, hash: copy.hash.hexString, db)
+            }
             let hashHex: String? = copy.hash.hexString
             try GroupDelivery
                 .where { $0.messageId.eq(delivery.messageId) && $0.memberHex.eq(delivery.memberHex) }
@@ -3219,6 +3279,15 @@ private func stampViewed(_ database: any DatabaseWriter, _ peerHex: String, now:
 /// The timer a send should carry (amendment A16). `known` is `.some(value)` once the open thread's
 /// setting has loaded (value nil = off) and nil before that, in which case the stored setting is
 /// read so a send within milliseconds of opening a thread still carries the field.
+/// The profile-photo plan for one outgoing one-to-one message (spec 2026-10-19): my bytes are read
+/// only when I have a version, and the peer's delivery row decides image, tag or removal.
+private func profilePhotoPlan(_ database: any DatabaseWriter, _ avatarStore: AvatarStore, peerHex: String,
+                              myVersion: String, imageAllowed: Bool) async throws -> ProfilePhotoOutbox.Plan {
+    let delivery = try await database.read { try ProfilePhotoDelivery.fetch(peerHex, $0) }
+    return ProfilePhotoOutbox.plan(myVersion: myVersion, myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                                   delivery: delivery, imageAllowed: imageAllowed)
+}
+
 private func resolveExpiry(_ known: Int??, peerHex: String, _ database: any DatabaseWriter) async throws -> Int? {
     if let known { return known }
     return try await database.read { try ConversationSetting.expiry(for: peerHex, $0) }

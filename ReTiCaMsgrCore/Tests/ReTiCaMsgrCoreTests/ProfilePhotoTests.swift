@@ -140,3 +140,230 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
     state.connectedInterfaces = [InterfaceID("meshtastic:X"), InterfaceID("tcp:h:1")]
     #expect(state.profilePhotoMayRide == true)
 }
+
+// MARK: - Sending (Task 6)
+
+private let sendPeer = String(repeating: "a", count: 32)
+private let sendMemberC = String(repeating: "c", count: 32)
+private let sendMemberD = String(repeating: "d", count: 32)
+private let sendGroupHex = String(repeating: "1a", count: 16)
+private let tcpInterface = InterfaceID("tcp:h:1")
+
+/// A store with `sendPeer` open and a TCP interface up (so the image may ride), unless `configure`
+/// says otherwise.
+@MainActor
+private func peerStore(_ db: any DatabaseWriter, avatars: AvatarStore,
+                       configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
+    makeStore(db, identity: Identity(), avatars: avatars) { s in
+        s.openPeerHex = sendPeer
+        s.chatVisible = true
+        s.connectedInterfaces = [tcpInterface]
+        configure?(&s)
+    }
+}
+
+/// Picks a photo through the real action and returns my new version.
+@MainActor
+private func setMyPhoto(_ store: TestStoreOf<AppFeature>) async -> String {
+    await store.send(.profilePhotoPicked(TestImages.jpeg(width: 300, height: 300)))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    return store.state.myPhotoVersion
+}
+
+/// Types `text`, taps Send and returns the message handed to the node.
+@MainActor
+private func sendText(_ store: TestStoreOf<AppFeature>, _ text: String) async -> LXMessage? {
+    var sent: LXMessage? = nil
+    await store.send(.binding(.set(\.draft, text)))
+    await store.send(.sendTapped)
+    await store.receive { a in
+        if case let .node(.client(.sendMessage(m, _))) = a { sent = m; return true }
+        return false
+    }
+    return sent
+}
+
+private func deliveryRow(_ db: any DatabaseWriter, _ peerHex: String) async throws -> ProfilePhotoDelivery? {
+    try await db.read { try ProfilePhotoDelivery.fetch(peerHex, $0) }
+}
+
+/// Polls the database until `condition` holds (an outcome's write lands in its own effect).
+private func waitForDelivery(_ db: any DatabaseWriter, _ peerHex: String,
+                             _ condition: @Sendable (ProfilePhotoDelivery?) -> Bool) async throws {
+    for _ in 0..<400 {
+        if condition(try await deliveryRow(db, peerHex)) { return }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    Issue.record("delivery row for \(peerHex) never reached the expected state")
+}
+
+private func hasProfileField(_ m: LXMessage?) -> Bool {
+    m?.fields.contains { $0.key == ProfileWire.fieldProfilePhoto } ?? false
+}
+
+@MainActor @Test func firstSendCarriesThePhoto() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let store = peerStore(db, avatars: avatars)
+    let version = await setMyPhoto(store)
+    let jpeg = try #require(avatars.mine())
+    let sent = try #require(await sendText(store, "hi"))
+    #expect(ProfileWire.decode(sent.fields) == .photo(version: try #require(Data(hexString: version)), jpeg: jpeg))
+    let row = try #require(try await deliveryRow(db, sendPeer))
+    #expect(row.pendingVersion == version)
+    #expect(row.pendingHash == sent.hash.hexString)
+    #expect(row.deliveredVersion == nil)
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func secondSendBeforeConfirmCarriesTagOnly() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = peerStore(db, avatars: AvatarStore.testValue)
+    let version = await setMyPhoto(store)
+    let first = try #require(await sendText(store, "one"))
+    let second = try #require(await sendText(store, "two"))
+    let v = try #require(Data(hexString: version))
+    guard case .photo = ProfileWire.decode(first.fields) else { Issue.record("first send had no photo"); return }
+    #expect(ProfileWire.decode(second.fields) == .tag(version: v))
+    // The pending pair still waits on the first message.
+    #expect(try await deliveryRow(db, sendPeer)?.pendingHash == first.hash.hexString)
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func confirmedSendMakesNextSendTagOnly() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = peerStore(db, avatars: AvatarStore.testValue)
+    let version = await setMyPhoto(store)
+    let first = try #require(await sendText(store, "one"))
+    await store.send(.node(.client(.delegate(.deliveryConfirmed(messageHash: first.hash)))))
+    try await waitForDelivery(db, sendPeer) { $0?.deliveredVersion == version }
+    let row = try await deliveryRow(db, sendPeer)
+    #expect(row?.deliveredVersion == version)
+    #expect(row?.pendingVersion == nil)
+    let next = try #require(await sendText(store, "two"))
+    #expect(ProfileWire.decode(next.fields) == .tag(version: try #require(Data(hexString: version))))
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func propagatedCountsAsConfirmed() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = peerStore(db, avatars: AvatarStore.testValue)
+    let version = await setMyPhoto(store)
+    let first = try #require(await sendText(store, "one"))
+    await store.send(.node(.client(.delegate(.propagationAccepted(messageHash: first.hash)))))
+    try await waitForDelivery(db, sendPeer) { $0?.deliveredVersion == version }
+    let row = try await deliveryRow(db, sendPeer)
+    #expect(row?.deliveredVersion == version)
+    #expect(row?.pendingHash == nil)
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func sendAfterPhotoFailureAttachesAgain() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let store = peerStore(db, avatars: avatars)
+    let version = await setMyPhoto(store)
+    let first = try #require(await sendText(store, "one"))
+    await store.send(.node(.client(.delegate(.deliveryFailed(messageHash: first.hash)))))
+    try await waitForDelivery(db, sendPeer) { $0?.pendingHash == nil }
+    #expect(try await deliveryRow(db, sendPeer)?.deliveredVersion == nil)
+    let next = try #require(await sendText(store, "two"))
+    let jpeg = try #require(avatars.mine())
+    #expect(ProfileWire.decode(next.fields) == .photo(version: try #require(Data(hexString: version)), jpeg: jpeg))
+    #expect(try await deliveryRow(db, sendPeer)?.pendingHash == next.hash.hexString)
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func sendOverMeshtasticOnlyOmitsImage() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let store = peerStore(db, avatars: avatars) { s in
+        s.connectedInterfaces = [InterfaceID("meshtastic:X")]
+    }
+    let version = await setMyPhoto(store)
+    let v = try #require(Data(hexString: version))
+    let slow = try #require(await sendText(store, "over the radio"))
+    #expect(ProfileWire.decode(slow.fields) == .tag(version: v))
+    #expect(try await deliveryRow(db, sendPeer) == nil)
+    // A TCP interface comes up: the next send carries the image.
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(tcpInterface, .tcp))))))
+    #expect(store.state.profilePhotoMayRide == true)
+    let fast = try #require(await sendText(store, "over tcp"))
+    #expect(ProfileWire.decode(fast.fields) == .photo(version: v, jpeg: try #require(avatars.mine())))
+    #expect(try await deliveryRow(db, sendPeer)?.pendingVersion == version)
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func noPhotoSendsNoProfileField() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = peerStore(db, avatars: AvatarStore.testValue)
+    #expect(store.state.myPhotoVersion == "")
+    let sent = try #require(await sendText(store, "plain"))
+    #expect(!hasProfileField(sent))
+    #expect(try await deliveryRow(db, sendPeer) == nil)
+    await store.skipReceivedActions(strict: false)
+}
+
+@MainActor @Test func groupPostCopiesCarryThePhotoPerMember() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let group = ChatGroup(groupHex: sendGroupHex, name: "Mutual Aid", creatorHex: myHex, revision: 1,
+                          state: GroupState.active, updatedAt: Date(timeIntervalSince1970: 1700000000))
+    let roster = [sendMemberC, sendMemberD, myHex].sorted()
+    try await db.write { db in
+        try ChatGroup.upsert(group, db)
+        try GroupMember.replace(sendGroupHex, with: roster, db)
+    }
+    let store = makeStore(db, identity: me, avatars: avatars) { s in
+        s.openPeerHex = sendGroupHex
+        s.openConversationKind = .group
+        s.chatVisible = true
+        s.openGroup = group
+        s.openGroupMembers = roster.map { GroupMember(groupHex: sendGroupHex, memberHex: $0) }
+        s.reachablePeers = [sendMemberC, sendMemberD]
+        s.connectedInterfaces = [tcpInterface]
+    }
+    let version = await setMyPhoto(store)
+    let v = try #require(Data(hexString: version))
+    let jpeg = try #require(avatars.mine())
+    // Keyed by hash: the receive predicate can be evaluated more than once per action.
+    var byHash: [Data: LXMessage] = [:]
+    await store.send(.binding(.set(\.draft, "to the group")))
+    await store.send(.sendTapped)
+    for _ in 0..<2 {
+        await store.receive { a in
+            if case let .node(.client(.sendMessage(m, _))) = a { byHash[m.hash] = m; return true }
+            return false
+        }
+    }
+    await store.skipReceivedActions(strict: false)
+    let copies = Array(byHash.values)
+    #expect(copies.count == 2)
+    for copy in copies {
+        #expect(ProfileWire.decode(copy.fields) == .photo(version: v, jpeg: jpeg))
+        let member = copy.destinationHash.hexString
+        let row = try await deliveryRow(db, member)
+        #expect(row?.pendingVersion == version)
+        #expect(row?.pendingHash == copy.hash.hexString)
+    }
+    #expect(Set(copies.map { $0.destinationHash.hexString }) == [sendMemberC, sendMemberD])
+}
+
+@MainActor @Test func reactionsCarryNoProfileField() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = peerStore(db, avatars: AvatarStore.testValue)
+    _ = await setMyPhoto(store)
+    var sent: LXMessage? = nil
+    await store.send(.reactionSelected(messageHash: String(repeating: "5e", count: 32), emoji: "👍"))
+    await store.receive { a in
+        if case let .node(.client(.sendMessage(m, _))) = a { sent = m; return true }
+        return false
+    }
+    #expect(sent != nil)
+    #expect(!hasProfileField(sent))
+    #expect(try await deliveryRow(db, sendPeer) == nil)
+    await store.skipReceivedActions(strict: false)
+}
