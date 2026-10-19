@@ -233,6 +233,26 @@ public enum AppDatabase {
                 t.column("blockedAt", .datetime).notNull()
             }
         }
+        m.registerMigration("createPeerProfiles") { db in
+            try db.create(table: "peerProfiles") { t in
+                t.primaryKey("peerHex", .text).notNull()
+                t.column("photoVersion", .text)
+                t.column("photoPath", .text)
+                t.column("iconName", .text)
+                t.column("iconFg", .text)
+                t.column("iconBg", .text)
+                t.column("updatedAt", .datetime).notNull()
+            }
+        }
+        m.registerMigration("createProfilePhotoDeliveries") { db in
+            try db.create(table: "profilePhotoDeliveries") { t in
+                t.primaryKey("peerHex", .text).notNull()
+                t.column("deliveredVersion", .text)
+                t.column("pendingVersion", .text)
+                t.column("pendingHash", .text)
+            }
+            try db.create(index: "profilePhotoDeliveriesPendingHash", on: "profilePhotoDeliveries", columns: ["pendingHash"])
+        }
         return m
     }
 
