@@ -23,8 +23,24 @@ private struct DetectedAnnounce: Identifiable {
     let learnedAt: Date
 }
 
+/// Presented as a sheet from the Chats nav bar. Tapping a row hands its address to `onPick`; the
+/// presenter dismisses the sheet and opens the chat once the sheet is gone.
 struct AnnounceListView: View {
     let store: StoreOf<AppFeature>
+    let onPick: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    /// Row order captured when the sheet opens. Announces re-arrive every few seconds, and sorting
+    /// purely by recency moved rows under the user's finger, so a tap opened the wrong chat. Peers
+    /// already listed keep their place; newcomers go at the bottom, so nothing above them shifts.
+    @State private var frozenOrder: [Data] = []
+
+    private var orderedAnnounces: [DetectedAnnounce] {
+        let rank = Dictionary(uniqueKeysWithValues: frozenOrder.enumerated().map { ($1, $0) })
+        let all = detectedAnnounces
+        let newcomers = all.filter { rank[$0.id] == nil }
+        let known = all.filter { rank[$0.id] != nil }.sorted { rank[$0.id]! < rank[$1.id]! }
+        return known + newcomers
+    }
 
     private var detectedAnnounces: [DetectedAnnounce] {
         store.state.node.client.learnedPeers
@@ -42,68 +58,78 @@ struct AnnounceListView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if detectedAnnounces.isEmpty {
-                    ContentUnavailableView(
-                        "No Announces Detected",
-                        systemImage: "antenna.radiowaves.left.and.right.slash",
-                        description: Text("LXMF delivery announces from other clients will appear here once the node is connected.")
-                    )
-                } else {
-                    List(detectedAnnounces) { announce in
-                        Button {
-                            store.send(.announceRowTapped(destinationHashHex: announce.hex))
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(store.state.contactName(announce.hex) ?? announce.displayName ?? "Unnamed")
-                                    .font(.headline)
-                                if store.state.contactName(announce.hex) != nil, let name = announce.displayName {
-                                    Text("announces as \(name)").font(.caption).foregroundStyle(.secondary)
-                                }
-                                HStack(spacing: 6) {
-                                    Text(shortHex(announce.hex))
-                                        .font(.system(.caption, design: .monospaced))
-                                    Text(announce.learnedAt, style: .relative)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                publicKeyRequestStatus(for: announce.hex)
-                            }
-                            // Make the whole row tappable, not just the text glyphs (same pattern
-                            // as ConversationListView).
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
+            List {
+                Section {
+                    if detectedAnnounces.isEmpty {
+                        ContentUnavailableView(
+                            "No One Yet",
+                            systemImage: "antenna.radiowaves.left.and.right.slash",
+                            description: Text("People will show up here as their apps announce "
+                                              + "themselves. Make sure you're connected in Settings.")
+                        )
+                    } else {
+                        ForEach(orderedAnnounces) { announce in
+                            row(announce)
                         }
-                        .buttonStyle(.plain)
                     }
-                    .listStyle(.plain)
+                } header: {
+                    Text("Messaging apps on the network periodically announce themselves so others "
+                         + "can find them. Everyone this phone has heard from recently is listed "
+                         + "here. Tap someone to start a chat.")
+                        .textCase(nil)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 8)
                 }
             }
+            .listStyle(.insetGrouped)
+            .onAppear { frozenOrder = detectedAnnounces.map(\.id) }
             .navigationTitle("Announces")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
                     Button { store.send(.announceTapped) } label: {
-                        Label("Announce", systemImage: "antenna.radiowaves.left.and.right")
+                        Label("Announce Me", systemImage: "megaphone")
                     }
+                    .accessibilityHint("Lets others on the network find you now")
                 }
             }
         }
     }
 
-    /// The tapped row's public key (from the peer's announce), if any.
-    @ViewBuilder
-    private func publicKeyRequestStatus(for hex: String) -> some View {
-        switch store.state.publicKeyRequests[hex] {
-        case let .received(keyHex):
-            Label(shortHex(keyHex), systemImage: "checkmark.seal")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.green)
-        case let .failed(reason):
-            Label(reason, systemImage: "xmark.octagon")
-                .font(.caption)
-                .foregroundStyle(.red)
-        case nil:
-            EmptyView()
+    private func row(_ announce: DetectedAnnounce) -> some View {
+        Button {
+            onPick(announce.hex)
+        } label: {
+            HStack(spacing: 12) {
+                BrandAvatar(name: store.state.contactName(announce.hex) ?? announce.displayName ?? "",
+                            size: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(store.state.contactName(announce.hex) ?? announce.displayName ?? "Unnamed")
+                        .font(.headline)
+                    if store.state.contactName(announce.hex) != nil, let name = announce.displayName {
+                        Text("announces as \(name)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 6) {
+                        Text(shortHex(announce.hex))
+                            .font(.system(.caption, design: .monospaced))
+                        Text(announce.learnedAt, style: .relative)
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "bubble.left")
+                    .foregroundStyle(Color.accentColor)
+            }
+            // Make the whole row tappable, not just the text glyphs (same pattern
+            // as ConversationListView).
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 }

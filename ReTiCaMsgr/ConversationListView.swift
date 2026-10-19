@@ -28,6 +28,10 @@ struct ConversationListView: View {
     @State private var showingCompose = false
     @State private var showingNewGroup = false
     @State private var scanOutcome: ScanOutcome?
+    @State private var showingAnnounces = false
+    /// Picked in the announces sheet; started from its `onDismiss`, once the sheet is gone, so
+    /// the chat push never races the sheet's dismissal (same reason as `scanOutcome`).
+    @State private var announcePick: String?
 
     var connectionColor: Color {
         switch store.connection {
@@ -50,8 +54,9 @@ struct ConversationListView: View {
                                     .font(.headline)
                                     .lineLimit(1)
                             } else {
-                                Text(store.state.contactName(convo.peerHex) ?? shortHex(convo.peerHex))
-                                    .font(store.state.contactName(convo.peerHex) == nil
+                                // Contact name, else the name from their announce, else the address.
+                                Text(store.state.peerDisplayName(convo.peerHex) ?? shortHex(convo.peerHex))
+                                    .font(store.state.peerDisplayName(convo.peerHex) == nil
                                           ? .system(.headline, design: .monospaced) : .headline)
                             }
                             if convo.groupState == GroupState.invited {
@@ -90,6 +95,19 @@ struct ConversationListView: View {
                 .buttonStyle(.plain)
             }
             .listStyle(.plain)
+            .overlay {
+                if store.conversationRows.isEmpty {
+                    ContentUnavailableView {
+                        Label("No Chats Yet", systemImage: "bubble.left.and.bubble.right")
+                    } description: {
+                        Text("Start a conversation by scanning a friend's QR code, or tap the "
+                             + "antenna to see who has announced themselves recently.")
+                    } actions: {
+                        Button("New Conversation") { showingCompose = true }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
             .navigationTitle("Chats")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -102,7 +120,14 @@ struct ConversationListView: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { showingAnnounces = true } label: {
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                    }
+                    .accessibilityLabel("Announces")
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button { store.send(.syncTapped) } label: { Image(systemName: "arrow.clockwise") }
+                        .accessibilityLabel("Check for messages")
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
@@ -138,6 +163,15 @@ struct ConversationListView: View {
             .sheet(isPresented: $showingNewGroup) {
                 NewGroupView(store: store, isPresented: $showingNewGroup)
             }
+            .sheet(isPresented: $showingAnnounces, onDismiss: {
+                if let hex = announcePick { store.send(.startConversation(hex)) }
+                announcePick = nil
+            }) {
+                AnnounceListView(store: store) { hex in
+                    announcePick = hex
+                    showingAnnounces = false
+                }
+            }
         }
     }
 }
@@ -159,8 +193,8 @@ struct ComposeSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Peer LXMF address (hex)") {
-                    TextField("32 hex characters", text: $address)
+                Section {
+                    TextField("Their address (32 characters)", text: $address)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .font(.system(.body, design: .monospaced))
@@ -169,6 +203,10 @@ struct ComposeSheet: View {
                     } label: {
                         Label("Scan QR code", systemImage: "qrcode.viewfinder")
                     }
+                } header: {
+                    Text("Address")
+                } footer: {
+                    Text("Ask them for their code: it's under Settings › My QR Code & Address.")
                 }
                 Button("Start conversation") {
                     store.send(.startConversation(address))

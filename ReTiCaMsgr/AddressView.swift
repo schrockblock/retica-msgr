@@ -16,8 +16,15 @@ struct AddressView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
-                Text("My LXMF Address")
-                    .font(.headline)
+                VStack(spacing: 8) {
+                    BrandAvatar(name: store.displayName, size: 72)
+                    if !store.displayName.isEmpty {
+                        Text(store.displayName).font(.title2.weight(.semibold))
+                    }
+                    Text("Scan this code to message me")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
 
                 qrCodeView
 
@@ -38,7 +45,8 @@ struct AddressView: View {
                 Spacer()
             }
             .padding(.top, 32)
-            .navigationTitle("Address")
+            .navigationTitle("My Code")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

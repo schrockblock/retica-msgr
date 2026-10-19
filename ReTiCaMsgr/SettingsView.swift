@@ -11,6 +11,9 @@ import ComposableArchitecture
 import ReTiCaMsgrCore
 import ReTiCAPush
 
+/// Ordered like a mainstream messenger: profile, privacy, notifications and contacts first, so
+/// nobody needs to know how Reticulum works to set the app up. The network controls follow, under
+/// their own "Network" heading.
 struct SettingsView: View {
     @Bindable var store: StoreOf<AppFeature>
     @State private var pnInput: String = ""
@@ -19,6 +22,9 @@ struct SettingsView: View {
     @State private var showingAddNode = false
     @State private var editingNode: NodeEntry? = nil
     @Environment(\.openURL) private var openURL
+    @FocusState private var focusedField: Field?
+
+    private enum Field { case name, listenPort, propagationNode }
 
     private var pushStatusIsFailure: Bool {
         if case .failed = store.push.status { return true }
@@ -49,259 +55,24 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Display Name") {
-                    TextField("Your name", text: $nameInput)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.words)
-                    // Saved on commit rather than per keystroke: each save re-announces on every
-                    // interface, and `Transport` paces only RELAYED announces — locally originated
-                    // ones go out immediately and ungated.
-                    Button("Save name") { store.send(.setDisplayName(nameInput)) }
-                        .disabled(nameInput == store.displayName)
-                    if store.displayName.isEmpty {
-                        Text("Other Reticulum clients show you as unnamed. Saving a name announces "
-                             + "it to the network; clearing it announces that too.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Shown to other clients as “\(store.displayName)”.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section {
-                    HStack(spacing: 8) {
-                        Circle().fill(connectionColor).frame(width: 10, height: 10)
-                        Text(connectionLabel)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(store.nodes) { node in
-                        NodeRow(
-                            node: node,
-                            isConnected: store.connectedInterfaces.contains(node.interfaceID),
-                            isPushNode: store.pushNode?.id == node.id,
-                            onTap: node.isBuiltIn ? nil : { editingNode = node },
-                            onToggle: { store.send(.setNodeEnabled(id: node.id, enabled: $0)) }
-                        )
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            if !node.isBuiltIn {
-                                Button("Delete", role: .destructive) { store.send(.removeNode(id: node.id)) }
-                            }
-                        }
-                    }
-                    Button("Add node") { showingAddNode = true }
-                    HStack {
-                        Button("Connect") { store.send(.connectTapped) }
-                            .buttonStyle(.bordered)
-                        Button("Disconnect") { store.send(.disconnectTapped) }
-                            .buttonStyle(.bordered)
-                            .tint(.red)
-                    }
-                } header: {
-                    Text("Nodes")
-                } footer: {
-                    if store.enabledNodes.isEmpty {
-                        Text("No node is enabled. The app reaches peers only over Bluetooth or direct "
-                             + "connections.")
-                    } else {
-                        Text("Connect and Disconnect act on every enabled node. Tap a node to edit it, "
-                             + "swipe to delete.")
-                    }
-                }
-
-                Section("Direct Connections") {
-                    // Standard Toggle in a Form row: the whole row is already hittable, so no
-                    // explicit contentShape is needed here.
-                    Toggle("Listen for direct connections", isOn: $store.listenEnabled)
-                    TextField("Listen port", value: $store.listenPort, format: .number)
-                        .keyboardType(.numberPad)
-                        .disabled(!store.listenEnabled)
-                    Text("Lets other Reticulum nodes on your local Wi-Fi connect directly to this "
-                         + "device — anyone on the same network can reach it. Off by default. "
-                         + "Takes effect on the next Connect.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Bluetooth") {
-                    // Standard Toggle in a Form row: the whole row is already hittable.
-                    Toggle("Connect over Bluetooth", isOn: $store.bleEnabled)
-                    if store.bluetoothAlert == .permissionDenied {
-                        Text("Bluetooth permission is denied. Allow it in Settings to connect to "
-                             + "nearby devices.")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                        Button("Open Settings") {
-                            if let url = URL(string: UIApplication.openSettingsURLString) {
-                                openURL(url)
-                            }
-                        }
-                    } else if store.bluetoothAlert == .unsupported {
-                        Text("This device doesn’t support Bluetooth LE, so Bluetooth connections "
-                             + "aren’t available.")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    } else {
-                        Text("Connects directly to nearby Reticulum devices (other iPhones, "
-                             + "Raspberry Pis) over Bluetooth to send and relay messages — no Wi-Fi "
-                             + "or shared server needed. Off by default. Takes effect on the next "
-                             + "Connect.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section {
-                    // Standard Toggle in a Form row: the whole row is already hittable.
-                    Toggle("Connect through a Meshtastic radio", isOn: $store.meshtasticEnabled)
-                    LabeledContent("Radio", value: store.meshtasticRadioLabel)
-                    // A standard Form button row is hittable across its width already.
-                    Button("Choose radio…") { store.send(.chooseRadioTapped) }
-                } header: {
-                    Text("Meshtastic")
-                } footer: {
-                    Text("Sends and receives messages over LoRa through a Meshtastic radio paired with "
-                         + "this device over Bluetooth. Set the radio to a Short preset (ShortTurbo or "
-                         + "ShortFast): longer presets are too slow for most messages. The radio must not "
-                         + "be connected to another app, such as the Meshtastic app, at the same time. "
-                         + "Choosing a radio pauses Bluetooth connections to nearby devices until the list "
-                         + "closes. Off by default. Takes effect on the next Connect.")
-                }
-
-                Section("Relay") {
-                    Toggle("Relay traffic for other nodes", isOn: Binding(
-                        get: { store.relayEnabled },
-                        set: { store.send(.setRelayMode($0)) }
-                    ))
-                    Text("Carries other users' messages through this device so the mesh reaches "
-                         + "further — it forwards transit traffic and answers path requests for "
-                         + "peers it hasn't met. Off by default. Uses more battery and data.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Push Notifications") {
-                    Toggle("Wake me with push", isOn: Binding(
-                        get: { store.push.enabled },
-                        set: { store.send(.push(.setEnabled($0))) }
-                    ))
-                    .disabled(store.pushNode == nil && !store.push.enabled)
-                    if let pushNode = store.pushNode {
-                        Text("Push node: \(pushNode.name)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(store.pushStatusText)
-                            .font(.caption)
-                            .foregroundStyle(pushStatusIsFailure ? .red : .secondary)
-                    } else {
-                        Text("No push node. Add a push hub destination to a node to enable wake-ups.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("Notifications only ever say \"New message\"; nothing about the sender or the "
-                         + "content leaves the device unencrypted. Changing the push node re-registers with "
-                         + "the new hub as soon as it is reachable.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Contacts") {
-                    Toggle("Save Reticulum addresses to Contacts", isOn: Binding(
-                        get: { store.contactMirrorEnabled },
-                        set: { store.send(.setContactMirror($0)) }
-                    ))
-                    Text("Adds a Reticulum URL to each linked contact's card, so other devices and apps can "
-                         + "find the address. Needs full Contacts access.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if store.contactMirrorEnabled, store.contactsAuthorization == .denied {
-                        Text("Contacts access is off, so nothing is written to cards. Allow it in Settings.")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                        Button("Open Settings") {
-                            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-                        }
-                    } else if store.contactMirrorEnabled, store.contactsAuthorization == .limited {
-                        Text("Only the contacts you selected are available, and their cards cannot be "
-                             + "updated with limited access.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if !store.contactMirrorEnabled, !store.contactLinks.isEmpty {
-                        Text("Addresses already saved to Contacts stay there, and are offered for import "
-                             + "again when you turn this back on.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if !store.importCandidates.isEmpty {
-                        Button("Import \(store.importCandidates.count) addresses found in Contacts") {
-                            store.send(.importContactLinks)
-                        }
-                    }
-                }
-
-                Section("Safety") {
-                    NavigationLink { BlockedAddressesView(store: store) } label: {
-                        HStack {
-                            Label("Blocked Addresses", systemImage: "hand.raised")
-                            Spacer()
-                            if !store.blockedPeerRows.isEmpty {
-                                Text("\(store.blockedPeerRows.count)").foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-
-                Section("Run as Propagation Node") {
-                    Toggle("Act as a propagation node", isOn: Binding(
-                        get: { store.nodeModeEnabled },
-                        set: { store.send(.setNodeMode($0)) }
-                    ))
-                    Text("Stores and forwards messages for other users while this app is open.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Propagation Node") {
-                    if DefaultNode.propagationHex != nil {
-                        Toggle("Use the default node's propagation node", isOn: Binding(
-                            get: { store.usePropagationDefault },
-                            set: { store.send(.setUsePropagationDefault($0)) }
-                        ))
-                    }
-                    TextField("Node LXMF address (hex)", text: $pnInput)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .font(.system(.body, design: .monospaced))
-                        .disabled(usesDefaultPropagation)
-                    Button("Save node") { store.send(.setPropagationNode(pnInput)) }
-                        .disabled(usesDefaultPropagation || !isValidPeerAddress(pnInput))
-                    if !store.propagationNodeHex.isEmpty {
-                        Text("Current: \(store.propagationNodeHex)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-
-                Section {
-                    NavigationLink { DiagnosticsView(store: store) } label: {
-                        Label("Diagnostics", systemImage: "stethoscope")
-                    }
-                } footer: {
-                    Text("Connection, paths, peers, links and delivery state — and a shareable "
-                         + "snapshot for bug reports.")
-                }
+                profileSection
+                privacySection
+                notificationsSection
+                contactsSection
+                networkSections
             }
             .navigationTitle("Settings")
+            // The listen-port number pad has no return key, so every field gets a Done above the
+            // keyboard, and scrolling the form drops it too.
+            .scrollDismissesKeyboard(.interactively)
+            // Leaving the name field by any route (Done, a scroll) saves it, as return does.
+            .onChange(of: focusedField) { old, _ in
+                if old == .name { saveName() }
+            }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showingAddress = true } label: {
-                        Image(systemName: "person.crop.circle")
-                    }
-                    .accessibilityLabel("My Address")
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
                 }
             }
             .sheet(isPresented: $showingAddress) {
@@ -318,7 +89,7 @@ struct SettingsView: View {
                 RadioPickerView(store: pickerStore)
             }
             // Seed the field from persisted state, so opening Settings with a name set does not
-            // show a blank box whose Save button would clear it. (The propagation-node field above
+            // show a blank box whose Save button would clear it. (The propagation-node field below
             // deliberately starts blank — pasting a fresh hex address is its normal use — but a
             // name is edited, not replaced.)
             .onAppear {
@@ -326,6 +97,299 @@ struct SettingsView: View {
                 // The Contacts section shows access state and import candidates: refresh both.
                 store.send(.contactLinkSheetAppeared)
             }
+        }
+    }
+
+    // MARK: - Messaging
+
+    private var profileSection: some View {
+        Section {
+            HStack(spacing: 14) {
+                BrandAvatar(name: nameInput)
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField("Your name", text: $nameInput)
+                        .font(.title3.weight(.semibold))
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.words)
+                        .submitLabel(.done)
+                        .focused($focusedField, equals: .name)
+                        // Saved on commit rather than per keystroke: each save re-announces on every
+                        // interface, and `Transport` paces only RELAYED announces — locally originated
+                        // ones go out immediately and ungated.
+                        .onSubmit { saveName() }
+                    Text(store.displayName.isEmpty
+                         ? "Add a name so people know it's you."
+                         : "Shown to others as “\(store.displayName)”.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+            if nameInput != store.displayName {
+                Button("Save name") { saveName() }
+            }
+            Button { showingAddress = true } label: {
+                Label("My QR Code & Address", systemImage: "qrcode")
+            }
+        } header: {
+            Text("Profile")
+        } footer: {
+            Text("Share your QR code so others can start a chat with you.")
+        }
+    }
+
+    private func saveName() {
+        guard nameInput != store.displayName else { return }
+        store.send(.setDisplayName(nameInput))
+    }
+
+    private var privacySection: some View {
+        Section("Privacy") {
+            NavigationLink { BlockedAddressesView(store: store) } label: {
+                HStack {
+                    Label("Blocked", systemImage: "hand.raised")
+                    Spacer()
+                    if !store.blockedPeerRows.isEmpty {
+                        Text("\(store.blockedPeerRows.count)").foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var notificationsSection: some View {
+        Section {
+            Toggle("Notify me when the app is closed", isOn: Binding(
+                get: { store.push.enabled },
+                set: { store.send(.push(.setEnabled($0))) }
+            ))
+            .disabled(store.pushNode == nil && !store.push.enabled)
+            // While off, the status would only repeat the toggle.
+            if store.pushNode != nil, store.push.enabled {
+                Text(store.pushStatusText)
+                    .font(.caption)
+                    .foregroundStyle(pushStatusIsFailure ? .red : .secondary)
+            }
+        } header: {
+            Text("Notifications")
+        } footer: {
+            if store.pushNode == nil {
+                Text("Unavailable: none of your nodes offers notifications. See Network below.")
+            } else {
+                Text("Notifications only ever say \"New message\"; nothing about the sender or the "
+                     + "content leaves the device unencrypted.")
+            }
+        }
+    }
+
+    private var contactsSection: some View {
+        Section("Contacts") {
+            Toggle("Save addresses to Contacts", isOn: Binding(
+                get: { store.contactMirrorEnabled },
+                set: { store.send(.setContactMirror($0)) }
+            ))
+            Text("Adds your chats' addresses to their contact cards, so your other devices and apps "
+                 + "can find them. Needs full Contacts access.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if store.contactMirrorEnabled, store.contactsAuthorization == .denied {
+                Text("Contacts access is off, so nothing is written to cards. Allow it in Settings.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                }
+            } else if store.contactMirrorEnabled, store.contactsAuthorization == .limited {
+                Text("Only the contacts you selected are available, and their cards cannot be "
+                     + "updated with limited access.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !store.contactMirrorEnabled, !store.contactLinks.isEmpty {
+                Text("Addresses already saved to Contacts stay there, and are offered for import "
+                     + "again when you turn this back on.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !store.importCandidates.isEmpty {
+                Button("Import \(store.importCandidates.count) addresses found in Contacts") {
+                    store.send(.importContactLinks)
+                }
+            }
+        }
+    }
+
+    // MARK: - Network
+
+    @ViewBuilder
+    private var networkSections: some View {
+        Section {
+            HStack(spacing: 8) {
+                Circle().fill(connectionColor).frame(width: 10, height: 10)
+                Text(connectionLabel)
+                Spacer()
+                Button("Connect") { store.send(.connectTapped) }
+                    .buttonStyle(.bordered)
+                Button("Disconnect") { store.send(.disconnectTapped) }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+            }
+        } header: {
+            Text("Network")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .textCase(nil)
+                .padding(.top, 16)
+        } footer: {
+            Text("How this app reaches the Reticulum network. The defaults work for most people. "
+                 + "Bluetooth, Meshtastic and direct-connection changes take effect on the next "
+                 + "Connect.")
+        }
+
+        Section {
+            ForEach(store.nodes) { node in
+                NodeRow(
+                    node: node,
+                    isConnected: store.connectedInterfaces.contains(node.interfaceID),
+                    isPushNode: store.pushNode?.id == node.id,
+                    onTap: node.isBuiltIn ? nil : { editingNode = node },
+                    onToggle: { store.send(.setNodeEnabled(id: node.id, enabled: $0)) }
+                )
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    if !node.isBuiltIn {
+                        Button("Delete", role: .destructive) { store.send(.removeNode(id: node.id)) }
+                    }
+                }
+            }
+            Button("Add node") { showingAddNode = true }
+        } header: {
+            Text("Nodes")
+        } footer: {
+            if store.enabledNodes.isEmpty {
+                Text("No node is enabled. The app reaches peers only over Bluetooth or direct "
+                     + "connections.")
+            } else {
+                Text("Connect and Disconnect act on every enabled node. Tap a node to edit it, "
+                     + "swipe to delete. The node marked Push delivers notifications; changing it "
+                     + "re-registers with the new hub as soon as it is reachable.")
+            }
+        }
+
+        Section("Bluetooth") {
+            // Standard Toggle in a Form row: the whole row is already hittable.
+            Toggle("Connect over Bluetooth", isOn: $store.bleEnabled)
+            if store.bluetoothAlert == .permissionDenied {
+                Text("Bluetooth permission is denied. Allow it in Settings to connect to "
+                     + "nearby devices.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        openURL(url)
+                    }
+                }
+            } else if store.bluetoothAlert == .unsupported {
+                Text("This device doesn’t support Bluetooth LE, so Bluetooth connections "
+                     + "aren’t available.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else {
+                Text("Connects directly to nearby Reticulum devices (other iPhones, "
+                     + "Raspberry Pis) over Bluetooth to send and relay messages — no Wi-Fi "
+                     + "or shared server needed. Off by default.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        Section {
+            // Standard Toggle in a Form row: the whole row is already hittable.
+            Toggle("Connect through a Meshtastic radio", isOn: $store.meshtasticEnabled)
+            LabeledContent("Radio", value: store.meshtasticRadioLabel)
+            // A standard Form button row is hittable across its width already.
+            Button("Choose radio…") { store.send(.chooseRadioTapped) }
+        } header: {
+            Text("Meshtastic")
+        } footer: {
+            Text("Sends and receives messages over LoRa through a Meshtastic radio paired with "
+                 + "this device over Bluetooth. Set the radio to a Short preset (ShortTurbo or "
+                 + "ShortFast): longer presets are too slow for most messages. The radio must not "
+                 + "be connected to another app, such as the Meshtastic app, at the same time. "
+                 + "Choosing a radio pauses Bluetooth connections to nearby devices until the list "
+                 + "closes. Off by default.")
+        }
+
+        Section("Direct Connections") {
+            // Standard Toggle in a Form row: the whole row is already hittable, so no
+            // explicit contentShape is needed here.
+            Toggle("Listen for direct connections", isOn: $store.listenEnabled)
+            TextField("Listen port", value: $store.listenPort, format: .number)
+                .keyboardType(.numberPad)
+                .focused($focusedField, equals: .listenPort)
+                .disabled(!store.listenEnabled)
+            Text("Lets other Reticulum nodes on your local Wi-Fi connect directly to this "
+                 + "device — anyone on the same network can reach it. Off by default.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        Section("Relay") {
+            Toggle("Relay traffic for other nodes", isOn: Binding(
+                get: { store.relayEnabled },
+                set: { store.send(.setRelayMode($0)) }
+            ))
+            Text("Carries other users' messages through this device so the mesh reaches "
+                 + "further — it forwards transit traffic and answers path requests for "
+                 + "peers it hasn't met. Off by default. Uses more battery and data.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        Section {
+            if DefaultNode.propagationHex != nil {
+                Toggle("Use the default node's propagation node", isOn: Binding(
+                    get: { store.usePropagationDefault },
+                    set: { store.send(.setUsePropagationDefault($0)) }
+                ))
+            }
+            TextField("Node LXMF address (hex)", text: $pnInput)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .font(.system(.body, design: .monospaced))
+                .submitLabel(.done)
+                .focused($focusedField, equals: .propagationNode)
+                .disabled(usesDefaultPropagation)
+            Button("Save node") { store.send(.setPropagationNode(pnInput)) }
+                .disabled(usesDefaultPropagation || !isValidPeerAddress(pnInput))
+            if !store.propagationNodeHex.isEmpty {
+                Text("Current: \(store.propagationNodeHex)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        } header: {
+            Text("Propagation Node")
+        } footer: {
+            Text("Holds messages sent to you while you're offline, so you can collect them later.")
+        }
+
+        Section("Run as Propagation Node") {
+            Toggle("Act as a propagation node", isOn: Binding(
+                get: { store.nodeModeEnabled },
+                set: { store.send(.setNodeMode($0)) }
+            ))
+            Text("Stores and forwards messages for other users while this app is open.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        Section {
+            NavigationLink { DiagnosticsView(store: store) } label: {
+                Label("Diagnostics", systemImage: "stethoscope")
+            }
+        } footer: {
+            Text("Connection, paths, peers, links and delivery state — and a shareable "
+                 + "snapshot for bug reports.")
         }
     }
 }

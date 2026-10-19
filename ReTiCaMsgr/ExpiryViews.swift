@@ -36,15 +36,22 @@ struct ExpiryMenu: View {
     }
 }
 
-/// The chat title with the active timer beneath the peer's name.
+/// The chat title, with the peer's short address and the active timer beneath the name.
 struct ChatTitle: View {
     let title: String
+    var subtitle: String? = nil
     let expiry: Int?
 
     var body: some View {
         VStack(spacing: 0) {
             Text(title)
                 .font(.headline)
+                .lineLimit(1)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
             if let expiry {
                 Label(ExpiryPreset.label(forSeconds: expiry), systemImage: "timer")
                     .font(.caption2)

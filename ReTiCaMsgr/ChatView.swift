@@ -201,7 +201,11 @@ struct ChatView: View {
                     .accessibilityHint("Shows the group's members and settings")
                 } else {
                     Button { showingPeerInfo = true } label: {
-                        ChatTitle(title: store.openPeerHex.map { store.state.contactName($0) ?? shortHex($0) } ?? "Chat",
+                        // The contact's or announced name on top with the address beneath it; with
+                        // no name, the address alone is the title.
+                        let name = store.openPeerHex.flatMap { store.state.peerDisplayName($0) }
+                        ChatTitle(title: name ?? store.openPeerHex.map(shortHex) ?? "Chat",
+                                  subtitle: name == nil ? nil : store.openPeerHex.map(shortHex),
                                   expiry: store.openConversationExpiry)
                     }
                     .buttonStyle(.plain)
@@ -388,7 +392,9 @@ struct BubbleText: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(message.isOutgoing ? Color.blue : Color(.systemGray5))
+        .background {
+            if message.isOutgoing { Brand.gradient } else { Color(.systemGray5) }
+        }
         .foregroundStyle(message.isOutgoing ? .white : .primary)
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
