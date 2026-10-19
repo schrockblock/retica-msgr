@@ -26,7 +26,10 @@ public enum ProfilePhotoOutbox {
             return Plan(fields: ProfileWire.encodeRemoved(), pendingVersion: "")
         }
         guard let version = Data(hexString: myVersion) else { return Plan() }
-        if imageAllowed, let jpeg = myPhoto,
+        // The version is captured in the reducer and the bytes read later: a send racing a new
+        // pick can read the new bytes. Bytes that are not this version never ride (tag only).
+        let matching = myPhoto.flatMap { ProfileWire.version(of: $0) == version ? $0 : nil }
+        if imageAllowed, let jpeg = matching,
            delivery?.deliveredVersion != myVersion, delivery?.pendingVersion != myVersion {
             return Plan(
                 fields: ProfileWire.encodePhoto(version: version, jpeg: jpeg),

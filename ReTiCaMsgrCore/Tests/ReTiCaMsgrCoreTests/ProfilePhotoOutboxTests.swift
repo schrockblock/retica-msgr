@@ -21,6 +21,16 @@ private func outboxDelivery(
     #expect(plan.pendingVersion == nil)
 }
 
+/// Final review 10: bytes read after a new pick no longer hash to the captured version, so the
+/// image must not ride under the old version: tag only, nothing pending.
+@Test func outboxBytesOfAnotherVersionSendTagOnly() {
+    let newer = TestImages.jpeg(width: 80, height: 80)
+    let plan = ProfilePhotoOutbox.plan(
+        myVersion: outboxV, myPhoto: newer, delivery: nil, imageAllowed: true)
+    #expect(ProfileWire.decode(plan.fields) == .tag(version: outboxVersionData))
+    #expect(plan.pendingVersion == nil)
+}
+
 @Test func outboxFirstSendAttachesPhoto() {
     let plan = ProfilePhotoOutbox.plan(
         myVersion: outboxV, myPhoto: outboxJPEG, delivery: nil, imageAllowed: true)
