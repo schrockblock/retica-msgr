@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import ImageIO
+import CoreGraphics
 @testable import ReTiCaMsgrCore
 
 private func isRed(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.r ?? 0) > 200 && (p?.b ?? 255) < 60 }
@@ -127,4 +128,69 @@ private func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.b ?? 0) 
     #expect(png.width == 10)
     #expect(png.height == 20)
     #expect(ImageEncoder.isDecodable(TestImages.png(width: 10, height: 20)))
+}
+
+// MARK: - Avatars
+
+private func noisyPNG(side: Int) -> Data {
+    var bytes = [UInt8](repeating: 0, count: side * side * 4)
+    var state: UInt64 = 0x9E3779B97F4A7C15
+    for i in 0..<bytes.count {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        bytes[i] = i % 4 == 3 ? 255 : UInt8(truncatingIfNeeded: state >> 33)
+    }
+    let space = CGColorSpace(name: CGColorSpace.sRGB)!
+    let image = bytes.withUnsafeMutableBytes { raw -> CGImage in
+        let ctx = CGContext(data: raw.baseAddress, width: side, height: side, bitsPerComponent: 8,
+                            bytesPerRow: side * 4, space: space,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        return ctx.makeImage()!
+    }
+    return TestImages.encode(image, type: .png, properties: [:])
+}
+
+private func thirdsPNG(width: Int, height: Int) -> Data {
+    let space = CGColorSpace(name: CGColorSpace.sRGB)!
+    let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    let third = width / 3
+    let colours: [(CGFloat, CGFloat, CGFloat)] = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
+    for (i, c) in colours.enumerated() {
+        ctx.setFillColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
+        ctx.fill(CGRect(x: i * third, y: 0, width: third, height: height))
+    }
+    return TestImages.encode(ctx.makeImage()!, type: .png, properties: [:])
+}
+
+@Test func avatarIsSquare256() throws {
+    let out = try ImageEncoder.encodeAvatar(TestImages.png(width: 800, height: 400))
+    #expect(out.width == 256)
+    #expect(out.height == 256)
+    let d = try #require(ImageEncoder.dimensions(of: out.data))
+    #expect(d.width == 256)
+    #expect(d.height == 256)
+}
+
+@Test func avatarFitsTheByteCap() throws {
+    let out = try ImageEncoder.encodeAvatar(noisyPNG(side: 2000))
+    #expect(out.data.count <= ImageEncoder.avatarMaxBytes)
+    #expect(ImageEncoder.avatarMaxBytes == 24_000)
+    #expect(ImageEncoder.avatarPixels == 256)
+}
+
+@Test func avatarStripsLocation() throws {
+    let source = TestImages.jpeg(width: 600, height: 400, orientation: 6, withGPS: true)
+    #expect(ImageEncoder.hasLocationOrOrientationMetadata(source))
+    let out = try ImageEncoder.encodeAvatar(source)
+    #expect(!ImageEncoder.hasLocationOrOrientationMetadata(out.data))
+}
+
+@Test func avatarCropsTheCentre() throws {
+    let out = try ImageEncoder.encodeAvatar(thirdsPNG(width: 300, height: 100))
+    let p = try #require(TestImages.pixel(in: out.data, x: 128, y: 128))
+    #expect(p.g > 200 && p.r < 60 && p.b < 60)
+}
+
+@Test func avatarRejectsNonImage() {
+    #expect(throws: ImageEncoder.Failure.self) { try ImageEncoder.encodeAvatar(Data("x".utf8)) }
 }

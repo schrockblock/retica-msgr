@@ -38,28 +38,68 @@ public enum ImageEncoder {
     }
 
     public static func encodeJPEG(_ source: Data, preset: Preset) throws -> Encoded {
+        let maxPixels: (Int) -> Int = { longEdge in
+            switch preset {
+            case .standard: return min(standardMaxPixels, longEdge)
+            case .original: return longEdge
+            }
+        }
+        let image = try orientedImage(source, maxPixels: maxPixels)
+        let quality = preset == .standard ? standardQuality : originalQuality
+        let data = try jpegData(image, quality: quality)
+        return Encoded(data: data, width: image.width, height: image.height)
+    }
+
+    public static let avatarPixels = 256
+    public static let avatarMaxBytes = 24_000
+
+    /// A square `avatarPixels` JPEG of the picture's centre, at most `avatarMaxBytes`: quality steps
+    /// down from 0.8 to 0.3 until it fits. Orientation baked and metadata stripped as `encodeJPEG`.
+    public static func encodeAvatar(_ source: Data) throws -> Encoded {
+        let image = try orientedImage(source, maxPixels: { $0 })
+        let side = min(image.width, image.height)
+        let crop = CGRect(x: (image.width - side) / 2, y: (image.height - side) / 2, width: side, height: side)
+        guard let square = image.cropping(to: crop) else { throw Failure.undecodable }
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        guard let ctx = CGContext(data: nil, width: avatarPixels, height: avatarPixels, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { throw Failure.encodingFailed }
+        ctx.interpolationQuality = .high
+        ctx.draw(square, in: CGRect(x: 0, y: 0, width: avatarPixels, height: avatarPixels))
+        guard let scaled = ctx.makeImage() else { throw Failure.encodingFailed }
+        for step in 0...5 {
+            let quality = 0.8 - Double(step) * 0.1
+            let data = try jpegData(scaled, quality: quality)
+            if data.count <= avatarMaxBytes {
+                return Encoded(data: data, width: scaled.width, height: scaled.height)
+            }
+        }
+        throw Failure.encodingFailed
+    }
+
+    /// The orientation-applied decode of the first image; `maxPixels` maps the source's displayed
+    /// long edge to the size limit.
+    private static func orientedImage(_ source: Data, maxPixels: (Int) -> Int) throws -> CGImage {
         guard let src = CGImageSourceCreateWithData(source as CFData, nil),
               CGImageSourceGetCount(src) > 0,
               let dims = dimensions(of: source)
         else { throw Failure.undecodable }
-        let longEdge = max(dims.width, dims.height)
-        let maxPixels: Int
-        switch preset {
-        case .standard: maxPixels = min(standardMaxPixels, longEdge)
-        case .original: maxPixels = longEdge
-        }
         // "Thumbnail" here is ImageIO's scaled, orientation-applied decode of the full image; with
         // a max size equal to the long edge it is the full image, oriented.
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixels,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixels(max(dims.width, dims.height)),
             kCGImageSourceShouldCache: false,
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else {
             throw Failure.undecodable
         }
-        let quality = preset == .standard ? standardQuality : originalQuality
+        return image
+    }
+
+    private static func jpegData(_ image: CGImage, quality: Double) throws -> Data {
         let out = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else {
             throw Failure.encodingFailed
@@ -68,7 +108,7 @@ public enum ImageEncoder {
         // are gone and the orientation is 1 (the pixels are already transformed).
         CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { throw Failure.encodingFailed }
-        return Encoded(data: out as Data, width: image.width, height: image.height)
+        return out as Data
     }
 
     /// The displayed pixel size from the container's properties (no pixel decode): orientation
