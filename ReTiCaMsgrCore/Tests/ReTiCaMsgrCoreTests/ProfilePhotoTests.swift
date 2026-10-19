@@ -16,6 +16,7 @@ import struct ReTiCaMsgrCore.Attachment
 @MainActor
 private func makeStore(_ db: any DatabaseWriter, identity: Identity,
                        avatars: AvatarStore,
+                       clock: (any Clock<Duration>)? = nil,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity)
     configure?(&initial)
@@ -28,7 +29,7 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
         $0.date = .constant(Date(timeIntervalSince1970: 1700000000))
         $0.transportDate = .constant(Date(timeIntervalSince1970: 1700000000))
         $0.uuid = .incrementing
-        $0.continuousClock = TestClock()
+        $0.continuousClock = clock ?? ImmediateClock()
         $0.tcpConnection = TCPConnection(
             open: { _, _ in AsyncStream { _ in } },
             send: { _ in },
@@ -67,8 +68,8 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
     let stored = try #require(avatars.mine())
     #expect(store.state.myPhotoVersion == ProfileWire.version(of: stored).hexString)
     #expect(store.state.myPhotoVersion.count == 16)
-    let decoded = try ImageEncoder.encodeAvatar(stored)
-    #expect(decoded.width == 256 && decoded.height == 256)
+    let size = try #require(ImageEncoder.dimensions(of: stored))
+    #expect(size.width == 256 && size.height == 256)
     #expect(store.state.profilePhotoError == nil)
 }
 
@@ -100,6 +101,23 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
     #expect(avatars.mine() == nil)
 }
 
+@MainActor @Test func removingDuringAPickLeavesNoPhoto() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let clock = TestClock()
+    let store = makeStore(db, identity: Identity(), avatars: avatars, clock: clock)
+    await store.send(.profilePhotoPicked(TestImages.jpeg(width: 300, height: 300)))
+    await store.send(.removeProfilePhotoTapped)
+    // Let a surviving pick run to completion: it would store the file and set the version.
+    await Task.yield()
+    await clock.advance(by: .milliseconds(10))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.myPhotoVersion == "")
+    #expect(avatars.mine() == nil)
+    #expect(store.state.profilePhotoError == nil)
+}
+
 @MainActor @Test func launchLoadsPeerProfiles() async throws {
     let db = try AppDatabase.makeInMemory()
     let hex = String(repeating: "c", count: 32)
@@ -107,7 +125,7 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
                           iconName: "star", iconFg: "ffffff", iconBg: "000000",
                           updatedAt: Date(timeIntervalSince1970: 1700000000))
     try await db.write { try PeerProfile.insert { row }.execute($0) }
-    let store = makeStore(db, identity: Identity(), avatars: AvatarStore.testValue)
+    let store = makeStore(db, identity: Identity(), avatars: AvatarStore.testValue, clock: TestClock())
     await store.send(.onLaunch)
     await store.receive { if case .peerProfilesLoaded = $0 { return true }; return false }
     await store.skipReceivedActions(strict: false)
