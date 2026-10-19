@@ -262,6 +262,16 @@ public struct AppFeature {
         @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
         @Shared(.appStorage("propagationNodeModeEnabled")) public var nodeModeEnabled: Bool = false
         @Shared(.appStorage("displayName")) public var displayName: String = ""
+        /// 16-char hex version of my profile photo; "" means none (spec 2026-10-19).
+        @Shared(.appStorage("profilePhotoVersion")) public var myPhotoVersion: String = ""
+        public var profilePhotoError: String? = nil
+        /// Peers' stored profiles by lowercase hex, mirrored from the `peerProfiles` table.
+        public var peerProfiles: [String: PeerProfile] = [:]
+        /// The photo may be attached only when a non-Meshtastic interface is connected (the slow
+        /// radio path would take minutes for it).
+        public var profilePhotoMayRide: Bool {
+            connectedInterfaces.contains { !$0.rawValue.hasPrefix("meshtastic:") }
+        }
         /// Opt-in: also run a TCP listener so other nodes on the LAN can dial THIS device
         /// directly (peer-to-peer, no shared rnsd). OFF by default — a listening socket is an
         /// attack surface the dialling-only client never was (see the Settings caption). The
@@ -572,6 +582,13 @@ public struct AppFeature {
         case reportPeer(String)
         case reportDraftReady(ReportDraft)
         case reportDismissed
+        // Profile photos (spec 2026-10-19), handled in `ProfilePhotoReducer`.
+        case profilePhotoPicked(Data)
+        case profilePhotoSaved(version: String)
+        case profilePhotoFailed
+        case removeProfilePhotoTapped
+        case peerProfilesLoaded([PeerProfile])
+        case peerProfileUpdated(peerHex: String, PeerProfile?)
         case setDisplayName(String)
         case syncTapped
         case announceTapped
@@ -739,6 +756,7 @@ public struct AppFeature {
                     .send(.push(.appLaunched)),
                     .run { [database] send in try await reloadConversations(database, send) },
                     .run { [database] send in try await reloadContactLinks(database, send) },
+                    .run { [database] send in try await reloadPeerProfiles(database, send) },
                     .run { [database] send in
                         // ORDER BY storedAt so eviction during rehydration is deterministic across
                         // launches: the oldest entries are ingested first, matching the order in which
@@ -2358,6 +2376,11 @@ public struct AppFeature {
             case .blockPeer, .unblockPeer, .blockedPeersLoaded, .reportPeer, .reportDraftReady, .reportDismissed:
                 return .none
 
+            // The profile-photo arms live in `ProfilePhotoReducer` (AppFeature+ProfilePhoto.swift).
+            case .profilePhotoPicked, .profilePhotoSaved, .profilePhotoFailed, .removeProfilePhotoTapped,
+                 .peerProfilesLoaded, .peerProfileUpdated:
+                return .none
+
             // The Meshtastic picker arms live in `MeshtasticSettingsReducer` (AppFeature+Meshtastic.swift).
             case .chooseRadioTapped, .radioPicker:
                 return .none
@@ -2474,6 +2497,7 @@ public struct AppFeature {
 
         ContactLinksReducer()
         BlockingReducer()
+        ProfilePhotoReducer()
         MeshtasticSettingsReducer()
         MeshtasticRadioReducer()
         BLESlotReducer()
