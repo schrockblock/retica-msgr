@@ -149,12 +149,15 @@ private let sendMemberD = String(repeating: "d", count: 32)
 private let sendGroupHex = String(repeating: "1a", count: 16)
 private let tcpInterface = InterfaceID("tcp:h:1")
 
+/// The send tests run on a `TestClock` that only `setMyPhoto` advances: under `ImmediateClock` the
+/// router's retry timers for these unreachable test peers exhaust at once and report
+/// `deliveryFailed`, which would settle the pending photo before a test could read it.
 /// A store with `sendPeer` open and a TCP interface up (so the image may ride), unless `configure`
 /// says otherwise.
 @MainActor
-private func peerStore(_ db: any DatabaseWriter, avatars: AvatarStore,
+private func peerStore(_ db: any DatabaseWriter, avatars: AvatarStore, clock: TestClock<Duration>,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
-    makeStore(db, identity: Identity(), avatars: avatars) { s in
+    makeStore(db, identity: Identity(), avatars: avatars, clock: clock) { s in
         s.openPeerHex = sendPeer
         s.chatVisible = true
         s.connectedInterfaces = [tcpInterface]
@@ -162,12 +165,18 @@ private func peerStore(_ db: any DatabaseWriter, avatars: AvatarStore,
     }
 }
 
-/// Picks a photo through the real action and returns my new version.
+/// Picks a photo through the real action and returns my new version. The pick sleeps 1 ms on the
+/// clock first; the clock is nudged until the saved version lands (the sleep may register after
+/// the first advance).
 @MainActor
-private func setMyPhoto(_ store: TestStoreOf<AppFeature>) async -> String {
+private func setMyPhoto(_ store: TestStoreOf<AppFeature>, _ clock: TestClock<Duration>) async -> String {
     await store.send(.profilePhotoPicked(TestImages.jpeg(width: 300, height: 300)))
-    await store.finish()
+    for _ in 0..<400 where store.state.myPhotoVersion.isEmpty {
+        await clock.advance(by: .milliseconds(1))
+        try? await Task.sleep(for: .milliseconds(5))
+    }
     await store.skipReceivedActions(strict: false)
+    #expect(store.state.myPhotoVersion.count == 16)
     return store.state.myPhotoVersion
 }
 
@@ -205,8 +214,9 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
 @MainActor @Test func firstSendCarriesThePhoto() async throws {
     let db = try AppDatabase.makeInMemory()
     let avatars = AvatarStore.testValue
-    let store = peerStore(db, avatars: avatars)
-    let version = await setMyPhoto(store)
+    let clock = TestClock()
+    let store = peerStore(db, avatars: avatars, clock: clock)
+    let version = await setMyPhoto(store, clock)
     let jpeg = try #require(avatars.mine())
     let sent = try #require(await sendText(store, "hi"))
     #expect(ProfileWire.decode(sent.fields) == .photo(version: try #require(Data(hexString: version)), jpeg: jpeg))
@@ -219,8 +229,9 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
 
 @MainActor @Test func secondSendBeforeConfirmCarriesTagOnly() async throws {
     let db = try AppDatabase.makeInMemory()
-    let store = peerStore(db, avatars: AvatarStore.testValue)
-    let version = await setMyPhoto(store)
+    let clock = TestClock()
+    let store = peerStore(db, avatars: AvatarStore.testValue, clock: clock)
+    let version = await setMyPhoto(store, clock)
     let first = try #require(await sendText(store, "one"))
     let second = try #require(await sendText(store, "two"))
     let v = try #require(Data(hexString: version))
@@ -233,8 +244,9 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
 
 @MainActor @Test func confirmedSendMakesNextSendTagOnly() async throws {
     let db = try AppDatabase.makeInMemory()
-    let store = peerStore(db, avatars: AvatarStore.testValue)
-    let version = await setMyPhoto(store)
+    let clock = TestClock()
+    let store = peerStore(db, avatars: AvatarStore.testValue, clock: clock)
+    let version = await setMyPhoto(store, clock)
     let first = try #require(await sendText(store, "one"))
     await store.send(.node(.client(.delegate(.deliveryConfirmed(messageHash: first.hash)))))
     try await waitForDelivery(db, sendPeer) { $0?.deliveredVersion == version }
@@ -248,8 +260,9 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
 
 @MainActor @Test func propagatedCountsAsConfirmed() async throws {
     let db = try AppDatabase.makeInMemory()
-    let store = peerStore(db, avatars: AvatarStore.testValue)
-    let version = await setMyPhoto(store)
+    let clock = TestClock()
+    let store = peerStore(db, avatars: AvatarStore.testValue, clock: clock)
+    let version = await setMyPhoto(store, clock)
     let first = try #require(await sendText(store, "one"))
     await store.send(.node(.client(.delegate(.propagationAccepted(messageHash: first.hash)))))
     try await waitForDelivery(db, sendPeer) { $0?.deliveredVersion == version }
@@ -262,8 +275,9 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
 @MainActor @Test func sendAfterPhotoFailureAttachesAgain() async throws {
     let db = try AppDatabase.makeInMemory()
     let avatars = AvatarStore.testValue
-    let store = peerStore(db, avatars: avatars)
-    let version = await setMyPhoto(store)
+    let clock = TestClock()
+    let store = peerStore(db, avatars: avatars, clock: clock)
+    let version = await setMyPhoto(store, clock)
     let first = try #require(await sendText(store, "one"))
     await store.send(.node(.client(.delegate(.deliveryFailed(messageHash: first.hash)))))
     try await waitForDelivery(db, sendPeer) { $0?.pendingHash == nil }
@@ -278,10 +292,11 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
 @MainActor @Test func sendOverMeshtasticOnlyOmitsImage() async throws {
     let db = try AppDatabase.makeInMemory()
     let avatars = AvatarStore.testValue
-    let store = peerStore(db, avatars: avatars) { s in
+    let clock = TestClock()
+    let store = peerStore(db, avatars: avatars, clock: clock) { s in
         s.connectedInterfaces = [InterfaceID("meshtastic:X")]
     }
-    let version = await setMyPhoto(store)
+    let version = await setMyPhoto(store, clock)
     let v = try #require(Data(hexString: version))
     let slow = try #require(await sendText(store, "over the radio"))
     #expect(ProfileWire.decode(slow.fields) == .tag(version: v))
@@ -297,7 +312,8 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
 
 @MainActor @Test func noPhotoSendsNoProfileField() async throws {
     let db = try AppDatabase.makeInMemory()
-    let store = peerStore(db, avatars: AvatarStore.testValue)
+    let clock = TestClock()
+    let store = peerStore(db, avatars: AvatarStore.testValue, clock: clock)
     #expect(store.state.myPhotoVersion == "")
     let sent = try #require(await sendText(store, "plain"))
     #expect(!hasProfileField(sent))
@@ -317,7 +333,8 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
         try ChatGroup.upsert(group, db)
         try GroupMember.replace(sendGroupHex, with: roster, db)
     }
-    let store = makeStore(db, identity: me, avatars: avatars) { s in
+    let clock = TestClock()
+    let store = makeStore(db, identity: me, avatars: avatars, clock: clock) { s in
         s.openPeerHex = sendGroupHex
         s.openConversationKind = .group
         s.chatVisible = true
@@ -326,7 +343,7 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
         s.reachablePeers = [sendMemberC, sendMemberD]
         s.connectedInterfaces = [tcpInterface]
     }
-    let version = await setMyPhoto(store)
+    let version = await setMyPhoto(store, clock)
     let v = try #require(Data(hexString: version))
     let jpeg = try #require(avatars.mine())
     // Keyed by hash: the receive predicate can be evaluated more than once per action.
@@ -354,8 +371,9 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
 
 @MainActor @Test func reactionsCarryNoProfileField() async throws {
     let db = try AppDatabase.makeInMemory()
-    let store = peerStore(db, avatars: AvatarStore.testValue)
-    _ = await setMyPhoto(store)
+    let clock = TestClock()
+    let store = peerStore(db, avatars: AvatarStore.testValue, clock: clock)
+    _ = await setMyPhoto(store, clock)
     var sent: LXMessage? = nil
     await store.send(.reactionSelected(messageHash: String(repeating: "5e", count: 32), emoji: "👍"))
     await store.receive { a in
