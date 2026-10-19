@@ -238,6 +238,9 @@ public enum AppDatabase {
                 t.primaryKey("peerHex", .text).notNull()
                 t.column("photoVersion", .text)
                 t.column("photoPath", .text)
+                // When the sender set the stored photo or removal (its timestamp, capped at
+                // arrival); an older photo or removal arriving later is ignored.
+                t.column("photoSetAt", .datetime)
                 t.column("iconName", .text)
                 t.column("iconFg", .text)
                 t.column("iconBg", .text)

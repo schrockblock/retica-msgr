@@ -120,12 +120,15 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
 
 @MainActor @Test func launchLoadsPeerProfiles() async throws {
     let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
     let hex = String(repeating: "c", count: 32)
-    let row = PeerProfile(peerHex: hex, photoVersion: "0123456789abcdef", photoPath: "\(hex)-0123456789abcdef.jpg",
+    // The file is on disk: launch keeps a row whose photo file exists (final review 5b).
+    let path = try avatars.storePeer(Data([1, 2, 3]), peerHex: hex, version: "0123456789abcdef")
+    let row = PeerProfile(peerHex: hex, photoVersion: "0123456789abcdef", photoPath: path,
                           iconName: "star", iconFg: "ffffff", iconBg: "000000",
                           updatedAt: Date(timeIntervalSince1970: 1700000000))
     try await db.write { try PeerProfile.insert { row }.execute($0) }
-    let store = makeStore(db, identity: Identity(), avatars: AvatarStore.testValue, clock: TestClock())
+    let store = makeStore(db, identity: Identity(), avatars: avatars, clock: TestClock())
     await store.send(.onLaunch)
     await store.receive { if case .peerProfilesLoaded = $0 { return true }; return false }
     await store.skipReceivedActions(strict: false)
@@ -558,4 +561,216 @@ private let jpegTwo = TestImages.jpeg(width: 200, height: 200)
     #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
     #expect(try await db.read { try SeenHashRow.all.fetchAll($0) }.map(\.hashHex) == [m.hash.hexString])
     #expect(store.state.conversations.isEmpty)
+}
+
+// MARK: - Final review fixes
+
+private func storedMessages(_ db: any DatabaseWriter) async throws -> [Message] {
+    try await db.read { try Message.all.fetchAll($0) }
+}
+
+/// Final review 3: a Sideband/Columba voice message (0x07, empty content) is kept with a
+/// placeholder instead of being dropped.
+@MainActor @Test func emptyVoiceMessageIsStoredWithAPlaceholder() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me, avatars: AvatarStore.testValue)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "",
+                        fields: [.init(0x07, .array([.uint(1), .bin(Data([0x01, 0x02]))]))])
+    await receive(store, m)
+    #expect(try await storedMessages(db).map(\.body) == ["Voice message (not supported)"])
+    #expect(store.state.conversations.count == 1)
+}
+
+/// Final review 3: an image field AttachmentWire cannot decode keeps the message.
+@MainActor @Test func emptyUndecodableImageIsStoredAsUnsupported() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me, avatars: AvatarStore.testValue)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "",
+                        fields: [.init(AttachmentWire.fieldImage, .bin(Data([0x01, 0x02])))])
+    await receive(store, m)
+    #expect(try await storedMessages(db).map(\.body) == ["Unsupported message"])
+}
+
+/// Final review 3: an empty reply is still a message, shown as the reply (no placeholder).
+@MainActor @Test func emptyReplyIsStoredWithoutAPlaceholder() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me, avatars: AvatarStore.testValue)
+    let target = Data(repeating: 0x5e, count: 32)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "",
+                        fields: ReplyWire.encode(replyTo: target, quote: "earlier"))
+    await receive(store, m)
+    let rows = try await storedMessages(db)
+    #expect(rows.count == 1)
+    #expect(rows.first?.body == "")
+    #expect(rows.first?.replyToHash == target.hexString)
+}
+
+/// Final review 3: a timer-change message (empty content, only the app's 0xFD) is its line.
+@MainActor @Test func emptyTimerChangeIsStored() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me, avatars: AvatarStore.testValue)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "",
+                        fields: ExpiryWire.encodeChange(seconds: 3600))
+    await receive(store, m)
+    let rows = try await storedMessages(db)
+    #expect(rows.count == 1)
+    #expect(rows.first?.isTimerChange == true)
+}
+
+/// Final review 3: a non-empty title counts as content, as before.
+@MainActor @Test func titleOnlyMessageIsStored() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me, avatars: AvatarStore.testValue)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, title: "Subject", content: "")
+    await receive(store, m)
+    let rows = try await storedMessages(db)
+    #expect(rows.count == 1)
+    #expect(rows.first?.body == "")
+}
+
+/// Final review 2: a propagated older photo arriving after a newer direct one does not roll back.
+@MainActor @Test func olderPhotoAfterNewerKeepsTheNewer() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me, avatars: avatars)
+    let v1 = ProfileWire.version(of: jpegOne)
+    let v2 = ProfileWire.version(of: jpegTwo)
+    let newer = wireMessage(from: sender, to: me, at: 1699999901, content: "two",
+                            fields: ProfileWire.encodePhoto(version: v2, jpeg: jpegTwo))
+    let hex = newer.sourceHash.hexString
+    await receive(store, newer)
+    await receive(store, wireMessage(from: sender, to: me, at: 1699999900, content: "one",
+                                     fields: ProfileWire.encodePhoto(version: v1, jpeg: jpegOne)))
+    #expect(store.state.peerProfiles[hex]?.photoVersion == v2.hexString)
+    #expect(try await db.read { try PeerProfile.fetch(hex, $0) }?.photoVersion == v2.hexString)
+    #expect(avatarFiles(avatars) == ["\(hex)-\(v2.hexString).jpg"])
+    #expect(try await storedBodies(db) == ["one", "two"])
+}
+
+/// Final review 2: an older removal arriving after a newer photo keeps the photo.
+@MainActor @Test func olderRemovalAfterNewerPhotoKeepsThePhoto() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me, avatars: avatars)
+    let v1 = ProfileWire.version(of: jpegOne)
+    let photo = wireMessage(from: sender, to: me, at: 1699999901, content: "photo",
+                            fields: ProfileWire.encodePhoto(version: v1, jpeg: jpegOne))
+    let hex = photo.sourceHash.hexString
+    await receive(store, photo)
+    await receive(store, wireMessage(from: sender, to: me, at: 1699999900, content: "old removal",
+                                     fields: ProfileWire.encodeRemoved()))
+    #expect(store.state.peerProfiles[hex]?.photoVersion == v1.hexString)
+    #expect(try await db.read { try PeerProfile.fetch(hex, $0) }?.photoVersion == v1.hexString)
+    #expect(avatarFiles(avatars) == ["\(hex)-\(v1.hexString).jpg"])
+}
+
+/// Final review 2: the stored time is capped at arrival, so a future-dated photo cannot lock the
+/// avatar: a later photo still applies.
+@MainActor @Test func futureDatedPhotoIsCappedAtArrival() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me, avatars: avatars)
+    let v1 = ProfileWire.version(of: jpegOne)
+    let v2 = ProfileWire.version(of: jpegTwo)
+    let future = wireMessage(from: sender, to: me, at: 1800000000, content: "from the future",
+                             fields: ProfileWire.encodePhoto(version: v1, jpeg: jpegOne))
+    let hex = future.sourceHash.hexString
+    await receive(store, future)
+    #expect(store.state.peerProfiles[hex]?.photoVersion == v1.hexString)
+    store.dependencies.date = .constant(Date(timeIntervalSince1970: 1700000100))
+    await receive(store, wireMessage(from: sender, to: me, at: 1700000050, content: "later",
+                                     fields: ProfileWire.encodePhoto(version: v2, jpeg: jpegTwo)))
+    #expect(store.state.peerProfiles[hex]?.photoVersion == v2.hexString)
+}
+
+/// Final review 1: the router's pending deliveries do not survive a kill, so launch clears every
+/// pending pair (the delivered version stays) and the next message carries the photo again.
+@MainActor @Test func launchClearsPendingPhotoDeliveries() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let peer = String(repeating: "e", count: 32)
+    try await db.write { db in
+        try ProfilePhotoDelivery.insert {
+            ProfilePhotoDelivery(peerHex: peer, deliveredVersion: "1111111111111111",
+                                 pendingVersion: "2222222222222222", pendingHash: "hash")
+        }.execute(db)
+    }
+    let store = makeStore(db, identity: Identity(), avatars: AvatarStore.testValue, clock: TestClock())
+    await store.send(.onLaunch)
+    await store.receive { if case .peerProfilesLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    let row = try await deliveryRow(db, peer)
+    #expect(row?.deliveredVersion == "1111111111111111")
+    #expect(row?.pendingVersion == nil)
+    #expect(row?.pendingHash == nil)
+}
+
+/// Final review 5a: after a restore `me.jpg` (excluded from backup) is gone while the version
+/// survives; launch resets the version.
+@MainActor @Test func launchResetsMyVersionWhenThePhotoIsMissing() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity(), avatars: AvatarStore.testValue, clock: TestClock()) { s in
+        s.$myPhotoVersion.withLock { $0 = "0123456789abcdef" }
+    }
+    await store.send(.onLaunch)
+    await store.receive { if case .peerProfilesLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.myPhotoVersion == "")
+}
+
+/// Final review 5a: a file that does not hash to the version resets it too; a matching one stays.
+@MainActor @Test func launchKeepsMyVersionOnlyWhenTheFileMatches() async throws {
+    let mismatched = AvatarStore.testValue
+    try mismatched.storeMine(jpegOne)
+    let badStore = makeStore(try AppDatabase.makeInMemory(), identity: Identity(), avatars: mismatched,
+                             clock: TestClock()) { s in
+        s.$myPhotoVersion.withLock { $0 = ProfileWire.version(of: jpegTwo).hexString }
+    }
+    await badStore.send(.onLaunch)
+    await badStore.receive { if case .peerProfilesLoaded = $0 { return true }; return false }
+    await badStore.skipReceivedActions(strict: false)
+    #expect(badStore.state.myPhotoVersion == "")
+
+    let matching = AvatarStore.testValue
+    try matching.storeMine(jpegOne)
+    let version = ProfileWire.version(of: jpegOne).hexString
+    let goodStore = makeStore(try AppDatabase.makeInMemory(), identity: Identity(), avatars: matching,
+                              clock: TestClock()) { s in
+        s.$myPhotoVersion.withLock { $0 = version }
+    }
+    await goodStore.send(.onLaunch)
+    await goodStore.receive { if case .peerProfilesLoaded = $0 { return true }; return false }
+    await goodStore.skipReceivedActions(strict: false)
+    #expect(goodStore.state.myPhotoVersion == version)
+}
+
+/// Final review 5b: a peer row whose photo file is missing loses its photo at launch (so the
+/// avatar falls through to contact, icon, initials); the icon stays.
+@MainActor @Test func launchClearsPeerPhotosWhoseFileIsMissing() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let hex = String(repeating: "f", count: 32)
+    let row = PeerProfile(peerHex: hex, photoVersion: "0123456789abcdef", photoPath: "\(hex)-0123456789abcdef.jpg",
+                          iconName: "star", iconFg: "ffffff", iconBg: "000000",
+                          updatedAt: Date(timeIntervalSince1970: 1700000000))
+    try await db.write { try PeerProfile.insert { row }.execute($0) }
+    let store = makeStore(db, identity: Identity(), avatars: avatars, clock: TestClock())
+    await store.send(.onLaunch)
+    await store.receive { if case .peerProfilesLoaded = $0 { return true }; return false }
+    await store.skipReceivedActions(strict: false)
+    let loaded = try #require(store.state.peerProfiles[hex])
+    #expect(loaded.photoVersion == nil)
+    #expect(loaded.photoPath == nil)
+    #expect(loaded.iconName == "star")
+    #expect(try await db.read { try PeerProfile.fetch(hex, $0) } == loaded)
 }

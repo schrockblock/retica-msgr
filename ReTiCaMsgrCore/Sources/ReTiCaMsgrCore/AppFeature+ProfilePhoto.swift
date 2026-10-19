@@ -51,6 +51,13 @@ struct ProfilePhotoReducer: Reducer {
                     }
                 )
 
+            case let .myPhotoFileMissing(version):
+                // Only the version launch checked: a photo picked since then stays.
+                if state.myPhotoVersion == version {
+                    state.$myPhotoVersion.withLock { $0 = "" }
+                }
+                return .none
+
             case let .peerProfilesLoaded(rows):
                 state.peerProfiles = Dictionary(rows.map { ($0.peerHex, $0) }, uniquingKeysWith: { _, last in last })
                 return .none
@@ -63,6 +70,25 @@ struct ProfilePhotoReducer: Reducer {
                 return .none
             }
         }
+    }
+}
+
+/// Launch reconciliation (final review 1 and 5), run before `reloadPeerProfiles`:
+/// - my version survives a backup restore in UserDefaults while `me.jpg` (excluded from backup)
+///   does not, so a version with no file hashing to it is reset (peers then get a removal);
+/// - the router's pending deliveries are in memory only, so no outcome will ever settle a stored
+///   pending pair: every one is cleared and the next message carries the photo again;
+/// - a peer row whose photo file is gone loses its photo, so the avatar falls through.
+func reconcileProfilePhotosAtLaunch(_ database: any DatabaseWriter, _ avatarStore: AvatarStore,
+                                    myVersion: String, now: Date,
+                                    _ send: Send<AppFeature.Action>) async throws {
+    if !myVersion.isEmpty,
+       avatarStore.mine().map({ ProfileWire.version(of: $0).hexString }) != myVersion {
+        await send(.myPhotoFileMissing(version: myVersion))
+    }
+    try await database.write { db in
+        try ProfilePhotoDelivery.clearAllPending(db)
+        try PeerProfile.clearMissingPhotos(fileExists: { avatarStore.hasFile($0) }, at: now, db)
     }
 }
 

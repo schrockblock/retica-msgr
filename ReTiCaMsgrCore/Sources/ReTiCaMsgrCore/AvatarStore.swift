@@ -38,6 +38,11 @@ public struct AvatarStore: Sendable {
         baseDirectory.appending(path: path)
     }
 
+    /// Whether the file at a stored relative path is on disk.
+    public func hasFile(_ relativePath: String) -> Bool {
+        FileManager.default.fileExists(atPath: url(forRelativePath: relativePath).path)
+    }
+
     /// Removes the file; a missing file is not an error.
     public func delete(_ relativePath: String) throws {
         try remove(url(forRelativePath: relativePath))

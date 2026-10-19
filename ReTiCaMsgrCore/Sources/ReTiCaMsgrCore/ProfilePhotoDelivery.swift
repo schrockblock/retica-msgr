@@ -48,6 +48,20 @@ public struct ProfilePhotoDelivery: Equatable, Sendable {
         }
     }
 
+    /// Launch (final review 1): the router keeps pending deliveries in memory only, so after a
+    /// kill no outcome ever arrives for a stored `pendingHash`. Every pending pair is cleared (the
+    /// delivered version stays) so the next message carries the photo again.
+    public static func clearAllPending(_ db: GRDB.Database) throws {
+        let none: String? = nil
+        try ProfilePhotoDelivery
+            .where { $0.pendingHash.isNot(nil) || $0.pendingVersion.isNot(nil) }
+            .update {
+                $0.pendingVersion = none
+                $0.pendingHash = none
+            }
+            .execute(db)
+    }
+
     private static func save(_ row: ProfilePhotoDelivery, _ db: GRDB.Database) throws {
         try ProfilePhotoDelivery.where { $0.peerHex.eq(row.peerHex) }.delete().execute(db)
         try ProfilePhotoDelivery.insert { row }.execute(db)

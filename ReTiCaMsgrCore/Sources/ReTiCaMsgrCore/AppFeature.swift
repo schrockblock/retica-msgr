@@ -587,6 +587,8 @@ public struct AppFeature {
         case profilePhotoSaved(version: String)
         case profilePhotoFailed
         case removeProfilePhotoTapped
+        /// Launch found no `me.jpg` matching this stored version (a backup restore).
+        case myPhotoFileMissing(version: String)
         case peerProfilesLoaded([PeerProfile])
         case peerProfileUpdated(peerHex: String, PeerProfile?)
         case setDisplayName(String)
@@ -757,7 +759,13 @@ public struct AppFeature {
                     .send(.push(.appLaunched)),
                     .run { [database] send in try await reloadConversations(database, send) },
                     .run { [database] send in try await reloadContactLinks(database, send) },
-                    .run { [database] send in try await reloadPeerProfiles(database, send) },
+                    // Final review 1 and 5: reconcile profile-photo state with what survived the
+                    // last run (a kill, a backup restore) before state gets the rows.
+                    .run { [database, avatarStore, myVersion = state.myPhotoVersion, now = date.now] send in
+                        try await reconcileProfilePhotosAtLaunch(database, avatarStore, myVersion: myVersion,
+                                                                 now: now, send)
+                        try await reloadPeerProfiles(database, send)
+                    },
                     .run { [database] send in
                         // ORDER BY storedAt so eviction during rehydration is deterministic across
                         // launches: the oldest entries are ingested first, matching the order in which
@@ -1799,18 +1807,32 @@ public struct AppFeature {
                     // Spec §2: one attachment per message is kept; say what was left out.
                     AppFeature.inbound.notice("attachment: kept one, dropped \(dropped, privacy: .public) other file entries from \(String(m.hash.hexString.prefix(8)), privacy: .public)")
                 }
-                // Spec "Bug fix folded in": a message with nothing to show (no body, no attachment,
-                // no timer line, no reply) is not a bubble. Sideband's icon-only and telemetry-only
-                // messages land here: the profile and icon still apply, the hash is remembered so
-                // it is not re-delivered, and no Message row is written.
-                if m.content.isEmpty && decodedAttachment == nil && !isTimerChange && reply == nil {
+                // Captured by value for the effects: when the sender says it wrote the message (A10).
+                let senderTime = MessageMetadata.senderTimestamp(m.timestamp)
+                // Spec "Bug fix folded in", narrowed by final review 3: a message is not a bubble
+                // only when it has nothing to show (no content, title, attachment, timer line or
+                // reply) AND every field it carries is one known to carry nothing displayable on
+                // its own: telemetry 0x02, telemetry stream 0x03, icon 0x04, commands 0x09,
+                // results 0x0A, profile photo 0xA0, and our own expiry/group meta 0xFD. Sideband's
+                // icon-only and telemetry-only messages land here: the profile and icon still
+                // apply, the hash is remembered so it is not re-delivered, and no Message row is
+                // written. Anything else (a voice message, an attachment AttachmentWire could not
+                // decode, a field we do not know) is stored with a placeholder body.
+                let hasDisplay = !m.content.isEmpty || !m.title.isEmpty || decodedAttachment != nil
+                    || isTimerChange || reply != nil
+                let noDisplayFields: Set<Int> = [0x02, 0x03, IconAppearanceWire.fieldIconAppearance, 0x09, 0x0A,
+                                                 ProfileWire.fieldProfilePhoto, ExpiryWire.fieldCustomMeta]
+                if !hasDisplay && m.fields.allSatisfy({ noDisplayFields.contains($0.key) }) {
                     return .run { [database] send in
-                        await applyPeerProfile(profile, icon, peerHex: incomingPeer, at: seenNow,
-                                               database, avatarStore, send)
+                        await applyPeerProfile(profile, icon, peerHex: incomingPeer, sentAt: senderTime,
+                                               at: seenNow, database, avatarStore, send)
                         try await database.write { try recordSeenHash(seenHashHex, at: seenNow, $0) }
                         try await reloadConversations(database, send)
                     }
                 }
+                // FIELD_AUDIO (0x07): Sideband/Columba voice messages, which this app cannot play.
+                let placeholderBody: String? = hasDisplay ? nil
+                    : (m.fields.contains { $0.key == 0x07 } ? "Voice message (not supported)" : "Unsupported message")
                 let incomingSeconds: Int? = {
                     guard let decoded = decodedExpiry, !decoded.isChange, decoded.seconds > 0 else { return nil }
                     return decoded.seconds
@@ -1819,9 +1841,7 @@ public struct AppFeature {
                 // (amendment A11) is "viewed" at once.
                 let viewedNow: Date? = (incomingPeer == openPeer && state.isForeground && state.chatVisible) ? date.now : nil
                 let peerName = state.peerDisplayName(incomingPeer)
-                // Captured by value for the effect: when the sender says it wrote the message (A10).
-                let senderTime = MessageMetadata.senderTimestamp(m.timestamp)
-                let receivedBody = String(decoding: m.content, as: UTF8.self)
+                let receivedBody = placeholderBody ?? String(decoding: m.content, as: UTF8.self)
                 let attachmentStore = self.attachmentStore
                 let attachmentCacheEvictor = self.attachmentCacheEvictor
                 // Receiving gives no path back to the sender (it needed a path to US; a propagated
@@ -1858,8 +1878,8 @@ public struct AppFeature {
                 )
                 let storeMessage: Effect<Action> = .run { [database] send in
                     // Never throws: a failed photo or icon leaves the message to be stored below.
-                    await applyPeerProfile(profile, icon, peerHex: incomingPeer, at: seenNow,
-                                           database, avatarStore, send)
+                    await applyPeerProfile(profile, icon, peerHex: incomingPeer, sentAt: senderTime,
+                                           at: seenNow, database, avatarStore, send)
                     var pendingAttachmentRow: Attachment? = nil
                     if let decoded = decodedAttachment {
                         // An image ImageIO cannot read is kept as a file so it can still be shared.
@@ -2426,7 +2446,7 @@ public struct AppFeature {
 
             // The profile-photo arms live in `ProfilePhotoReducer` (AppFeature+ProfilePhoto.swift).
             case .profilePhotoPicked, .profilePhotoSaved, .profilePhotoFailed, .removeProfilePhotoTapped,
-                 .peerProfilesLoaded, .peerProfileUpdated:
+                 .myPhotoFileMissing, .peerProfilesLoaded, .peerProfileUpdated:
                 return .none
 
             // The Meshtastic picker arms live in `MeshtasticSettingsReducer` (AppFeature+Meshtastic.swift).
@@ -3307,51 +3327,88 @@ private func profilePhotoPlan(_ database: any DatabaseWriter, _ avatarStore: Ava
 }
 
 /// Applies a received profile photo and/or LXMF icon to the sender's `PeerProfile` (spec
-/// 2026-10-19 "Receiving"). The caller has already dropped both for an unvalidated sender. A photo
-/// whose version is already stored is skipped; otherwise the file is written first, then the row,
-/// and the replaced (or removed) file is deleted after the write commits. A tag changes nothing.
-/// Nothing here throws: every failure is logged and the message it rode on is still stored.
+/// 2026-10-19 "Receiving"). The caller has already dropped both for an unvalidated sender.
+///
+/// Final review 2, the expiry amendment A10 pattern: a photo or removal applies only when the
+/// sender set it strictly later than the stored one (`PeerProfile.photoSetAt`), so a propagated
+/// older message arriving after a direct newer one cannot roll the avatar back. Its time is the
+/// sender's timestamp capped at arrival, so a future-dated clock cannot lock the avatar. The read
+/// and the compare happen inside the write that applies it. A new version's file is written
+/// first (the row never names a missing file); a refused one's file is deleted again. The
+/// replaced (or removed) file is deleted after the write commits. A tag changes nothing; the icon
+/// stays last-writer-wins. Nothing here throws: every failure is logged and the message it rode on
+/// is still stored.
 private func applyPeerProfile(_ profile: ProfileWire.Decoded?, _ icon: IconAppearance?, peerHex: String,
-                              at now: Date, _ database: any DatabaseWriter, _ avatarStore: AvatarStore,
-                              _ send: Send<AppFeature.Action>) async {
+                              sentAt senderTime: Date?, at now: Date, _ database: any DatabaseWriter,
+                              _ avatarStore: AvatarStore, _ send: Send<AppFeature.Action>) async {
     guard profile != nil || icon != nil else { return }
     let tag = String(peerHex.prefix(8))
+    let setAt = min(senderTime ?? now, now)
     do {
-        let existing = try await database.read { try PeerProfile.fetch(peerHex, $0) }
         var staleFile: String? = nil
         var changed = false
         switch profile {
         case let .photo(version, jpeg)?:
             let versionHex = version.hexString
-            guard existing?.photoVersion != versionHex else { break }
-            let path: String
-            do {
-                path = try avatarStore.storePeer(jpeg, peerHex: peerHex, version: versionHex)
-            } catch {
-                AppFeature.inbound.error("profile photo write failed for \(tag, privacy: .public): \(String(describing: error), privacy: .public)")
-                break
-            }
-            do {
-                staleFile = try await database.write {
-                    try PeerProfile.setPhoto(peerHex, version: versionHex, path: path, at: now, $0)
+            // Only decides whether the file needs writing; the write below decides the row.
+            let storedVersion = try await database.read { try PeerProfile.fetch(peerHex, $0)?.photoVersion }
+            // nil when this version's file is already stored (the row's own path is reused).
+            var written: String? = nil
+            if storedVersion != versionHex {
+                do {
+                    written = try avatarStore.storePeer(jpeg, peerHex: peerHex, version: versionHex)
+                } catch {
+                    AppFeature.inbound.error("profile photo write failed for \(tag, privacy: .public): \(String(describing: error), privacy: .public)")
+                    break
                 }
-                changed = true
+            }
+            let newFile = written
+            let outcome: (applied: Bool, versionChanged: Bool, replaced: String?, current: String?)
+            do {
+                outcome = try await database.write { db in
+                    let existing = try PeerProfile.fetch(peerHex, db)
+                    let versionChanged = existing?.photoVersion != versionHex
+                    // A same-version row keeps its own file; a new version needs the one written.
+                    let rowPath = versionChanged ? newFile : existing?.photoPath
+                    guard PeerProfile.isNewer(setAt, than: existing), let rowPath
+                    else { return (false, false, nil, existing?.photoPath) }
+                    let replaced = try PeerProfile.setPhoto(peerHex, version: versionHex, path: rowPath,
+                                                            setAt: setAt, at: now, db)
+                    return (true, versionChanged, replaced, rowPath)
+                }
             } catch {
                 // The row still names the old file (a different version, so a different name):
                 // the one just written is orphaned.
-                try? avatarStore.delete(path)
+                if let newFile { try? avatarStore.delete(newFile) }
                 throw error
             }
+            staleFile = outcome.replaced
+            changed = outcome.versionChanged
+            if !outcome.applied, let newFile, outcome.current != newFile {
+                // Refused as older: the file just written is named by no row.
+                try? avatarStore.delete(newFile)
+            }
         case .removed?:
-            guard existing?.photoPath != nil || existing?.photoVersion != nil else { break }
-            staleFile = try await database.write { try PeerProfile.clearPhoto(peerHex, at: now, $0) }
-            changed = true
+            let outcome = try await database.write { db -> (changed: Bool, removed: String?) in
+                let existing = try PeerProfile.fetch(peerHex, db)
+                guard PeerProfile.isNewer(setAt, than: existing) else { return (false, nil) }
+                let had = existing?.photoPath != nil || existing?.photoVersion != nil
+                return (had, try PeerProfile.clearPhoto(peerHex, setAt: setAt, at: now, db))
+            }
+            staleFile = outcome.removed
+            changed = outcome.changed
         case .tag?, nil:
             break
         }
-        if let icon, existing.map({ IconAppearance(name: $0.iconName ?? "", fg: $0.iconFg ?? "", bg: $0.iconBg ?? "") }) != icon {
-            try await database.write { try PeerProfile.setIcon(peerHex, icon, at: now, $0) }
-            changed = true
+        if let icon {
+            let iconChanged = try await database.write { db -> Bool in
+                let existing = try PeerProfile.fetch(peerHex, db)
+                guard existing.map({ IconAppearance(name: $0.iconName ?? "", fg: $0.iconFg ?? "", bg: $0.iconBg ?? "") }) != icon
+                else { return false }
+                try PeerProfile.setIcon(peerHex, icon, at: now, db)
+                return true
+            }
+            changed = changed || iconChanged
         }
         if let staleFile {
             do {
