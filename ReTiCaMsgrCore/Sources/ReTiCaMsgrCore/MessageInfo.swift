@@ -263,7 +263,7 @@ public enum MessageInfo {
 
     /// FIELD_* names from reference LXMF 1.1.0 (`LXMF/LXMF.py:8-51`).
     static let fieldNames: [Int: String] = [
-        0x01: "embedded LXMs", 0x02: "telemetry", 0x03: "telemetry stream", 0x04: "icon appearance",
+        0x01: "embedded LXMs", 0x02: "telemetry", 0x03: "telemetry stream", 0x04: "icon appearance", 0xA0: "profile photo",
         0x05: "file attachments", 0x06: "image", 0x07: "audio", 0x08: "thread", 0x09: "commands",
         0x0A: "results", 0x0B: "group", 0x0C: "ticket", 0x0D: "event", 0x0E: "RNR refs",
         0x0F: "renderer", 0x30: "reply to", 0x31: "reply quote", 0x40: "reaction", 0x41: "comment",
