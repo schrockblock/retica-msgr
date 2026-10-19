@@ -62,6 +62,12 @@ struct DiagnosticsView: View {
                     }
                 }
             }
+
+            // The font's licence text is bundled as MDI-Apache-2.0.txt (ReTiCaMsgrCore Resources).
+            Section {
+            } footer: {
+                Text("Icons: Material Design Icons by Pictogrammers, Apache License 2.0.")
+            }
         }
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)

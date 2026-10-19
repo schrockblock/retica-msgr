@@ -234,6 +234,7 @@ struct GroupInfoView: View {
                                 }
                             }
                             if member.memberHex != store.myAddressHex {
+                                // Shows no avatar of its own: the member row above has it.
                                 ContactLinkRow(store: store, peerHex: member.memberHex)
                                     .padding(.leading, 16)
                             }

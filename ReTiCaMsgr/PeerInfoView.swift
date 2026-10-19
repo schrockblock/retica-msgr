@@ -20,6 +20,10 @@ struct PeerInfoView: View {
         NavigationStack {
             List {
                 Section("Address") {
+                    // The sheet's one avatar, linked or not (spec 2026-10-19). `ContactLinkRow`
+                    // refreshes the linked card, so this one does not load it.
+                    AvatarView(store: store, peerHex: peerHex, size: 64, loadsContactCard: false)
+                        .frame(maxWidth: .infinity)
                     Text(peerHex)
                         .font(.system(.footnote, design: .monospaced))
                         .textSelection(.enabled)
@@ -54,8 +58,8 @@ struct PeerInfoView: View {
     }
 }
 
-/// The Contact row (spec §3): link, or the linked contact with its source, verified state,
-/// thumbnail and actions. Used by `PeerInfoView` and per member in `GroupInfoView`.
+/// The Contact row (spec §3): link, or the linked contact with its source, verified state and
+/// actions. Used by `PeerInfoView` and per member in `GroupInfoView`.
 struct ContactLinkRow: View {
     let store: StoreOf<AppFeature>
     let peerHex: String
@@ -69,10 +73,9 @@ struct ContactLinkRow: View {
     var body: some View {
         if let link {
             VStack(alignment: .leading, spacing: 6) {
+                // No avatar here: the host shows it once (the info sheet's header, the group
+                // member row), so the sheet never shows the same picture twice.
                 HStack(spacing: 10) {
-                    // Same precedence as everywhere else: their photo, the contact's, their icon, initials.
-                    AvatarView(store: store, peerHex: peerHex, size: 36, name: link.cachedName,
-                               loadsContactCard: false)
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(link.cachedName)

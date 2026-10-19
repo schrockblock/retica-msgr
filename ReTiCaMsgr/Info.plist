@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Scans a peer's LXMF address QR code to start a conversation.</string>
+	<string>ReTiCaMsgr uses the camera to scan QR codes and to take your profile photo.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>ReTiCaMsgr links your contacts to Reticulum addresses so chats show their names, and, if you choose, finds contacts you share with trusted friends.</string>
 	<key>UIBackgroundModes</key>
