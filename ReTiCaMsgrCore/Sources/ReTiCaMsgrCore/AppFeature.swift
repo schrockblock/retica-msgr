@@ -3276,9 +3276,6 @@ private func stampViewed(_ database: any DatabaseWriter, _ peerHex: String, now:
     }
 }
 
-/// The timer a send should carry (amendment A16). `known` is `.some(value)` once the open thread's
-/// setting has loaded (value nil = off) and nil before that, in which case the stored setting is
-/// read so a send within milliseconds of opening a thread still carries the field.
 /// The profile-photo plan for one outgoing one-to-one message (spec 2026-10-19): my bytes are read
 /// only when I have a version, and the peer's delivery row decides image, tag or removal.
 private func profilePhotoPlan(_ database: any DatabaseWriter, _ avatarStore: AvatarStore, peerHex: String,
@@ -3288,6 +3285,9 @@ private func profilePhotoPlan(_ database: any DatabaseWriter, _ avatarStore: Ava
                                    delivery: delivery, imageAllowed: imageAllowed)
 }
 
+/// The timer a send should carry (amendment A16). `known` is `.some(value)` once the open thread's
+/// setting has loaded (value nil = off) and nil before that, in which case the stored setting is
+/// read so a send within milliseconds of opening a thread still carries the field.
 private func resolveExpiry(_ known: Int??, peerHex: String, _ database: any DatabaseWriter) async throws -> Int? {
     if let known { return known }
     return try await database.read { try ConversationSetting.expiry(for: peerHex, $0) }
