@@ -189,6 +189,12 @@ private func thirdsPNG(width: Int, height: Int) -> Data {
     let out = try ImageEncoder.encodeAvatar(thirdsPNG(width: 300, height: 100))
     let p = try #require(TestImages.pixel(in: out.data, x: 128, y: 128))
     #expect(p.g > 200 && p.r < 60 && p.b < 60)
+    // A true centre crop is green edge to edge; squashing the whole 300x100 source would put red
+    // and blue near the left and right edges.
+    for x in [10, 245] {
+        let edge = try #require(TestImages.pixel(in: out.data, x: x, y: 128))
+        #expect(edge.g > 200 && edge.r < 60 && edge.b < 60)
+    }
 }
 
 @Test func avatarRejectsNonImage() {
