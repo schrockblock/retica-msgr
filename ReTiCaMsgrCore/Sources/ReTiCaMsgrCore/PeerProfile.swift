@@ -47,7 +47,9 @@ public struct PeerProfile: Equatable, Sendable {
         row.photoPath = path
         row.updatedAt = at
         try save(row, db)
-        return replaced
+        // A re-delivered message stores the same file again: it is not "replaced", and a caller
+        // deleting the returned path would delete the file just written.
+        return replaced == path ? nil : replaced
     }
 
     /// Drops the photo (the icon stays) and returns the removed path.

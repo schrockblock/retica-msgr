@@ -18,6 +18,16 @@ private let profTableIcon = IconAppearance(name: "star", fg: "ffffff", bg: "1122
     #expect(row?.photoPath == "p2")
 }
 
+@Test func peerProfileSetPhotoSamePathReturnsNil() throws {
+    let db = try AppDatabase.makeInMemory()
+    _ = try db.write { try PeerProfile.setPhoto(profTablePeer, version: "v1", path: "p1", at: profTableT0, $0) }
+    let again = try db.write { try PeerProfile.setPhoto(profTablePeer, version: "v1", path: "p1", at: profTableT0 + 1, $0) }
+    #expect(again == nil)
+    let row = try db.read { try PeerProfile.fetch(profTablePeer, $0) }
+    #expect(row?.photoPath == "p1")
+    #expect(row?.photoVersion == "v1")
+}
+
 @Test func peerProfileClearPhotoKeepsIcon() throws {
     let db = try AppDatabase.makeInMemory()
     try db.write { try PeerProfile.setIcon(profTablePeer, profTableIcon, at: profTableT0, $0) }
