@@ -1766,6 +1766,12 @@ public struct AppFeature {
                 case .notReaction:
                     break
                 }
+                // Profile photo (0xA0) and LXMF icon appearance (0x04), spec 2026-10-19
+                // "Receiving": only a validated sender may set either. Applied in the effects
+                // below, before the message write; never on a reaction (handled above).
+                let profile = validated ? ProfileWire.decode(m.fields) : nil
+                let icon = validated ? IconAppearanceWire.decode(m.fields) : nil
+                let avatarStore = self.avatarStore
                 // Standard LXMF reply fields (0x30 / 0x31). Only an ordinary message gets here: a
                 // reaction that also carries reply fields was handled above, reply fields ignored.
                 let reply = ReplyWire.decode(m.fields)
@@ -1792,6 +1798,18 @@ public struct AppFeature {
                 if let dropped = decodedAttachment?.droppedFileCount, dropped > 0 {
                     // Spec §2: one attachment per message is kept; say what was left out.
                     AppFeature.inbound.notice("attachment: kept one, dropped \(dropped, privacy: .public) other file entries from \(String(m.hash.hexString.prefix(8)), privacy: .public)")
+                }
+                // Spec "Bug fix folded in": a message with nothing to show (no body, no attachment,
+                // no timer line, no reply) is not a bubble. Sideband's icon-only and telemetry-only
+                // messages land here: the profile and icon still apply, the hash is remembered so
+                // it is not re-delivered, and no Message row is written.
+                if m.content.isEmpty && decodedAttachment == nil && !isTimerChange && reply == nil {
+                    return .run { [database] send in
+                        await applyPeerProfile(profile, icon, peerHex: incomingPeer, at: seenNow,
+                                               database, avatarStore, send)
+                        try await database.write { try recordSeenHash(seenHashHex, at: seenNow, $0) }
+                        try await reloadConversations(database, send)
+                    }
                 }
                 let incomingSeconds: Int? = {
                     guard let decoded = decodedExpiry, !decoded.isChange, decoded.seconds > 0 else { return nil }
@@ -1839,6 +1857,9 @@ public struct AppFeature {
                     isTimerChange: isTimerChange
                 )
                 let storeMessage: Effect<Action> = .run { [database] send in
+                    // Never throws: a failed photo or icon leaves the message to be stored below.
+                    await applyPeerProfile(profile, icon, peerHex: incomingPeer, at: seenNow,
+                                           database, avatarStore, send)
                     var pendingAttachmentRow: Attachment? = nil
                     if let decoded = decodedAttachment {
                         // An image ImageIO cannot read is kept as a file so it can still be shared.
@@ -3283,6 +3304,69 @@ private func profilePhotoPlan(_ database: any DatabaseWriter, _ avatarStore: Ava
     let delivery = try await database.read { try ProfilePhotoDelivery.fetch(peerHex, $0) }
     return ProfilePhotoOutbox.plan(myVersion: myVersion, myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                    delivery: delivery, imageAllowed: imageAllowed)
+}
+
+/// Applies a received profile photo and/or LXMF icon to the sender's `PeerProfile` (spec
+/// 2026-10-19 "Receiving"). The caller has already dropped both for an unvalidated sender. A photo
+/// whose version is already stored is skipped; otherwise the file is written first, then the row,
+/// and the replaced (or removed) file is deleted after the write commits. A tag changes nothing.
+/// Nothing here throws: every failure is logged and the message it rode on is still stored.
+private func applyPeerProfile(_ profile: ProfileWire.Decoded?, _ icon: IconAppearance?, peerHex: String,
+                              at now: Date, _ database: any DatabaseWriter, _ avatarStore: AvatarStore,
+                              _ send: Send<AppFeature.Action>) async {
+    guard profile != nil || icon != nil else { return }
+    let tag = String(peerHex.prefix(8))
+    do {
+        let existing = try await database.read { try PeerProfile.fetch(peerHex, $0) }
+        var staleFile: String? = nil
+        var changed = false
+        switch profile {
+        case let .photo(version, jpeg)?:
+            let versionHex = version.hexString
+            guard existing?.photoVersion != versionHex else { break }
+            let path: String
+            do {
+                path = try avatarStore.storePeer(jpeg, peerHex: peerHex, version: versionHex)
+            } catch {
+                AppFeature.inbound.error("profile photo write failed for \(tag, privacy: .public): \(String(describing: error), privacy: .public)")
+                break
+            }
+            do {
+                staleFile = try await database.write {
+                    try PeerProfile.setPhoto(peerHex, version: versionHex, path: path, at: now, $0)
+                }
+                changed = true
+            } catch {
+                // The row still names the old file (a different version, so a different name):
+                // the one just written is orphaned.
+                try? avatarStore.delete(path)
+                throw error
+            }
+        case .removed?:
+            guard existing?.photoPath != nil || existing?.photoVersion != nil else { break }
+            staleFile = try await database.write { try PeerProfile.clearPhoto(peerHex, at: now, $0) }
+            changed = true
+        case .tag?, nil:
+            break
+        }
+        if let icon, existing.map({ IconAppearance(name: $0.iconName ?? "", fg: $0.iconFg ?? "", bg: $0.iconBg ?? "") }) != icon {
+            try await database.write { try PeerProfile.setIcon(peerHex, icon, at: now, $0) }
+            changed = true
+        }
+        if let staleFile {
+            do {
+                try avatarStore.delete(staleFile)
+            } catch {
+                AppFeature.inbound.error("profile photo delete failed for \(tag, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        }
+        if changed {
+            let row = try await database.read { try PeerProfile.fetch(peerHex, $0) }
+            await send(.peerProfileUpdated(peerHex: peerHex, row))
+        }
+    } catch {
+        AppFeature.inbound.error("peer profile update failed for \(tag, privacy: .public): \(String(describing: error), privacy: .public)")
+    }
 }
 
 /// The timer a send should carry (amendment A16). `known` is `.some(value)` once the open thread's

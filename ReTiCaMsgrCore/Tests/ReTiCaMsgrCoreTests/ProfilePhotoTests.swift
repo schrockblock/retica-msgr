@@ -385,3 +385,177 @@ private func hasProfileField(_ m: LXMessage?) -> Bool {
     #expect(try await deliveryRow(db, sendPeer) == nil)
     await store.skipReceivedActions(strict: false)
 }
+
+// MARK: - Receiving (Task 7)
+
+/// Copied from AppFeatureTests: a message from `sender` to `me`, packed and unpacked like the wire.
+private func wireMessage(from sender: Identity, to me: Identity, at ts: Double, title: String = "",
+                         content: String = "hi", fields: [MsgPackValue.IntPair] = []) -> LXMessage {
+    let built = LXMessage.create(source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+                                 timestamp: ts, title: Data(title.utf8), content: Data(content.utf8),
+                                 fields: fields)
+    return LXMessage.unpack(built.packed)!
+}
+
+@MainActor
+private func receive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage, validated: Bool = true) async {
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: validated,
+                                                              method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+/// The file names in the avatar directory (none when it was never created).
+private func avatarFiles(_ avatars: AvatarStore) -> [String] {
+    ((try? FileManager.default.contentsOfDirectory(atPath: avatars.baseDirectory.path)) ?? []).sorted()
+}
+
+private func storedBodies(_ db: any DatabaseWriter) async throws -> [String] {
+    try await db.read { try Message.all.fetchAll($0) }.map(\.body).sorted()
+}
+
+private let jpegOne = TestImages.jpeg(width: 256, height: 256)
+private let jpegTwo = TestImages.jpeg(width: 200, height: 200)
+
+@MainActor @Test func receivingAPhotoStoresItForThePeer() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let me = Identity()
+    let store = makeStore(db, identity: me, avatars: avatars)
+    let version = ProfileWire.version(of: jpegOne)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "hi",
+                        fields: ProfileWire.encodePhoto(version: version, jpeg: jpegOne))
+    let hex = m.sourceHash.hexString
+    await receive(store, m)
+    let profile = try #require(store.state.peerProfiles[hex])
+    #expect(profile.photoVersion == version.hexString)
+    let path = try #require(profile.photoPath)
+    #expect(try Data(contentsOf: avatars.url(forRelativePath: path)) == jpegOne)
+    #expect(try await db.read { try PeerProfile.fetch(hex, $0) } == profile)
+    #expect(try await storedBodies(db) == ["hi"])
+}
+
+@MainActor @Test func receivingANewerPhotoDeletesTheOld() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me, avatars: avatars)
+    let v1 = ProfileWire.version(of: jpegOne)
+    let v2 = ProfileWire.version(of: jpegTwo)
+    let first = wireMessage(from: sender, to: me, at: 1699999900, content: "one",
+                            fields: ProfileWire.encodePhoto(version: v1, jpeg: jpegOne))
+    let hex = first.sourceHash.hexString
+    await receive(store, first)
+    #expect(avatarFiles(avatars) == ["\(hex)-\(v1.hexString).jpg"])
+    await receive(store, wireMessage(from: sender, to: me, at: 1699999901, content: "two",
+                                     fields: ProfileWire.encodePhoto(version: v2, jpeg: jpegTwo)))
+    #expect(store.state.peerProfiles[hex]?.photoVersion == v2.hexString)
+    #expect(avatarFiles(avatars) == ["\(hex)-\(v2.hexString).jpg"])
+}
+
+@MainActor @Test func receivingRemovalClearsThePhoto() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me, avatars: avatars)
+    let first = wireMessage(from: sender, to: me, at: 1699999900, content: "one",
+                            fields: ProfileWire.encodePhoto(version: ProfileWire.version(of: jpegOne), jpeg: jpegOne))
+    let hex = first.sourceHash.hexString
+    await receive(store, first)
+    #expect(store.state.peerProfiles[hex]?.photoVersion != nil)
+    await receive(store, wireMessage(from: sender, to: me, at: 1699999901, content: "bye",
+                                     fields: ProfileWire.encodeRemoved()))
+    let profile = try #require(store.state.peerProfiles[hex])
+    #expect(profile.photoVersion == nil)
+    #expect(profile.photoPath == nil)
+    #expect(try await db.read { try PeerProfile.fetch(hex, $0) }?.photoVersion == nil)
+    #expect(avatarFiles(avatars).isEmpty)
+    #expect(try await storedBodies(db) == ["bye", "one"])
+}
+
+/// Review Focus 3: an unsigned sender cannot set a photo, and its message is still kept.
+@MainActor @Test func unsignedPhotoIsIgnored() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let me = Identity()
+    let store = makeStore(db, identity: me, avatars: avatars)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "hi",
+                        fields: ProfileWire.encodePhoto(version: ProfileWire.version(of: jpegOne), jpeg: jpegOne))
+    let hex = m.sourceHash.hexString
+    await receive(store, m, validated: false)
+    #expect(store.state.peerProfiles[hex] == nil)
+    #expect(try await db.read { try PeerProfile.fetch(hex, $0) } == nil)
+    #expect(avatarFiles(avatars).isEmpty)
+    #expect(try await storedBodies(db) == ["hi"])
+}
+
+/// Review Focus 3: an image whose hash does not match its version is dropped; the text and the
+/// avatar already held stay.
+@MainActor @Test func forgedPhotoKeepsTextAndOldAvatar() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let avatars = AvatarStore.testValue
+    let me = Identity()
+    let sender = Identity()
+    let store = makeStore(db, identity: me, avatars: avatars)
+    let v1 = ProfileWire.version(of: jpegOne)
+    let v2 = ProfileWire.version(of: jpegTwo)
+    let first = wireMessage(from: sender, to: me, at: 1699999900, content: "one",
+                            fields: ProfileWire.encodePhoto(version: v1, jpeg: jpegOne))
+    let hex = first.sourceHash.hexString
+    await receive(store, first)
+    let forged: [MsgPackValue.IntPair] = [.init(ProfileWire.fieldProfilePhoto, .array([.bin(v2), .bin(jpegOne)]))]
+    await receive(store, wireMessage(from: sender, to: me, at: 1699999901, content: "two", fields: forged))
+    let profile = try #require(store.state.peerProfiles[hex])
+    #expect(profile.photoVersion == v1.hexString)
+    #expect(avatarFiles(avatars) == ["\(hex)-\(v1.hexString).jpg"])
+    #expect(try Data(contentsOf: avatars.url(forRelativePath: try #require(profile.photoPath))) == jpegOne)
+    #expect(try await storedBodies(db) == ["one", "two"])
+}
+
+/// Review Focus 5: Sideband's icon-only message sets the icon and makes no bubble.
+@MainActor @Test func iconOnlyMessageMakesNoBubble() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me, avatars: AvatarStore.testValue)
+    let icon: [MsgPackValue.IntPair] = [.init(IconAppearanceWire.fieldIconAppearance,
+                                              .array([.string("star"), .bin(Data([0xff, 0x80, 0x00])),
+                                                      .bin(Data([0x00, 0x00, 0x20]))]))]
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "", fields: icon)
+    let hex = m.sourceHash.hexString
+    await receive(store, m)
+    let profile = try #require(store.state.peerProfiles[hex])
+    #expect(profile.iconName == "star")
+    #expect(profile.iconFg == "ff8000")
+    #expect(profile.iconBg == "000020")
+    #expect(try await db.read { try PeerProfile.fetch(hex, $0) } == profile)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    #expect(store.state.conversations.isEmpty)
+}
+
+/// Review Focus 5: an empty body with an attachment is still a message.
+@MainActor @Test func emptyMessageWithAttachmentIsStillStored() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me, avatars: AvatarStore.testValue)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "",
+                        fields: AttachmentWire.encodeFile(name: "notes.pdf", data: Data("%PDF-1.4 x".utf8)))
+    await receive(store, m)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    #expect(rows.count == 1)
+    #expect(try await db.read { try Attachment.all.fetchAll($0) }.count == 1)
+    #expect(store.state.conversations.count == 1)
+}
+
+@MainActor @Test func emptyTelemetryOnlyMessageMakesNoBubble() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeStore(db, identity: me, avatars: AvatarStore.testValue)
+    let m = wireMessage(from: Identity(), to: me, at: 1699999900, content: "",
+                        fields: [.init(0x02, .bin(Data([0x01, 0x02, 0x03])))])
+    await receive(store, m)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.isEmpty)
+    #expect(try await db.read { try SeenHashRow.all.fetchAll($0) }.map(\.hashHex) == [m.hash.hexString])
+    #expect(store.state.conversations.isEmpty)
+}
