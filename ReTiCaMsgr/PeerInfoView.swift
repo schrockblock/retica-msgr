@@ -71,7 +71,8 @@ struct ContactLinkRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
                     // Same precedence as everywhere else: their photo, the contact's, their icon, initials.
-                    AvatarView(store: store, peerHex: peerHex, size: 36, name: link.cachedName)
+                    AvatarView(store: store, peerHex: peerHex, size: 36, name: link.cachedName,
+                               loadsContactCard: false)
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(link.cachedName)
@@ -116,8 +117,9 @@ struct ContactLinkRow: View {
                 .buttonStyle(.borderless)
             }
             // Live name and photo through the reducer (backlog item 10): a rename updates the
-            // cache, a missing contact says so. The row's `AvatarView` sends `contactRowAppeared`,
-            // re-sent whenever the linked contact changes.
+            // cache, a missing contact says so. Re-sent whenever the linked contact changes. This is
+            // the live refresh; the row's `AvatarView` is told not to load the card itself.
+            .task(id: link.contactIdentifier) { store.send(.contactRowAppeared(peerHex: peerHex)) }
             // The denied/limited affordance shows whether or not a link already exists
             // (Review Focus F3 item 3): access, not the contact, is what's missing.
             accessRows(linked: true)

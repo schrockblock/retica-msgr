@@ -34,6 +34,8 @@ struct AvatarView: View {
     var size: CGFloat = 40
     /// The name the initials come from; defaults to the contact or announced name.
     var name: String? = nil
+    /// False where the host refreshes the card itself (`ContactLinkRow`), so the two don't both send.
+    var loadsContactCard = true
     @Dependency(\.avatarStore) private var avatarStore
 
     private var link: ContactLink? { store.state.contactLinks[peerHex] }
@@ -52,8 +54,12 @@ struct AvatarView: View {
         content(source)
             .frame(width: size, height: size)
             .accessibilityHidden(true)
+            // Once per contact per session: a row scrolling back in must not re-read Contacts.
+            // `ContactLinkRow` (the info sheet) is what refreshes a loaded card live.
             .task(id: link?.contactIdentifier) {
-                if link != nil { store.send(.contactRowAppeared(peerHex: peerHex)) }
+                guard loadsContactCard, let link,
+                      store.state.contactCards[link.contactIdentifier] == nil else { return }
+                store.send(.contactRowAppeared(peerHex: peerHex))
             }
     }
 

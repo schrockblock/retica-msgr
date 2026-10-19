@@ -4,7 +4,6 @@ import Foundation
 
 private let peerA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 private let peerB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-private let me = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 private let thumb = Data([0xFF, 0xD8, 0xFF, 0x01])
 
 private func profile(photo: String?, icon: Bool) -> PeerProfile {
@@ -19,11 +18,11 @@ private func profile(photo: String?, icon: Bool) -> PeerProfile {
     )
 }
 
-private func message(_ peer: String, outgoing: Bool = false, event: Bool = false) -> Message {
+private func message(_ peer: String, outgoing: Bool = false, event: Bool = false, timer: Bool = false) -> Message {
     Message(
         id: UUID(), peerHex: peer, isOutgoing: outgoing, body: "hi",
         timestamp: Date(timeIntervalSince1970: 0), status: "delivered", validated: true,
-        messageHash: "", groupHex: "cccccccccccccccccccccccccccccccc", isGroupEvent: event
+        messageHash: "", isTimerChange: timer, groupHex: "cccccccccccccccccccccccccccccccc", isGroupEvent: event
     )
 }
 
@@ -52,6 +51,9 @@ private func message(_ peer: String, outgoing: Bool = false, event: Bool = false
 }
 
 @Test func senderAvatarSkipsOutgoingAndEvents() {
-    let thread = [message(peerA), message(me, outgoing: true), message(peerA), message(peerA, event: true)]
-    #expect(thread.indices.map { thread.showsSenderAvatar(at: $0) } == [true, false, true, false])
+    // Every row carries peer A, so only the outgoing, timer and event flags can end a run: the
+    // peer-differs check cannot stand in for them.
+    let thread = [message(peerA), message(peerA, outgoing: true), message(peerA),
+                  message(peerA, timer: true), message(peerA), message(peerA, event: true)]
+    #expect(thread.indices.map { thread.showsSenderAvatar(at: $0) } == [true, false, true, false, true, false])
 }
