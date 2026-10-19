@@ -105,8 +105,8 @@ struct AnnounceListView: View {
             onPick(announce.hex)
         } label: {
             HStack(spacing: 12) {
-                BrandAvatar(name: store.state.contactName(announce.hex) ?? announce.displayName ?? "",
-                            size: 40)
+                AvatarView(store: store, peerHex: announce.hex, size: 40,
+                           name: store.state.contactName(announce.hex) ?? announce.displayName ?? "")
                 VStack(alignment: .leading, spacing: 2) {
                     Text(store.state.contactName(announce.hex) ?? announce.displayName ?? "Unnamed")
                         .font(.headline)

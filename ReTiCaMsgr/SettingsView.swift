@@ -7,6 +7,7 @@
 
 import SwiftUI
 import UIKit
+import PhotosUI
 import ComposableArchitecture
 import ReTiCaMsgrCore
 import ReTiCAPush
@@ -21,6 +22,11 @@ struct SettingsView: View {
     @State private var showingAddress = false
     @State private var showingAddNode = false
     @State private var editingNode: NodeEntry? = nil
+    @State private var showingPhotoOptions = false
+    @State private var showingPhotoLibrary = false
+    @State private var showingCamera = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var cropTarget: CropTarget?
     @Environment(\.openURL) private var openURL
     @FocusState private var focusedField: Field?
 
@@ -105,7 +111,21 @@ struct SettingsView: View {
     private var profileSection: some View {
         Section {
             HStack(spacing: 14) {
-                BrandAvatar(name: nameInput)
+                Button { showingPhotoOptions = true } label: {
+                    MyAvatarView(store: store, name: nameInput)
+                        .overlay(alignment: .bottomTrailing) {
+                            Image(systemName: "camera.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 22, height: 22)
+                                .background(Circle().fill(Color.accentColor))
+                                .overlay(Circle().stroke(Color(.secondarySystemGroupedBackground), lineWidth: 2))
+                                .offset(x: 2, y: 2)
+                        }
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(store.myPhotoVersion.isEmpty ? "Add profile photo" : "Change profile photo")
                 VStack(alignment: .leading, spacing: 4) {
                     TextField("Your name", text: $nameInput)
                         .font(.title3.weight(.semibold))
@@ -125,6 +145,48 @@ struct SettingsView: View {
                 }
             }
             .padding(.vertical, 4)
+            .confirmationDialog("Profile Photo", isPresented: $showingPhotoOptions, titleVisibility: .hidden) {
+                Button("Choose Photo") { showingPhotoLibrary = true }
+                if CameraPicker.isAvailable {
+                    Button("Take Photo") { showingCamera = true }
+                }
+                if !store.myPhotoVersion.isEmpty {
+                    Button("Remove Photo", role: .destructive) { store.send(.removeProfilePhotoTapped) }
+                }
+            }
+            .photosPicker(isPresented: $showingPhotoLibrary, selection: $photoItem, matching: .images)
+            .onChange(of: photoItem) { _, item in
+                guard let item else { return }
+                photoItem = nil
+                Task {
+                    if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
+                        cropTarget = CropTarget(image: image)
+                    } else {
+                        store.send(.profilePhotoPicked(Data()))
+                    }
+                }
+            }
+            .fullScreenCover(item: $cropTarget) { target in
+                AvatarCropView(image: target.image,
+                               onChoose: { jpeg in
+                                   cropTarget = nil
+                                   store.send(.profilePhotoPicked(jpeg))
+                               },
+                               onCancel: { cropTarget = nil })
+            }
+            .fullScreenCover(isPresented: $showingCamera) {
+                CameraPicker(onPicked: { jpeg in
+                                 showingCamera = false
+                                 store.send(.profilePhotoPicked(jpeg))
+                             },
+                             onCancel: { showingCamera = false })
+                    .ignoresSafeArea()
+            }
+            if let error = store.profilePhotoError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
             if nameInput != store.displayName {
                 Button("Save name") { saveName() }
             }
@@ -134,7 +196,7 @@ struct SettingsView: View {
         } header: {
             Text("Profile")
         } footer: {
-            Text("Share your QR code so others can start a chat with you.")
+            Text("Your name and photo are visible to people you message.")
         }
     }
 
@@ -392,4 +454,10 @@ struct SettingsView: View {
                  + "snapshot for bug reports.")
         }
     }
+}
+
+/// A picked library photo waiting in the crop screen.
+private struct CropTarget: Identifiable {
+    let id = UUID()
+    let image: UIImage
 }

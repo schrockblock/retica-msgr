@@ -47,44 +47,9 @@ struct ConversationListView: View {
                 Button {
                     store.send(convo.kind == .group ? .openGroupConversation(convo.peerHex) : .openConversation(convo.peerHex))
                 } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
-                            if let title = convo.title {
-                                Label(title, systemImage: "person.3")
-                                    .font(.headline)
-                                    .lineLimit(1)
-                            } else {
-                                // Contact name, else the name from their announce, else the address.
-                                Text(store.state.peerDisplayName(convo.peerHex) ?? shortHex(convo.peerHex))
-                                    .font(store.state.peerDisplayName(convo.peerHex) == nil
-                                          ? .system(.headline, design: .monospaced) : .headline)
-                            }
-                            if convo.groupState == GroupState.invited {
-                                Text("Invited")
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Capsule().fill(Color.accentColor.opacity(0.2)))
-                            }
-                            if convo.kind == .peer, store.state.isBlocked(convo.peerHex) {
-                                Text("Blocked")
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Capsule().fill(Color.red.opacity(0.15)))
-                            }
-                            if store.state.contactLinks[convo.peerHex]?.isConflicted == true {
-                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.caption)
-                            }
-                            Spacer()
-                            Text(convo.lastTimestamp, style: .relative)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(convo.preview)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    HStack(spacing: 12) {
+                        rowAvatar(convo)
+                        rowDetails(convo)
                     }
                     // Make the whole row tappable, not just the text glyphs: a
                     // plain-style Button only hit-tests its content, so the empty
@@ -172,6 +137,63 @@ struct ConversationListView: View {
                     showingAnnounces = false
                 }
             }
+        }
+    }
+
+    /// A peer's avatar; a group keeps its `person.3` glyph, in a circle of the same size.
+    @ViewBuilder
+    private func rowAvatar(_ convo: Conversation) -> some View {
+        if convo.kind == .group {
+            Image(systemName: "person.3.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(Circle().fill(Brand.gradient))
+                .accessibilityHidden(true)
+        } else {
+            AvatarView(store: store, peerHex: convo.peerHex, size: 40)
+        }
+    }
+
+    private func rowDetails(_ convo: Conversation) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                if let title = convo.title {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(1)
+                } else {
+                    // Contact name, else the name from their announce, else the address.
+                    Text(store.state.peerDisplayName(convo.peerHex) ?? shortHex(convo.peerHex))
+                        .font(store.state.peerDisplayName(convo.peerHex) == nil
+                              ? .system(.headline, design: .monospaced) : .headline)
+                }
+                if convo.groupState == GroupState.invited {
+                    Text("Invited")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.2)))
+                }
+                if convo.kind == .peer, store.state.isBlocked(convo.peerHex) {
+                    Text("Blocked")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.red.opacity(0.15)))
+                }
+                if store.state.contactLinks[convo.peerHex]?.isConflicted == true {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.caption)
+                }
+                Spacer()
+                Text(convo.lastTimestamp, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text(convo.preview)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 }

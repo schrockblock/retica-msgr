@@ -214,6 +214,11 @@ struct GroupInfoView: View {
                                     .fill(store.reachablePeers.contains(member.memberHex) || member.memberHex == store.myAddressHex
                                           ? Color.green : Color.secondary.opacity(0.4))
                                     .frame(width: 8, height: 8)
+                                if member.memberHex == store.myAddressHex {
+                                    MyAvatarView(store: store, size: 32)
+                                } else {
+                                    AvatarView(store: store, peerHex: member.memberHex, size: 32)
+                                }
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(store.state.groupMemberName(member.memberHex))
                                     Text(shortHex(member.memberHex))

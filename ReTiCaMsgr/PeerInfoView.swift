@@ -70,11 +70,8 @@ struct ContactLinkRow: View {
         if let link {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
-                    if case let .available(thumbnail?) = card, let image = UIImage(data: thumbnail) {
-                        Image(uiImage: image).resizable().frame(width: 36, height: 36).clipShape(Circle())
-                    } else {
-                        Image(systemName: "person.crop.circle").font(.title).foregroundStyle(.secondary)
-                    }
+                    // Same precedence as everywhere else: their photo, the contact's, their icon, initials.
+                    AvatarView(store: store, peerHex: peerHex, size: 36, name: link.cachedName)
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(link.cachedName)
@@ -119,8 +116,8 @@ struct ContactLinkRow: View {
                 .buttonStyle(.borderless)
             }
             // Live name and photo through the reducer (backlog item 10): a rename updates the
-            // cache, a missing contact says so. Re-sent whenever the linked contact changes.
-            .task(id: link.contactIdentifier) { store.send(.contactRowAppeared(peerHex: peerHex)) }
+            // cache, a missing contact says so. The row's `AvatarView` sends `contactRowAppeared`,
+            // re-sent whenever the linked contact changes.
             // The denied/limited affordance shows whether or not a link already exists
             // (Review Focus F3 item 3): access, not the contact, is what's missing.
             accessRows(linked: true)

@@ -6,6 +6,11 @@ struct ReTiCaMsgrApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        // The LXMF icon glyphs in `AvatarView` draw in the bundled Material Design Icons font.
+        MDIIcons.registerFont()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView(runtime: delegate.runtime)

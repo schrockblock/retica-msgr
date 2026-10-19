@@ -50,6 +50,11 @@ struct ChatView: View {
 
     var body: some View {
         let peerName = store.openPeerDisplayName
+        // Group threads: the bubbles that end a sender's run carry their avatar.
+        let thread = store.threadMessages
+        let avatarMessageIDs: Set<Message.ID> = isGroup
+            ? Set(thread.indices.filter { thread.showsSenderAvatar(at: $0) }.map { thread[$0].id })
+            : []
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 List(store.threadMessages) { message in
@@ -84,7 +89,11 @@ struct ChatView: View {
                             onImageTap: { a, url in
                                 viewerTarget = ViewerTarget(attachment: a, url: url, shareURL: shareableURL(for: a, stored: url))
                             },
-                            onFileTap: { a, url in quickLookURL = shareableURL(for: a, stored: url) }
+                            onFileTap: { a, url in quickLookURL = shareableURL(for: a, stored: url) },
+                            hasAvatarSlot: isGroup,
+                            senderAvatar: isGroup && avatarMessageIDs.contains(message.id)
+                                ? AnyView(AvatarView(store: store, peerHex: message.peerHex, size: 28))
+                                : nil
                         )
                         .id(message.id)
                         .listRowSeparator(.hidden)
@@ -206,7 +215,10 @@ struct ChatView: View {
                         let name = store.openPeerHex.flatMap { store.state.peerDisplayName($0) }
                         ChatTitle(title: name ?? store.openPeerHex.map(shortHex) ?? "Chat",
                                   subtitle: name == nil ? nil : store.openPeerHex.map(shortHex),
-                                  expiry: store.openConversationExpiry)
+                                  expiry: store.openConversationExpiry,
+                                  avatar: store.openPeerHex.map {
+                                      AnyView(AvatarView(store: store, peerHex: $0, size: 28))
+                                  })
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint("Shows the address and contact for this chat")
@@ -312,10 +324,20 @@ struct MessageBubble: View {
     var onQuoteTap: ((Message.ID) -> Void)? = nil
     var onImageTap: ((Attachment, URL) -> Void)? = nil
     var onFileTap: ((Attachment, URL) -> Void)? = nil
+    /// Group threads only: incoming bubbles get a 28 pt leading slot, holding the sender's avatar
+    /// on the last bubble of their run and empty otherwise, so the bubbles stay aligned.
+    var hasAvatarSlot = false
+    var senderAvatar: AnyView? = nil
 
     var body: some View {
-        HStack {
+        HStack(alignment: .bottom) {
             if message.isOutgoing { Spacer() }
+            if hasAvatarSlot, !message.isOutgoing {
+                Group {
+                    if let senderAvatar { senderAvatar } else { Color.clear }
+                }
+                .frame(width: 28, height: 28)
+            }
             VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 2) {
                 if let senderName {
                     Text(senderName)

@@ -17,7 +17,7 @@ struct AddressView: View {
         NavigationStack {
             VStack(spacing: 24) {
                 VStack(spacing: 8) {
-                    BrandAvatar(name: store.displayName, size: 72)
+                    MyAvatarView(store: store, size: 72)
                     if !store.displayName.isEmpty {
                         Text(store.displayName).font(.title2.weight(.semibold))
                     }
