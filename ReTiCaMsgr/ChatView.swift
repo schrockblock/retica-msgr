@@ -29,6 +29,9 @@ struct ChatView: View {
     @FocusState private var draftFocused: Bool
     @State private var showingGroupInfo = false
     @State private var showingPeerInfo = false
+    /// Set once the thread has been scrolled to its latest message, so a later message never
+    /// pulls the reader away from what they scrolled back to.
+    @State private var openedAtLatest = false
 
     private var isGroup: Bool { store.openConversationKind == .group }
 
@@ -133,6 +136,15 @@ struct ChatView: View {
                     }
                 }
                 .listStyle(.plain)
+                // A conversation opens on its latest message. The thread loads after the screen
+                // appears, so the anchor alone can land on an empty list: scroll once the last
+                // message is known, on the next run loop so the row exists to scroll to.
+                .defaultScrollAnchor(.bottom)
+                .onChange(of: store.threadMessages.last?.id, initial: true) { _, last in
+                    guard !openedAtLatest, let last else { return }
+                    openedAtLatest = true
+                    Task { @MainActor in proxy.scrollTo(last, anchor: .bottom) }
+                }
                 .sheet(item: $infoTarget) { target in
                     MessageInfoSheet(store: store, messageID: target.id)
                 }
