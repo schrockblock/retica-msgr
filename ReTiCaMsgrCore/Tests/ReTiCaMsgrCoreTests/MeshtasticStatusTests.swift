@@ -108,3 +108,48 @@ import ReTiCATransport
     await store.receive { $0 == .node(.client(.announceDeliveryOnInterface(second))) }
     await store.skipReceivedActions(strict: false)
 }
+
+private let downRadio = InterfaceID("meshtastic:radio")
+private let downHub = InterfaceID("tcp:hub:4242")
+private let downAccepted = InterfaceID("tcpserver:7")
+private let downBLE = InterfaceID("ble:aa")
+private let downNow = Date(timeIntervalSince1970: 1_700_000_000)
+
+@Test func meshAnnounceRadioDownTargetsEveryTCPInterfaceAndNothingElse() {
+    let targets = AppFeature.radioDownAnnounceTargets(departing: downRadio,
+                                                      connected: [downHub, downAccepted, downBLE],
+                                                      lastAnnounceAt: nil, now: downNow)
+    #expect(targets == [downHub, downAccepted])
+}
+
+@Test func meshAnnounceOnlyARadioGoingDownReannounces() {
+    for departing in [downHub, downAccepted, downBLE] {
+        #expect(AppFeature.radioDownAnnounceTargets(departing: departing, connected: [downHub, downAccepted],
+                                                    lastAnnounceAt: nil, now: downNow).isEmpty)
+    }
+}
+
+@Test func meshAnnounceRadioDownIsThrottled() {
+    let interval = AppFeature.radioDownAnnounceInterval
+    #expect(AppFeature.radioDownAnnounceTargets(departing: downRadio, connected: [downHub],
+                                                lastAnnounceAt: downNow.addingTimeInterval(-interval + 1),
+                                                now: downNow).isEmpty)
+    #expect(AppFeature.radioDownAnnounceTargets(departing: downRadio, connected: [downHub],
+                                                lastAnnounceAt: downNow.addingTimeInterval(-interval),
+                                                now: downNow) == [downHub])
+}
+
+/// A radio going down re-announces over the TCP interface still up, through the reducer.
+@MainActor @Test func meshAnnounceARadioGoingDownAnnouncesOverTCP() async {
+    let radio = MeshRadioHarness()
+    let store = meshRadioStore(radio: nil, harness: radio)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(downHub, .tcp))))))
+    await store.receive { if case .node(.client(.registerDelivery)) = $0 { return true }; return false }
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(downRadio, .tcp))))))
+    await store.receive { $0 == .node(.client(.announceDeliveryOnInterface(downRadio))) }
+    await store.skipReceivedActions(strict: false)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceDisconnected(downRadio))))))
+    await store.receive { $0 == .node(.client(.announceDeliveryOnInterface(downHub))) }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.lastRadioDownAnnounceAt == downNow)
+}

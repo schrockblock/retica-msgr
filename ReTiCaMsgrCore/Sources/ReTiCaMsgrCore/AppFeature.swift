@@ -137,6 +137,8 @@ public struct AppFeature {
         /// interface into one bool, so a single BLE peer dropping marked the whole app offline while
         /// TCP stayed healthy (punch-list A4).
         public var connectedInterfaces: Set<InterfaceID> = []
+        /// When a radio going down last re-announced us over TCP (`radioDownAnnounceInterval`).
+        var lastRadioDownAnnounceAt: Date? = nil
         /// Set when the BLE adapter is terminally unavailable (permission denied / no radio); drives
         /// the Settings permission surface (A5). Session-only — cleared on each connect attempt so a
         /// resolved denial doesn't stick, and re-set if the adapter is still unavailable.
@@ -715,6 +717,20 @@ public struct AppFeature {
     /// Where the node list lives: `<Application Support>/nodes.json`.
     public static let nodesFileURL = URL.applicationSupportDirectory.appending(path: "nodes.json")
     public static let draftsFileURL = URL.applicationSupportDirectory.appending(path: "drafts.json")
+    /// The shortest gap between two radio-down re-announces over TCP.
+    static let radioDownAnnounceInterval: TimeInterval = 10 * 60
+
+    /// Where to re-announce when `departing` goes down: every connected TCP client and server
+    /// interface, but only when `departing` is a radio and the last such announce is at least
+    /// `radioDownAnnounceInterval` old. Sorted, so the announces go out in a stable order.
+    static func radioDownAnnounceTargets(departing: InterfaceID, connected: Set<InterfaceID>,
+                                         lastAnnounceAt: Date?, now: Date) -> [InterfaceID] {
+        guard departing.rawValue.hasPrefix("meshtastic:") else { return [] }
+        if let lastAnnounceAt, now.timeIntervalSince(lastAnnounceAt) < radioDownAnnounceInterval { return [] }
+        return connected
+            .filter { $0.rawValue.hasPrefix("tcp:") || $0.rawValue.hasPrefix("tcpserver:") }
+            .sorted { $0.rawValue < $1.rawValue }
+    }
 
     /// How long one registration attempt may take, path request to response.
     static let pushRegistrationTimeout: Duration = .seconds(20)
@@ -1071,7 +1087,21 @@ public struct AppFeature {
                 // (the last interface departed) does the app become `.disconnected`.
                 state.connectedInterfaces.remove(interfaceID)
                 state.connection = state.connectedInterfaces.isEmpty ? .disconnected : .connected
-                return .none
+                // A radio going away re-announces us on every TCP interface still up. Peers that
+                // heard our radio-up announce route to us over the radio; a newer announce over TCP
+                // moves them off it now, instead of after a failed send. TCP and BLE departures
+                // announce nothing: a TCP blip comes back and re-announces on its own interface-up,
+                // and BLE sessions come and go per peer. Throttled, so a radio flapping at the edge
+                // of range does not trip a hub's announce rate limit.
+                let now = date.now
+                guard state.node.client.deliveryDestinationHash != nil else { return .none }
+                let targets = AppFeature.radioDownAnnounceTargets(departing: interfaceID,
+                                                                  connected: state.connectedInterfaces,
+                                                                  lastAnnounceAt: state.lastRadioDownAnnounceAt,
+                                                                  now: now)
+                guard !targets.isEmpty else { return .none }
+                state.lastRadioDownAnnounceAt = now
+                return .merge(targets.map { .send(.node(.client(.announceDeliveryOnInterface($0)))) })
 
             case let .node(.client(.endpoint(.ble(.delegate(.adapterUnavailable(cause)))))):
                 // A5: the BLE adapter is terminally unavailable. Map the cause to a user-facing alert.
