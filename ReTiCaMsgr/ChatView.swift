@@ -136,6 +136,17 @@ struct ChatView: View {
                     }
                 }
                 .listStyle(.plain)
+                // An LXMF address in a bubble opens that chat in place; other links go to iOS.
+                .environment(\.openURL, OpenURLAction { url in
+                    guard MessageLinks.isLxmf(url) else { return .systemAction }
+                    if let hex = MessageLinks.conversationTarget(for: url, ownAddress: store.myAddressHex),
+                       isGroup || hex != store.openPeerHex {
+                        openedAtLatest = false
+                        highlightedMessageID = nil
+                        store.send(.startConversation(hex))
+                    }
+                    return .handled
+                })
                 // A conversation opens on its latest message. The thread loads after the screen
                 // appears, so the anchor alone can land on an empty list: scroll once the last
                 // message is known, on the next run loop so the row exists to scroll to.
@@ -421,7 +432,9 @@ struct BubbleText: View {
                 )
             }
             if !message.body.isEmpty || attachment == nil {
-                Text(message.body)
+                // Links are underlined; on my bubbles they're white so they read on the gradient.
+                Text(MessageLinks.attributed(message.body))
+                    .tint(message.isOutgoing ? .white : .accentColor)
             }
         }
         .padding(.horizontal, 12)
