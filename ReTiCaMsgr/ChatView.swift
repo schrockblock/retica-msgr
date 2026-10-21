@@ -193,7 +193,8 @@ struct ChatView: View {
             } else if isGroup, let state = store.openGroup?.state, state != GroupState.active {
                 ClosedGroupLine(state: state)
             } else {
-                HStack(spacing: 4) {
+                // Bottom-aligned so the buttons stay beside the last line as the field grows.
+                HStack(alignment: .bottom, spacing: 4) {
                     if !isGroup {
                         AttachmentPickerButton(
                             peerHex: store.openPeerHex ?? "",
@@ -202,10 +203,14 @@ struct ChatView: View {
                             onFailed: { store.send(.attachmentFailed($0)) }
                         )
                     }
-                    TextField("Message", text: $store.draft)
+                    TextField("Message", text: $store.draft, axis: .vertical)
+                        .lineLimit(1...5)
                         .textFieldStyle(.roundedBorder)
                         .focused($draftFocused)
+                        // One line plus this is 44 pt, the buttons' height, so they line up.
+                        .padding(.vertical, 5)
                     Button("Send") { store.send(.sendTapped) }
+                        .frame(minHeight: 44)
                         .disabled(!canSend)
                         .padding(.leading, 4)
                 }
