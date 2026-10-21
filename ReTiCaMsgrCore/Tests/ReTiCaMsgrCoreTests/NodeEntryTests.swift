@@ -51,7 +51,7 @@ private func migrate(_ host: String, _ port: Int, _ hex: String) -> [NodeEntry] 
     #expect(entry.isBuiltIn == true)
     #expect(entry.enabled == true)
     #expect(entry.interfaceID == InterfaceID("tcp:gaefu.ddns.net:4242"))
-    #expect(DefaultNode.propagationHex == nil)
+    #expect(DefaultNode.propagationHex == "467d55db63eb842e523a1c2ded06024a")
 }
 
 // MARK: - NodeRules

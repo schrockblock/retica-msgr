@@ -9,9 +9,9 @@ public enum DefaultNode {
     public static let port = 4242
     /// Gaefu's push registration destination (post 2026-10-03), confirmed 2026-10-10.
     public static let pushHubHex = "ef92bcaeb90947a9fc2228affabdce13"
-    /// Gaefu's propagation node's LXMF address, once its `lxmd` announces. nil until then; while
-    /// nil the "use the default's propagation node" toggle has no effect and is not shown.
-    public static let propagationHex: String? = nil
+    /// Gaefu's propagation node (`lxmd`), confirmed running 2026-10-20. While nil the "use the
+    /// default's propagation node" toggle has no effect and is not shown.
+    public static let propagationHex: String? = "467d55db63eb842e523a1c2ded06024a"
 
     public static var entry: NodeEntry {
         NodeEntry(id: id, name: name, host: host, port: port, enabled: true, isBuiltIn: true,
