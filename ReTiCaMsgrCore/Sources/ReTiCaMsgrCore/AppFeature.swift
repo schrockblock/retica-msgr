@@ -188,7 +188,7 @@ public struct AppFeature {
         /// ever settle it. Session-only.
         public var launchedAt: Date? = nil
         /// Whether this launch's orphans were resent: done once, on the first `interfaceConnected`
-        /// after `onLaunch`. Session-only.
+        /// after `onLaunch`, or on the next one if that rebuild threw. Session-only.
         public var orphansResent = false
         /// Whether the TCP sockets were closed for the background (`closeHubSockets`). Cleared on
         /// foreground and on the next `interfaceConnected` (a push wake re-dials). Session-only.
@@ -540,6 +540,9 @@ public struct AppFeature {
         /// The launch resend gave these orphans new hashes (old → new hex). The rows and every
         /// stored reference already moved; this moves the composer's reply target too. Internal.
         case orphansRehashed([String: String])
+        /// The launch resend's rebuild threw before anything changed: the next
+        /// `interfaceConnected` tries again. Internal.
+        case orphanResendFailed
         /// A background push woke the process (AppDelegate). Re-dials like `foregrounded`, then
         /// drains the push inbox.
         case pushWake
@@ -1115,6 +1118,10 @@ public struct AppFeature {
                 }
                 return .none
 
+            case .orphanResendFailed:
+                state.orphansResent = false
+                return .none
+
             case ._flushLearnedDestinations:
                 // Debounce timer fired: write the current learned table. The table may have grown
                 // since the timer was armed; we always write the latest snapshot, so rapid
@@ -1565,13 +1572,13 @@ public struct AppFeature {
                 // A reply carries the original's full hash and a trimmed quote in the standard LXMF
                 // fields 0x30 / 0x31. The quote is trimmed once, and the same string goes on the wire
                 // and in the row. A target whose hash does not decode is sent as a plain message.
-                var replyFields: [MsgPackValue.IntPair] = []
+                var replyTo: Data? = nil
                 var replyToHash: String? = nil
                 var replyQuote: String? = nil
                 if let target = state.replyTarget,
-                   let replyTo = Data(hexString: target.messageHash), !replyTo.isEmpty {
+                   let targetHash = Data(hexString: target.messageHash), !targetHash.isEmpty {
                     let quote = ReplyWire.trimQuote(target.body)
-                    replyFields = ReplyWire.encode(replyTo: replyTo, quote: quote)
+                    replyTo = targetHash
                     replyToHash = target.messageHash
                     // Review fix: an empty trimmed quote (a whitespace-only original) is stored as
                     // nil, matching the wire, which now omits 0x31 for an empty quote too.
@@ -1606,17 +1613,17 @@ public struct AppFeature {
                 guard let pending else {
                     return .merge(
                         .cancel(id: CancelID.attachmentPreparation),
-                        .run { [database, replyFields, replyToHash, replyQuote] send in
+                        .run { [database, replyTo, replyToHash, replyQuote] send in
                             let msg: LXMessage
                             let expiry: Int?
                             do {
                                 expiry = try await resolveExpiry(knownExpiry, peerHex: peerHex, database)
-                                let expiryFields = expiry.map { ExpiryWire.encode(seconds: $0) } ?? []
                                 let plan = try await profilePhotoPlan(database, avatarStore, peerHex: peerHex,
                                                                       myVersion: myVersion, imageAllowed: imageAllowed)
                                 let (built, row) = Self.outgoing(
                                     identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
-                                    fields: replyFields + expiryFields + plan.fields,
+                                    fields: Self.outgoingFields(attachment: nil, replyTo: replyTo, replyQuote: replyQuote,
+                                                                expirySeconds: expiry, photo: plan),
                                     replyToHash: replyToHash, replyQuote: replyQuote,
                                     expirySeconds: expiry,
                                     expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
@@ -1647,7 +1654,7 @@ public struct AppFeature {
                 // the caption back, and leaves no file behind (spec §4 errors).
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
-                    .run { [database, replyFields, replyToHash, replyQuote] send in
+                    .run { [database, replyTo, replyToHash, replyQuote] send in
                         // A failed read hands nothing over; the store and write failures below end
                         // the reservation through `attachmentSendFailed` instead.
                         let expiry: Int?
@@ -1660,14 +1667,11 @@ public struct AppFeature {
                             await send(.handOverEnded)
                             throw error
                         }
-                        let expiryFields = expiry.map { ExpiryWire.encode(seconds: $0) } ?? []
-                        // The attachment field (0x05 or 0x06) comes first, then any reply fields.
-                        let attachmentFields = pending.isImage
-                            ? AttachmentWire.encodeImage(pending.data)
-                            : AttachmentWire.encodeFile(name: pending.name, data: pending.data)
                         let (msg, row) = Self.outgoing(
                             identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
-                            fields: attachmentFields + replyFields + expiryFields + plan.fields,
+                            fields: Self.outgoingFields(
+                                attachment: (kind: pending.kind, name: pending.name, data: pending.data),
+                                replyTo: replyTo, replyQuote: replyQuote, expirySeconds: expiry, photo: plan),
                             replyToHash: replyToHash, replyQuote: replyQuote,
                             expirySeconds: expiry,
                             expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
@@ -2893,6 +2897,27 @@ public struct AppFeature {
         return .merge(close, endBackgroundTask(&state))
     }
 
+    /// The fields of an outgoing one-to-one message, in wire order: the attachment (0x05 file or
+    /// 0x06 image) first, then the reply (0x30 with the original's hash, 0x31 with the quote, which
+    /// is left out when nil or empty), the disappearing-messages timer, and my profile photo last.
+    /// `sendTapped` and the launch resend both build their fields here, so a resent orphan
+    /// carries what its first send did.
+    static func outgoingFields(attachment: (kind: String, name: String, data: Data)?,
+                               replyTo: Data?, replyQuote: String?, expirySeconds: Int?,
+                               photo: ProfilePhotoOutbox.Plan) -> [MsgPackValue.IntPair] {
+        var fields: [MsgPackValue.IntPair] = []
+        if let attachment {
+            fields += attachment.kind == AttachmentKind.image
+                ? AttachmentWire.encodeImage(attachment.data)
+                : AttachmentWire.encodeFile(name: attachment.name, data: attachment.data)
+        }
+        if let replyTo, !replyTo.isEmpty {
+            fields += ReplyWire.encode(replyTo: replyTo, quote: replyQuote ?? "")
+        }
+        if let expirySeconds { fields += ExpiryWire.encode(seconds: expirySeconds) }
+        return fields + photo.fields
+    }
+
     /// The outgoing LXMessage and its `sending` row. Outgoing Info metadata: `wireSize` is the
     /// unstamped packed size (LXMFNode adds any stamp downstream, where the app cannot see it, hence
     /// no stampState either). `packed` is a computed re-encode, so it is read once.
@@ -2982,9 +3007,13 @@ public struct AppFeature {
 
     /// Resend on launch: rebuilds the previous run's orphans (`rebuildOrphans`), hands each one to
     /// the node, then ends the reservation the reducer made in `pendingHandOvers`, and reloads.
+    /// A rebuild that throws changed nothing (one write), so `orphanResendFailed` lets the next
+    /// `interfaceConnected` try again.
     private func resendOrphansEffect(_ state: State, launchedAt: Date) -> Effect<Action> {
         let identity = state.identity
         let now = date.now
+        // Copies this run already handed over are not the previous run's.
+        let inFlight = Set(state.inFlightSends.map(\.hexString))
         let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
         let myVersion = state.myPhotoVersion
         let imageAllowed = state.profilePhotoMayRide
@@ -2994,10 +3023,16 @@ public struct AppFeature {
         return .run { [database] send in
             var rehashed: [String: String] = [:]
             try await handingOver(send) {
-                let rebuilt = try await rebuildOrphans(
-                    database, attachmentStore, identity: identity, launchedAt: launchedAt, now: now,
-                    myVersion: myVersion, myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
-                    imageAllowed: imageAllowed)
+                let rebuilt: (messages: [LXMessage], rehashed: [String: String])
+                do {
+                    rebuilt = try await rebuildOrphans(
+                        database, attachmentStore, identity: identity, launchedAt: launchedAt, now: now,
+                        inFlight: inFlight, myVersion: myVersion,
+                        myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(), imageAllowed: imageAllowed)
+                } catch {
+                    await send(.orphanResendFailed)
+                    throw error
+                }
                 rehashed = rebuilt.rehashed
                 for message in rebuilt.messages {
                     await send(.node(.client(.sendMessage(message: message, fallbackToPropagation: fallbackToPropagation))))
@@ -3639,35 +3674,40 @@ private func stampViewed(_ database: any DatabaseWriter, _ peerHex: String, now:
 
 /// Resend on launch (brief 2026-10-21). ReTiCA keeps pending sends in memory only, so a row a
 /// previous run left `sending` never settles. In one write:
-/// - every group copy left `sending` goes back to waiting with no hash, so the group dispatch
-///   sends it again once the member has a path, and its row's derived status is refreshed;
-/// - every one-to-one outgoing `sending` row stamped before `launchedAt` (timer-change lines
-///   excepted) is rebuilt with its attachment, reply and expiry and a fresh profile-photo plan,
-///   under a new LXMF timestamp and so a new hash. Every local reference to the old hash moves
-///   with it: the reactions on it and other rows' `replyToHash`. A profile photo pending on the
-///   old hash is settled as not delivered and re-planned, so a photo that never arrived rides again;
+/// - every group copy the previous run left `sending` goes back to waiting with no hash, so the
+///   group dispatch sends it again once the member has a path, and its row's derived status is
+///   refreshed. A copy of a row stamped at or after `launchedAt`, or whose hash is in `inFlight`
+///   (sent by this run), is left alone;
+/// - every one-to-one outgoing `sending` row stamped before `launchedAt` (timer-change and group
+///   event lines excepted) is rebuilt like a first send (`AppFeature.outgoingFields`) with a fresh
+///   profile-photo plan, under a new LXMF timestamp and so a new hash. Every local reference to
+///   the old hash moves with it: the reactions on it and other rows' `replyToHash`. A profile
+///   photo pending on the old hash is settled as not delivered and re-planned, so a photo that
+///   never arrived rides again. `expiresAt` keeps the first send's deadline;
 /// - a row to a peer blocked since the send (spec 2026-10-15 §2), or whose attachment bytes are
-///   gone, is marked failed instead.
+///   gone, is marked failed instead;
+/// - a row whose disappearing timer fell due (`expiresAt <= now`) is left for the purge.
 /// Attachment bytes are read before the write, so the writer is not held on file reads. A row that
 /// changed in between is left alone. Returns the messages to hand over, in send order, and the
 /// rehashed rows (old → new hex).
 private func rebuildOrphans(_ database: any DatabaseWriter, _ attachmentStore: AttachmentStore,
-                            identity: Identity, launchedAt: Date, now: Date,
+                            identity: Identity, launchedAt: Date, now: Date, inFlight: Set<String>,
                             myVersion: String, myPhoto: Data?, imageAllowed: Bool)
     async throws -> (messages: [LXMessage], rehashed: [String: String]) {
     let (listed, attachments) = try await database.read { db in
         let orphans = try Message
             .where {
                 $0.isOutgoing.eq(true) && $0.status.eq(MessageStatus.sending) && $0.groupHex.is(nil)
-                    && $0.isTimerChange.eq(false) && $0.timestamp < launchedAt
+                    && $0.isTimerChange.eq(false) && $0.isGroupEvent.eq(false) && $0.timestamp < launchedAt
             }
             .order(by: \.timestamp)
             .fetchAll(db)
+            .filter { $0.expiresAt.map { $0 > now } ?? true }
         let ids = orphans.map(\.id)
         return (orphans, try Attachment.where { $0.messageId.in(ids) }.fetchAll(db))
     }
-    // The attachment field (0x05 or 0x06) of each row that has one, as at the first send.
-    var attachmentFields: [UUID: [MsgPackValue.IntPair]] = [:]
+    // Every orphan's bytes are held at once, unlike `sendTapped`'s one; orphans are few (accepted).
+    var attachmentBytes: [UUID: (attachment: Attachment, data: Data)] = [:]
     var bytesMissing: Set<UUID> = []
     for attachment in attachments {
         guard attachment.hasBytes,
@@ -3676,23 +3716,27 @@ private func rebuildOrphans(_ database: any DatabaseWriter, _ attachmentStore: A
             bytesMissing.insert(attachment.messageId)
             continue
         }
-        attachmentFields[attachment.messageId] = attachment.kind == AttachmentKind.image
-            ? AttachmentWire.encodeImage(bytes)
-            : AttachmentWire.encodeFile(name: attachment.name, data: bytes)
+        attachmentBytes[attachment.messageId] = (attachment, bytes)
     }
-    return try await database.write { [attachmentFields, bytesMissing] db in
+    return try await database.write { [attachmentBytes, bytesMissing] db in
         let stuck = try GroupDelivery.where { $0.status.eq(MessageStatus.sending) }.fetchAll(db)
+        var reset: Set<UUID> = []
         let noHash: String? = nil
-        try GroupDelivery.where { $0.status.eq(MessageStatus.sending) }
-            .update {
-                $0.status = GroupDeliveryStatus.waiting
-                $0.messageHash = noHash
-            }
-            .execute(db)
         for copy in stuck {
+            if let hash = copy.messageHash, inFlight.contains(hash) { continue }
+            let row = try Message.where { $0.id.eq(copy.messageId) }.fetchOne(db)
+            guard let row, row.timestamp < launchedAt else { continue }
+            try GroupDelivery
+                .where { $0.messageId.eq(copy.messageId) && $0.memberHex.eq(copy.memberHex) }
+                .update {
+                    $0.status = GroupDeliveryStatus.waiting
+                    $0.messageHash = noHash
+                }
+                .execute(db)
             if let hash = copy.messageHash { try ProfilePhotoDelivery.applyOutcome(hash: hash, confirmed: false, db) }
+            reset.insert(copy.messageId)
         }
-        for messageId in Set(stuck.map(\.messageId)) {
+        for messageId in reset {
             try GroupDelivery.refreshDerivedStatus(messageId: messageId, db)
         }
 
@@ -3717,19 +3761,18 @@ private func rebuildOrphans(_ database: any DatabaseWriter, _ attachmentStore: A
                     .execute(db)
                 continue
             }
-            var replyFields: [MsgPackValue.IntPair] = []
-            if let replyTo = orphan.replyToHash.flatMap({ Data(hexString: $0) }), !replyTo.isEmpty {
-                replyFields = ReplyWire.encode(replyTo: replyTo, quote: orphan.replyQuote ?? "")
-            }
-            let expiryFields = orphan.expirySeconds.map { ExpiryWire.encode(seconds: $0) } ?? []
             let plan = ProfilePhotoOutbox.plan(myVersion: myVersion, myPhoto: myPhoto,
                                                delivery: try ProfilePhotoDelivery.fetch(orphan.peerHex, db),
                                                imageAllowed: imageAllowed)
+            let stored = attachmentBytes[orphan.id]
             // A millisecond apart, so two identical orphans to one peer still hash differently.
             let (message, rebuilt) = AppFeature.outgoing(
                 identity: identity, peer: peer, peerHex: orphan.peerHex, text: orphan.body,
                 now: now.addingTimeInterval(Double(index) / 1000),
-                fields: (attachmentFields[orphan.id] ?? []) + replyFields + expiryFields + plan.fields,
+                fields: AppFeature.outgoingFields(
+                    attachment: stored.map { (kind: $0.attachment.kind, name: $0.attachment.name, data: $0.data) },
+                    replyTo: orphan.replyToHash.flatMap { Data(hexString: $0) },
+                    replyQuote: orphan.replyQuote, expirySeconds: orphan.expirySeconds, photo: plan),
                 replyToHash: orphan.replyToHash, replyQuote: orphan.replyQuote)
             let newHash = rebuilt.messageHash
             try Message.where { $0.id.eq(orphan.id) }
