@@ -46,6 +46,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             let packets = (try? PushPayload.decode(notification.request.content.userInfo)) ?? []
             stash(packets)
             runtime.drainPushInbox()
+            // The hub carries no packets for mail waiting at a propagation node: go and fetch it.
+            if PushPayload.isPropagated(notification.request.content.userInfo) {
+                runtime.propagatedPush()
+            }
             return []
         }
         return [.banner, .list, .sound]

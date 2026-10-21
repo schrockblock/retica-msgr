@@ -232,5 +232,9 @@ final class AppRuntime {
         store?.send(.push(.drainInbox))
     }
 
+    func propagatedPush() {
+        store?.send(.propagatedPush)
+    }
+
     var pushStorage: PushStorage { environment.pushStorage }
 }

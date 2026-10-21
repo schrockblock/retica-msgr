@@ -33,6 +33,7 @@ private func makeStore(_ db: any DatabaseWriter, backgroundTask: BackgroundTaskC
                 case .node(.client(.endpoint(.tcpClients(.element(_, .disconnect))))):
                     log?.withValue { $0.append("disconnect") }
                 case .backgroundTimeExpired: log?.withValue { $0.append("expired") }
+                case .node(.client(.syncFromPropagationNode)): log?.withValue { $0.append("sync") }
                 default: break
                 }
                 return .none
@@ -446,4 +447,66 @@ private func isHold(_ on: Bool, _ action: AppFeature.Action) -> Bool {
     await task.waitForEnds()
     #expect(task.ended.value == [7])
     #expect(store.state.backgroundTaskID == nil)
+}
+
+// MARK: - Sync on foreground and on a propagated push (spec §3, A1)
+
+/// The default node with a propagation node configured (or not), dialled so it has a TCP slot,
+/// and the sync log.
+@MainActor
+private func syncStore(_ db: any DatabaseWriter, propagationNode: String,
+                       log: LockIsolated<[String]>) async -> TestStoreOf<AppFeature> {
+    let store = makeStore(db, log: log) { s in
+        s.$nodes.withLock { $0 = [DefaultNode.entry] }
+        s.$propagationNodeHex.withLock { $0 = propagationNode }
+    }
+    await store.send(.connectTapped)
+    await store.skipReceivedActions(strict: false)
+    return store
+}
+
+/// Mutation: return `.none` → no sync is received.
+@MainActor @Test func propagatedPushSyncs() async throws {
+    let store = await syncStore(try AppDatabase.makeInMemory(), propagationNode: pnHex, log: LockIsolated([]))
+    await store.send(.propagatedPush)
+    await store.receive(.node(.client(.syncFromPropagationNode)))
+}
+
+/// A1: only the configured node. Mutation: drop the guard → a sync is logged.
+@MainActor @Test func propagatedPushWithoutANodeDoesNothing() async throws {
+    let log = LockIsolated<[String]>([])
+    let store = await syncStore(try AppDatabase.makeInMemory(), propagationNode: "", log: log)
+    await store.send(.propagatedPush)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(log.value.isEmpty)
+}
+
+/// Mutation: never sync on foreground → the log stays empty.
+@MainActor @Test func foregroundSyncsOnceWhenTCPIsUp() async throws {
+    let log = LockIsolated<[String]>([])
+    let store = await syncStore(try AppDatabase.makeInMemory(), propagationNode: pnHex, log: log)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    log.setValue([])   // the connect synced already
+    await store.send(.foregrounded)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(log.value == ["sync"])
+}
+
+/// A redial's connect syncs, so foreground itself must not (two syncs would race one transfer).
+/// Mutation: always sync on foreground → "sync" is logged before the connect.
+@MainActor @Test func foregroundAfterCloseSyncsOnConnectOnly() async throws {
+    let log = LockIsolated<[String]>([])
+    let store = await syncStore(try AppDatabase.makeInMemory(), propagationNode: pnHex, log: log)
+    await store.send(.foregrounded)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(log.value.isEmpty)
+    await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(gaefuID, .tcp))))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(log.value == ["sync"])
 }

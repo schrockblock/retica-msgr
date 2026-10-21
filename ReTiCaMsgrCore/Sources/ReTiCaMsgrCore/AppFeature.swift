@@ -523,6 +523,9 @@ public struct AppFeature {
         /// A background push woke the process (AppDelegate). Re-dials like `foregrounded`, then
         /// drains the push inbox.
         case pushWake
+        /// A propagated push arrived while the app is in front (AppDelegate `willPresent`): the hub
+        /// says mail is waiting at a propagation node. Syncs from the configured node (A1).
+        case propagatedPush
         /// APNs issued or refreshed the device token (AppDelegate).
         case pushDeviceToken(Data)
         case pushDeviceTokenFailed(String)
@@ -931,11 +934,17 @@ public struct AppFeature {
                 // failing or falling back.
                 let release: Effect<Action> = state.outboundHeld ? .send(.node(.client(.holdOutbound(false)))) : .none
                 state.outboundHeld = false
+                // A redial's `interfaceConnected` already syncs from the propagation node; only a
+                // foreground that dials nothing needs to ask.
+                let sync = tcpDownIDs(state).isEmpty ? propagationSyncEffect(state) : .none
                 return .merge(redialDownNodes(&state, restartListener: resumed), .send(.push(.drainInbox)), expiryCatchUp,
-                              endBackgroundTask(&state), release)
+                              endBackgroundTask(&state), release, sync)
 
             case .pushWake:
                 return .merge(redialDownNodes(&state, restartListener: false), .send(.push(.drainInbox)))
+
+            case .propagatedPush:
+                return propagationSyncEffect(state)
 
             case let .pushDeviceToken(token):
                 return .send(.push(.deviceTokenReceived(token)))
@@ -3285,6 +3294,19 @@ private func propagationChangeEffects(_ state: AppFeature.State, from before: St
     )
 }
 
+/// The TCP slots whose interface is not connected: what a re-dial dials, and what a foreground
+/// sync leaves to `interfaceConnected`.
+private func tcpDownIDs(_ state: AppFeature.State) -> [InterfaceID] {
+    state.node.client.endpoint.tcpClients.ids.filter { !state.connectedInterfaces.contains($0) }
+}
+
+/// Fetch from the configured propagation node, if there is one (spec 2026-10-21 §3, A1: never
+/// from a node the app was not told to use).
+private func propagationSyncEffect(_ state: AppFeature.State) -> Effect<AppFeature.Action> {
+    guard let pn = Data(hexString: state.effectivePropagationNodeHex), pn.count == 16 else { return .none }
+    return .send(.node(.client(.syncFromPropagationNode)))
+}
+
 /// The `.foregrounded`/`.pushWake` re-dial (spec §3): iOS tears sockets down while suspended,
 /// so every enabled node whose interface is not connected is dialed again; a live node is left
 /// alone (re-dialling it would tear down its links on every app switch). The listener restarts
@@ -3311,7 +3333,7 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
     let radioRestart: Effect<AppFeature.Action> =
         state.meshtasticSwap == nil && state.node.client.endpoint.meshtastic != nil
             ? .send(.node(.client(.endpoint(.meshtastic(.start))))) : .none
-    let down = state.node.client.endpoint.tcpClients.ids.filter { !state.connectedInterfaces.contains($0) }
+    let down = tcpDownIDs(state)
     let noClientSlots = state.node.client.endpoint.tcpClients.isEmpty
     guard !down.isEmpty || noClientSlots else { return .concatenate(sync.removals, sync.meshtastic, radioRestart) }
     // Final-review M1: "nothing is up" alone is not enough — with no enabled node, no listener, no
