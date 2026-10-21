@@ -94,6 +94,19 @@ public struct AppFeature {
     /// An inbound transfer that stops reporting for this long is dropped from the UI.
     public static let inboundTransferTimeout: Duration = .seconds(60)
 
+    /// How long before iOS's background time runs out the app holds and closes on its own, so the
+    /// close lands while the process still runs (amendment A4). iOS's own expiry is the backstop.
+    public static let backgroundTimeMargin: TimeInterval = 5
+    /// The early deadline when the time left is huge or infinite (as it reads in the foreground).
+    public static let backgroundDeadlineCap: TimeInterval = 25
+
+    /// The early deadline for `remaining` seconds of background time: the margin before it, at
+    /// least zero, at most the cap.
+    static func backgroundDeadline(remaining: TimeInterval) -> TimeInterval {
+        guard remaining.isFinite else { return backgroundDeadlineCap }
+        return min(max(0, remaining - backgroundTimeMargin), backgroundDeadlineCap)
+    }
+
     /// What the open thread is (spec 2026-10-09 §3): `openPeerHex` holds a peer's address or a
     /// group's id accordingly.
     public enum ConversationKind: Equatable, Sendable { case peer, group }
@@ -692,6 +705,8 @@ public struct AppFeature {
         case expiry
         /// The background-time request and its wait for expiry. Cancelled when the task is ended.
         case backgroundTask
+        /// The early deadline before the background time runs out. Cancelled when the task is ended.
+        case backgroundDeadline
     }
 
     @Dependency(\.defaultDatabase) var database
@@ -984,7 +999,7 @@ public struct AppFeature {
                 // hub's interface dormant at once, and `.foregrounded` re-dials on return.
                 // Only the TCP clients: BLE peers keep running in the background on their own terms.
                 // Amendment A4: with sends in flight, ask for background time instead and close when
-                // they settle, the time runs out, or none is granted (`backgroundTaskBegan(nil)`).
+                // they settle, the time nearly runs out, or none is granted (`backgroundTaskBegan(nil)`).
                 // The effect stays alive until the time runs out, so `onExpire` sends through a live
                 // effect; ending the task cancels it.
                 let closeOrFinishSending: Effect<Action> = state.inFlightSends.isEmpty
@@ -1012,18 +1027,34 @@ public struct AppFeature {
                 )
 
             case let .backgroundTaskBegan(id):
+                // A grant replacing one still held gives the old one back. Only its `end`: the
+                // begin effect that sent this one shares the cancel ID and must keep running.
+                var replaced: Effect<Action> = .none
+                if let held = state.backgroundTaskID, held != id {
+                    replaced = .run { [backgroundTask] _ in await backgroundTask.end(held) }
+                }
                 state.backgroundTaskID = id
                 // Foregrounded before iOS answered: the time is not needed and the sockets stay open.
-                if state.isForeground { return endBackgroundTask(&state) }
+                if state.isForeground { return .merge(replaced, endBackgroundTask(&state)) }
                 // None granted, or the last send settled while asking: close now, as with nothing
                 // in flight.
                 guard id != nil, !state.inFlightSends.isEmpty else {
                     let close = closeHubSockets(state)
-                    return .merge(close, endBackgroundTask(&state))
+                    return .merge(replaced, close, endBackgroundTask(&state))
                 }
-                return .none
+                // Hold and close early, while the process certainly still runs: by the time iOS's
+                // expiry handler has ended the task, a close sent from the reducer usually lands
+                // after suspension, leaving the hub writing into a socket nobody reads.
+                return .merge(replaced, .run { [backgroundTask, clock] send in
+                    let deadline = AppFeature.backgroundDeadline(remaining: await backgroundTask.remaining())
+                    try await clock.sleep(for: .seconds(deadline))
+                    await send(.backgroundTimeExpired)
+                }
+                .cancellable(id: CancelID.backgroundDeadline, cancelInFlight: true))
 
             case .backgroundTimeExpired:
+                // Sent by the early deadline and, as a backstop, by iOS's expiry: whichever comes
+                // second finds no task held.
                 guard state.backgroundTaskID != nil else { return .none }
                 // Hold FIRST: ReTiCA's hold protects an attempt only if it is already on when the
                 // link-closed events of the closing sockets reach the router (`holdOutbound` doc).
@@ -2741,11 +2772,12 @@ public struct AppFeature {
     }
 
     /// Gives back the background time held for sends in flight, if any, and stops waiting for it
-    /// to run out. Clearing the id first makes it once only.
+    /// to run out (iOS's expiry and the early deadline both). Clearing the id first makes it once only.
     private func endBackgroundTask(_ state: inout State) -> Effect<Action> {
         guard let id = state.backgroundTaskID else { return .none }
         state.backgroundTaskID = nil
-        return .merge(.cancel(id: CancelID.backgroundTask), .run { [backgroundTask] _ in await backgroundTask.end(id) })
+        return .merge(.cancel(id: CancelID.backgroundTask), .cancel(id: CancelID.backgroundDeadline),
+                      .run { [backgroundTask] _ in await backgroundTask.end(id) })
     }
 
     /// A send settled. If it was the last one and the app is in the background on borrowed time,

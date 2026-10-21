@@ -15,11 +15,12 @@ import ReTiCAPush
 
 // MARK: - Helpers (mirrors AppFeatureTests.makeStore)
 
-/// `log`, when given, records each hold and TCP disconnect the store reduces, in order: a `.off`
-/// TestStore cannot assert an action absent, nor the order of two it skipped past.
+/// `log`, when given, records each hold, TCP disconnect and `backgroundTimeExpired` the store
+/// reduces, in order: a `.off` TestStore cannot assert an action absent, nor the order of two it
+/// skipped past.
 @MainActor
 private func makeStore(_ db: any DatabaseWriter, backgroundTask: BackgroundTaskClient? = nil,
-                       log: LockIsolated<[String]>? = nil,
+                       log: LockIsolated<[String]>? = nil, clock: TestClock<Duration> = TestClock(),
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: Identity())
     configure?(&initial)
@@ -31,6 +32,7 @@ private func makeStore(_ db: any DatabaseWriter, backgroundTask: BackgroundTaskC
                 case let .node(.client(.holdOutbound(on))): log?.withValue { $0.append("hold(\(on))") }
                 case .node(.client(.endpoint(.tcpClients(.element(_, .disconnect))))):
                     log?.withValue { $0.append("disconnect") }
+                case .backgroundTimeExpired: log?.withValue { $0.append("expired") }
                 default: break
                 }
                 return .none
@@ -43,7 +45,7 @@ private func makeStore(_ db: any DatabaseWriter, backgroundTask: BackgroundTaskC
         $0.date = .constant(Date(timeIntervalSince1970: 1700000000))
         $0.transportDate = .constant(Date(timeIntervalSince1970: 1700000000))
         $0.uuid = .incrementing
-        $0.continuousClock = TestClock()
+        $0.continuousClock = clock
         $0.tcpConnection = TCPConnection(open: { _, _ in AsyncStream { _ in } }, send: { _ in }, close: { })
         $0.tcpListener = TCPListener(listen: { _ in AsyncStream { _ in } }, send: { _, _ in }, close: { _ in }, stop: { })
         $0.bleDriver = BLEDriver(start: { _ in AsyncStream { _ in } }, readIdentity: { _ in }, openChannel: { _ in },
@@ -167,14 +169,20 @@ private func firstRow(_ db: any DatabaseWriter) async throws -> Message {
 private let gaefuID = DefaultNode.entry.interfaceID
 private let inFlightHash = Data(repeating: 5, count: 32)
 
-/// A `BackgroundTaskClient` that grants `granted`, keeps `onExpire` so a test can run the time
-/// out, and records every `end`.
+/// A `BackgroundTaskClient` that grants `granted` with `remaining` seconds left, keeps `onExpire`
+/// so a test can run the time out, and records every `end`.
 private final class BackgroundTaskStub: Sendable {
     let granted: Int?
+    let remaining: TimeInterval
     let onExpire = LockIsolated<(@Sendable () -> Void)?>(nil)
     let ended = LockIsolated<[Int]>([])
+    /// One per `waitForEnds` call, nudged on every `end`.
+    private let listeners = LockIsolated<[AsyncStream<Void>.Continuation]>([])
 
-    init(granted: Int?) { self.granted = granted }
+    init(granted: Int?, remaining: TimeInterval = 30) {
+        self.granted = granted
+        self.remaining = remaining
+    }
 
     var client: BackgroundTaskClient {
         BackgroundTaskClient(
@@ -182,16 +190,36 @@ private final class BackgroundTaskStub: Sendable {
                 onExpire.setValue(expire)
                 return granted
             },
-            end: { [self] id in ended.withValue { $0.append(id) } })
+            end: { [self] id in
+                ended.withValue { $0.append(id) }
+                for listener in listeners.value { listener.yield() }
+            },
+            remaining: { [self] in remaining })
+    }
+
+    /// `end` runs in an effect the test cannot await: wait until `count` ends are recorded, for at
+    /// most five seconds (the caller's expectation then reports a shortfall).
+    func waitForEnds(_ count: Int = 1) async {
+        let (nudges, listener) = AsyncStream.makeStream(of: Void.self)
+        listeners.withValue { $0.append(listener) }
+        listener.yield()   // ends recorded before this call count too
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [ended] in
+                for await _ in nudges where ended.value.count >= count { return }
+            }
+            group.addTask { try? await Task.sleep(for: .seconds(5)) }
+            await group.next()
+            group.cancelAll()
+        }
     }
 }
 
 /// The default node, dialled so it has a TCP slot to close; `inFlight` puts one send in flight.
 @MainActor
 private func backgroundStore(_ db: any DatabaseWriter, task: BackgroundTaskStub? = nil, inFlight: Bool,
-                             log: LockIsolated<[String]>,
+                             log: LockIsolated<[String]>, clock: TestClock<Duration> = TestClock(),
                              configure: ((inout AppFeature.State) -> Void)? = nil) async -> TestStoreOf<AppFeature> {
-    let store = makeStore(db, backgroundTask: task?.client, log: log) { s in
+    let store = makeStore(db, backgroundTask: task?.client, log: log, clock: clock) { s in
         s.$nodes.withLock { $0 = [DefaultNode.entry] }
         if inFlight { s.inFlightSends = [inFlightHash] }
         configure?(&s)
@@ -209,12 +237,6 @@ private func isDisconnect(_ action: AppFeature.Action) -> Bool {
 private func isHold(_ on: Bool, _ action: AppFeature.Action) -> Bool {
     if case .node(.client(.holdOutbound(on))) = action { return true }
     return false
-}
-
-/// `end` runs in an effect the test cannot await, so wait (bounded) for it to be recorded.
-@MainActor
-private func waitForEnd(_ task: BackgroundTaskStub) async {
-    for _ in 0..<1000 where task.ended.value.isEmpty { await Task.yield() }
 }
 
 /// Mutation: always begin a background task → the unimplemented `begin` fails the test.
@@ -248,7 +270,7 @@ private func waitForEnd(_ task: BackgroundTaskStub) async {
     await store.receive(.backgroundTaskBegan(7))
     await store.send(.node(.client(.delegate(.deliveryConfirmed(messageHash: inFlightHash)))))
     await store.receive(isDisconnect)
-    await waitForEnd(task)
+    await task.waitForEnds()
     #expect(task.ended.value == [7])
     #expect(store.state.backgroundTaskID == nil)
     // A second terminal outcome for the same send closes nothing more.
@@ -282,7 +304,7 @@ private func waitForEnd(_ task: BackgroundTaskStub) async {
     await store.receive(.backgroundTimeExpired)
     await store.receive { isHold(true, $0) }
     await store.receive(isDisconnect)
-    await waitForEnd(task)
+    await task.waitForEnds()
     #expect(task.ended.value == [7])
     #expect(store.state.outboundHeld)
     #expect(store.state.backgroundTaskID == nil)
@@ -301,7 +323,7 @@ private func waitForEnd(_ task: BackgroundTaskStub) async {
     await store.receive(.backgroundTimeExpired)
     await store.receive(isDisconnect)
     await store.skipReceivedActions(strict: false)
-    #expect(log.value == ["hold(true)", "disconnect"])
+    #expect(log.value == ["expired", "hold(true)", "disconnect"])
 }
 
 /// Mutation: never release → no `holdOutbound(false)` and `outboundHeld` stays true.
@@ -336,7 +358,7 @@ private func waitForEnd(_ task: BackgroundTaskStub) async {
     await store.send(.backgrounded)
     await store.receive(.backgroundTaskBegan(7))
     await store.send(.foregrounded)
-    await waitForEnd(task)
+    await task.waitForEnds()
     await store.skipReceivedActions(strict: false)
     #expect(task.ended.value == [7])
     #expect(store.state.backgroundTaskID == nil)
@@ -352,7 +374,76 @@ private func waitForEnd(_ task: BackgroundTaskStub) async {
         $0.inFlightSends = [inFlightHash]
     }
     await store.send(.backgroundTaskBegan(7))
-    await waitForEnd(task)
+    await task.waitForEnds()
+    #expect(task.ended.value == [7])
+    #expect(store.state.backgroundTaskID == nil)
+}
+
+/// The app holds and closes 5 s before iOS's time runs out, while the process surely still runs.
+/// Mutation: no early-deadline timer → nothing happens until iOS's expiry.
+@MainActor @Test func earlyDeadlineHoldsAndClosesBeforeExpiry() async throws {
+    let log = LockIsolated<[String]>([])
+    let clock = TestClock()
+    let task = BackgroundTaskStub(granted: 7, remaining: 30)
+    let store = await backgroundStore(try AppDatabase.makeInMemory(), task: task, inFlight: true, log: log,
+                                      clock: clock)
+    await store.send(.backgrounded)
+    await store.receive(.backgroundTaskBegan(7))
+    await clock.advance(by: .seconds(24))
+    #expect(log.value.isEmpty, "not before remaining − 5 s")
+    await clock.advance(by: .seconds(1))
+    await store.receive(.backgroundTimeExpired)
+    await store.receive(isDisconnect)
+    await task.waitForEnds()
+    await store.skipReceivedActions(strict: false)
+    #expect(log.value == ["expired", "hold(true)", "disconnect"])
+    #expect(task.ended.value == [7])
+    #expect(store.state.outboundHeld)
+}
+
+/// Mutation: don't cancel the early deadline when the task ends → it still fires after foreground.
+@MainActor @Test func foregroundCancelsTheEarlyDeadline() async throws {
+    let log = LockIsolated<[String]>([])
+    let clock = TestClock()
+    let task = BackgroundTaskStub(granted: 7, remaining: 30)
+    let store = await backgroundStore(try AppDatabase.makeInMemory(), task: task, inFlight: true, log: log,
+                                      clock: clock)
+    await store.send(.backgrounded)
+    await store.receive(.backgroundTaskBegan(7))
+    await clock.advance(by: .seconds(10))
+    await store.send(.foregrounded)
+    await clock.advance(by: .seconds(20))
+    await store.skipReceivedActions(strict: false)
+    #expect(log.value.isEmpty)
+    #expect(store.state.outboundHeld == false)
+}
+
+/// A second grant while one is still held gives the first back.
+/// Mutation: overwrite the held id without ending it → `end(3)` is never called.
+@MainActor @Test func replacedGrantEndsTheHeldOne() async throws {
+    let task = BackgroundTaskStub(granted: 7)
+    let store = makeStore(try AppDatabase.makeInMemory(), backgroundTask: task.client) {
+        $0.isForeground = false
+        $0.inFlightSends = [inFlightHash]
+        $0.backgroundTaskID = 3
+    }
+    await store.send(.backgroundTaskBegan(7))
+    await task.waitForEnds()
+    #expect(task.ended.value == [3])
+    #expect(store.state.backgroundTaskID == 7)
+}
+
+/// Every send settled while iOS was still answering: nothing is left to finish.
+/// Mutation: drop the `inFlightSends.isEmpty` check → the id is kept and the sockets stay open.
+@MainActor @Test func sendsSettledWhileAskingCloseOnTheGrant() async throws {
+    let log = LockIsolated<[String]>([])
+    let task = BackgroundTaskStub(granted: 7)
+    let store = await backgroundStore(try AppDatabase.makeInMemory(), task: task, inFlight: false, log: log) {
+        $0.isForeground = false
+    }
+    await store.send(.backgroundTaskBegan(7))
+    await store.receive(isDisconnect)
+    await task.waitForEnds()
     #expect(task.ended.value == [7])
     #expect(store.state.backgroundTaskID == nil)
 }
