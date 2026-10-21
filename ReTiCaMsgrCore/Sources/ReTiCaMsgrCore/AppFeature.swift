@@ -183,6 +183,13 @@ public struct AppFeature {
         /// builds and stores its message first). Ended by `.handOverEnded`, or by a failure action
         /// that sends nothing (`attachmentSendFailed`). Counts as in flight for `.backgrounded`.
         public var pendingHandOvers = 0
+        /// When this run launched (`onLaunch`), nil before. A `sending` one-to-one row stamped
+        /// before it was left by a previous run: ReTiCA held it in memory only, so nothing will
+        /// ever settle it. Session-only.
+        public var launchedAt: Date? = nil
+        /// Whether this launch's orphans were resent: done once, on the first `interfaceConnected`
+        /// after `onLaunch`. Session-only.
+        public var orphansResent = false
         /// Whether the TCP sockets were closed for the background (`closeHubSockets`). Cleared on
         /// foreground and on the next `interfaceConnected` (a push wake re-dials). Session-only.
         var hubSocketsClosed = false
@@ -530,6 +537,9 @@ public struct AppFeature {
         /// An effect-side hand-over finished: its message(s) went to the node, or it threw before
         /// they could. Ends the reservation in `pendingHandOvers`. Internal.
         case handOverEnded
+        /// The launch resend gave these orphans new hashes (old → new hex). The rows and every
+        /// stored reference already moved; this moves the composer's reply target too. Internal.
+        case orphansRehashed([String: String])
         /// A background push woke the process (AppDelegate). Re-dials like `foregrounded`, then
         /// drains the push inbox.
         case pushWake
@@ -793,6 +803,9 @@ public struct AppFeature {
         Reduce { state, action in
             switch action {
             case .onLaunch:
+                // Rows this run sends are stamped from here on; older `sending` rows are orphans
+                // the first `interfaceConnected` resends. Kept if `onLaunch` ever runs twice.
+                if state.launchedAt == nil { state.launchedAt = date.now }
                 migrateNodesIfNeeded(&state, makeID: { uuid() })
                 // Amendment A13 at launch too (backlog item 19): a list persisted with no push hex
                 // at all (an earlier dev build) regains the default now, not on the next edit.
@@ -1096,6 +1109,12 @@ public struct AppFeature {
                 state.pendingHandOvers = max(0, state.pendingHandOvers - 1)
                 return finishSendingInBackground(&state)
 
+            case let .orphansRehashed(rehashed):
+                if let target = state.replyTarget, let newHash = rehashed[target.messageHash] {
+                    state.replyTarget?.messageHash = newHash
+                }
+                return .none
+
             case ._flushLearnedDestinations:
                 // Debounce timer fired: write the current learned table. The table may have grown
                 // since the timer was armed; we always write the latest snapshot, so rapid
@@ -1179,8 +1198,18 @@ public struct AppFeature {
                     state.outboundHeld = false
                     effects.append(.send(.node(.client(.holdOutbound(false)))))
                 }
-                // Group copies waiting on members whose persisted path just became usable.
-                effects.append(groupDispatchEffect(state, members: state.reachablePeers))
+                // Group copies waiting on members whose persisted path just became usable. On the
+                // first interface of a launch, the previous run's orphans go first: their group
+                // copies go back to waiting, so this same dispatch sends them to reachable members.
+                let groupDispatch = groupDispatchEffect(state, members: state.reachablePeers)
+                if let launchedAt = state.launchedAt, !state.orphansResent {
+                    state.orphansResent = true
+                    // Reserved like `sendTapped`'s send, until the rebuilt orphans are handed over.
+                    state.pendingHandOvers += 1
+                    effects.append(.concatenate(resendOrphansEffect(state, launchedAt: launchedAt), groupDispatch))
+                } else {
+                    effects.append(groupDispatch)
+                }
                 // I1: a registration the push feature asked for before the hub socket was up is
                 // resumed now — only for the push node's interface (the hub sits behind it), and
                 // only after registerDelivery/the announce above, so the hub sees the registration
@@ -2951,6 +2980,37 @@ public struct AppFeature {
                                 title: title, content: Data(body.utf8), fields: fields)
     }
 
+    /// Resend on launch: rebuilds the previous run's orphans (`rebuildOrphans`), hands each one to
+    /// the node, then ends the reservation the reducer made in `pendingHandOvers`, and reloads.
+    private func resendOrphansEffect(_ state: State, launchedAt: Date) -> Effect<Action> {
+        let identity = state.identity
+        let now = date.now
+        let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
+        let myVersion = state.myPhotoVersion
+        let imageAllowed = state.profilePhotoMayRide
+        let avatarStore = self.avatarStore
+        let attachmentStore = self.attachmentStore
+        let openPeer = state.openPeerHex
+        return .run { [database] send in
+            var rehashed: [String: String] = [:]
+            try await handingOver(send) {
+                let rebuilt = try await rebuildOrphans(
+                    database, attachmentStore, identity: identity, launchedAt: launchedAt, now: now,
+                    myVersion: myVersion, myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                    imageAllowed: imageAllowed)
+                rehashed = rebuilt.rehashed
+                for message in rebuilt.messages {
+                    await send(.node(.client(.sendMessage(message: message, fallbackToPropagation: fallbackToPropagation))))
+                }
+            }
+            if !rehashed.isEmpty { await send(.orphansRehashed(rehashed)) }
+            try await reloadConversations(database, send)
+            if let openPeer { try await reloadThread(database, openPeer, send) }
+        } catch: { error, _ in
+            AppFeature.inbound.error("resend on launch failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
     /// Spec §3 "Deferred copies": sends the waiting group copies addressed to `members`, then
     /// reloads if anything went out. Used at `pathLearned`, `interfaceConnected` and the launch
     /// seeding of reachable peers, and at `groupRosterChanged` with `groupHex` set so only that
@@ -3574,6 +3634,124 @@ private func stampViewed(_ database: any DatabaseWriter, _ peerHex: String, now:
             try Message.where { $0.id.eq(row.id) }.update { $0.expiresAt = due }.execute(db)
         }
         return unstamped.count
+    }
+}
+
+/// Resend on launch (brief 2026-10-21). ReTiCA keeps pending sends in memory only, so a row a
+/// previous run left `sending` never settles. In one write:
+/// - every group copy left `sending` goes back to waiting with no hash, so the group dispatch
+///   sends it again once the member has a path, and its row's derived status is refreshed;
+/// - every one-to-one outgoing `sending` row stamped before `launchedAt` (timer-change lines
+///   excepted) is rebuilt with its attachment, reply and expiry and a fresh profile-photo plan,
+///   under a new LXMF timestamp and so a new hash. Every local reference to the old hash moves
+///   with it: the reactions on it and other rows' `replyToHash`. A profile photo pending on the
+///   old hash is settled as not delivered and re-planned, so a photo that never arrived rides again;
+/// - a row to a peer blocked since the send (spec 2026-10-15 §2), or whose attachment bytes are
+///   gone, is marked failed instead.
+/// Attachment bytes are read before the write, so the writer is not held on file reads. A row that
+/// changed in between is left alone. Returns the messages to hand over, in send order, and the
+/// rehashed rows (old → new hex).
+private func rebuildOrphans(_ database: any DatabaseWriter, _ attachmentStore: AttachmentStore,
+                            identity: Identity, launchedAt: Date, now: Date,
+                            myVersion: String, myPhoto: Data?, imageAllowed: Bool)
+    async throws -> (messages: [LXMessage], rehashed: [String: String]) {
+    let (listed, attachments) = try await database.read { db in
+        let orphans = try Message
+            .where {
+                $0.isOutgoing.eq(true) && $0.status.eq(MessageStatus.sending) && $0.groupHex.is(nil)
+                    && $0.isTimerChange.eq(false) && $0.timestamp < launchedAt
+            }
+            .order(by: \.timestamp)
+            .fetchAll(db)
+        let ids = orphans.map(\.id)
+        return (orphans, try Attachment.where { $0.messageId.in(ids) }.fetchAll(db))
+    }
+    // The attachment field (0x05 or 0x06) of each row that has one, as at the first send.
+    var attachmentFields: [UUID: [MsgPackValue.IntPair]] = [:]
+    var bytesMissing: Set<UUID> = []
+    for attachment in attachments {
+        guard attachment.hasBytes,
+              let bytes = try? Data(contentsOf: attachmentStore.url(forRelativePath: attachment.path))
+        else {
+            bytesMissing.insert(attachment.messageId)
+            continue
+        }
+        attachmentFields[attachment.messageId] = attachment.kind == AttachmentKind.image
+            ? AttachmentWire.encodeImage(bytes)
+            : AttachmentWire.encodeFile(name: attachment.name, data: bytes)
+    }
+    return try await database.write { [attachmentFields, bytesMissing] db in
+        let stuck = try GroupDelivery.where { $0.status.eq(MessageStatus.sending) }.fetchAll(db)
+        let noHash: String? = nil
+        try GroupDelivery.where { $0.status.eq(MessageStatus.sending) }
+            .update {
+                $0.status = GroupDeliveryStatus.waiting
+                $0.messageHash = noHash
+            }
+            .execute(db)
+        for copy in stuck {
+            if let hash = copy.messageHash { try ProfilePhotoDelivery.applyOutcome(hash: hash, confirmed: false, db) }
+        }
+        for messageId in Set(stuck.map(\.messageId)) {
+            try GroupDelivery.refreshDerivedStatus(messageId: messageId, db)
+        }
+
+        var messages: [LXMessage] = []
+        var rehashed: [String: String] = [:]
+        for (index, entry) in listed.enumerated() {
+            // Re-read: an earlier orphan's rehash may have moved this row's `replyToHash`.
+            let fetched = try Message.where { $0.id.eq(entry.id) }.fetchOne(db)
+            guard let orphan = fetched, orphan.status == MessageStatus.sending,
+                  orphan.messageHash == entry.messageHash else { continue }
+            let oldHash = orphan.messageHash
+            // The photo pending on the old hash will never be settled by the node.
+            try ProfilePhotoDelivery.applyOutcome(hash: oldHash, confirmed: false, db)
+            let blocked = try BlockedPeer.fetch(peerHex: orphan.peerHex.lowercased(), db) != nil
+            guard !blocked, !bytesMissing.contains(orphan.id), let peer = Data(hexString: orphan.peerHex) else {
+                let failedAt: Date? = orphan.failedAt ?? now
+                try Message.where { $0.id.eq(orphan.id) }
+                    .update {
+                        $0.status = MessageStatus.failed
+                        $0.failedAt = failedAt
+                    }
+                    .execute(db)
+                continue
+            }
+            var replyFields: [MsgPackValue.IntPair] = []
+            if let replyTo = orphan.replyToHash.flatMap({ Data(hexString: $0) }), !replyTo.isEmpty {
+                replyFields = ReplyWire.encode(replyTo: replyTo, quote: orphan.replyQuote ?? "")
+            }
+            let expiryFields = orphan.expirySeconds.map { ExpiryWire.encode(seconds: $0) } ?? []
+            let plan = ProfilePhotoOutbox.plan(myVersion: myVersion, myPhoto: myPhoto,
+                                               delivery: try ProfilePhotoDelivery.fetch(orphan.peerHex, db),
+                                               imageAllowed: imageAllowed)
+            // A millisecond apart, so two identical orphans to one peer still hash differently.
+            let (message, rebuilt) = AppFeature.outgoing(
+                identity: identity, peer: peer, peerHex: orphan.peerHex, text: orphan.body,
+                now: now.addingTimeInterval(Double(index) / 1000),
+                fields: (attachmentFields[orphan.id] ?? []) + replyFields + expiryFields + plan.fields,
+                replyToHash: orphan.replyToHash, replyQuote: orphan.replyQuote)
+            let newHash = rebuilt.messageHash
+            try Message.where { $0.id.eq(orphan.id) }
+                .update {
+                    $0.messageHash = newHash
+                    $0.senderTimestamp = rebuilt.senderTimestamp
+                    $0.wireSize = rebuilt.wireSize
+                    $0.titleSize = rebuilt.titleSize
+                    $0.contentSize = rebuilt.contentSize
+                    $0.fieldKeys = rebuilt.fieldKeys
+                }
+                .execute(db)
+            try Reaction.where { $0.messageHash.eq(oldHash) }.update { $0.messageHash = newHash }.execute(db)
+            let newReplyTo: String? = newHash
+            try Message.where { $0.replyToHash.eq(oldHash) }.update { $0.replyToHash = newReplyTo }.execute(db)
+            if let version = plan.pendingVersion {
+                try ProfilePhotoDelivery.markPending(orphan.peerHex, version: version, hash: newHash, db)
+            }
+            rehashed[oldHash] = newHash
+            messages.append(message)
+        }
+        return (messages, rehashed)
     }
 }
 
