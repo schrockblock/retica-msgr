@@ -166,6 +166,12 @@ public struct AppFeature {
         /// Hashes of sends handed to the node and not yet settled: inserted on `sendMessage`,
         /// removed by every terminal delegate (an unknown hash is a no-op). Session-only.
         public var inFlightSends: Set<Data> = []
+        /// The background time held while sends finish after `.backgrounded` (amendment A4), nil
+        /// when none is held. Ended when the last send settles, the time runs out, or on foreground.
+        public var backgroundTaskID: Int? = nil
+        /// Whether ReTiCA's outbound retries are held (amendment A3): set when the background time
+        /// ran out, released on foreground or the next `interfaceConnected`. Session-only.
+        public var outboundHeld = false
         /// Inbound transfers by link ID, from `inboundTransferProgress`. Session-only.
         public var inboundTransfers: [Data: InboundTransfer] = [:]
 
@@ -496,6 +502,11 @@ public struct AppFeature {
         /// The app entered the background (UIApplication.didEnterBackgroundNotification). Used to
         /// flush the debounced learned-destination write before the process may be killed by the OS.
         case backgrounded
+        /// iOS answered the background-time request `.backgrounded` made for sends in flight: the
+        /// task's id, or nil when none was granted. Internal.
+        case backgroundTaskBegan(Int?)
+        /// That background time ran out with sends still in flight. Internal.
+        case backgroundTimeExpired
         /// A background push woke the process (AppDelegate). Re-dials like `foregrounded`, then
         /// drains the push inbox.
         case pushWake
@@ -679,6 +690,8 @@ public struct AppFeature {
         /// The one sleeper waiting for the earliest `expiresAt` (spec §3). Re-armed with
         /// `cancelInFlight` after every purge, so it always waits for the current earliest row.
         case expiry
+        /// The background-time request and its wait for expiry. Cancelled when the task is ended.
+        case backgroundTask
     }
 
     @Dependency(\.defaultDatabase) var database
@@ -689,6 +702,7 @@ public struct AppFeature {
     @Dependency(\.attachmentStore) var attachmentStore
     @Dependency(\.attachmentCacheEvictor) var attachmentCacheEvictor
     @Dependency(\.avatarStore) var avatarStore
+    @Dependency(\.backgroundTask) var backgroundTask
 
     /// Path expiry for pruning `learnedDestinationRows`, taken from the library rather than copied.
     ///
@@ -897,7 +911,13 @@ public struct AppFeature {
                 let resumed = state.suspendedSinceForeground
                 state.suspendedSinceForeground = false
                 let expiryCatchUp = viewOpenThreadEffect(state)
-                return .merge(redialDownNodes(&state, restartListener: resumed), .send(.push(.drainInbox)), expiryCatchUp)
+                // Background time is no longer needed, and a hold must not outlive the background
+                // (amendment A3): opened with no connectivity, it would stop every send from ever
+                // failing or falling back.
+                let release: Effect<Action> = state.outboundHeld ? .send(.node(.client(.holdOutbound(false)))) : .none
+                state.outboundHeld = false
+                return .merge(redialDownNodes(&state, restartListener: resumed), .send(.push(.drainInbox)), expiryCatchUp,
+                              endBackgroundTask(&state), release)
 
             case .pushWake:
                 return .merge(redialDownNodes(&state, restartListener: false), .send(.push(.drainInbox)))
@@ -963,13 +983,26 @@ public struct AppFeature {
                 // cellular was 2–15 minutes (2026-10-02 hub investigation). A clean FIN makes the
                 // hub's interface dormant at once, and `.foregrounded` re-dials on return.
                 // Only the TCP clients: BLE peers keep running in the background on their own terms.
-                let closeHubSocket: Effect<Action> = .merge(
-                    state.node.client.endpoint.tcpClients.ids.map {
-                        .send(.node(.client(.endpoint(.tcpClients(.element(id: $0, action: .disconnect))))))
-                    })
+                // Amendment A4: with sends in flight, ask for background time instead and close when
+                // they settle, the time runs out, or none is granted (`backgroundTaskBegan(nil)`).
+                // The effect stays alive until the time runs out, so `onExpire` sends through a live
+                // effect; ending the task cancels it.
+                let closeOrFinishSending: Effect<Action> = state.inFlightSends.isEmpty
+                    ? closeHubSockets(state)
+                    : .run { [backgroundTask] send in
+                        let (expired, expire) = AsyncStream.makeStream(of: Void.self)
+                        let id = await backgroundTask.begin { expire.yield() }
+                        await send(.backgroundTaskBegan(id))
+                        guard id != nil else { return }
+                        for await _ in expired {
+                            await send(.backgroundTimeExpired)
+                            return
+                        }
+                    }
+                    .cancellable(id: CancelID.backgroundTask)
                 return .merge(
                     .cancel(id: CancelID.learnedDebounce),
-                    closeHubSocket,
+                    closeOrFinishSending,
                     .run { [database] _ in
                         try await writeLearnedDestinations(learnedToFlush, to: database)
                     },
@@ -977,6 +1010,26 @@ public struct AppFeature {
                     // case the process is suspended and killed before that second passes.
                     .run { [drafts = state.$drafts] _ in try await drafts.save() }
                 )
+
+            case let .backgroundTaskBegan(id):
+                state.backgroundTaskID = id
+                // Foregrounded before iOS answered: the time is not needed and the sockets stay open.
+                if state.isForeground { return endBackgroundTask(&state) }
+                // None granted, or the last send settled while asking: close now, as with nothing
+                // in flight.
+                guard id != nil, !state.inFlightSends.isEmpty else {
+                    let close = closeHubSockets(state)
+                    return .merge(close, endBackgroundTask(&state))
+                }
+                return .none
+
+            case .backgroundTimeExpired:
+                guard state.backgroundTaskID != nil else { return .none }
+                // Hold FIRST: ReTiCA's hold protects an attempt only if it is already on when the
+                // link-closed events of the closing sockets reach the router (`holdOutbound` doc).
+                state.outboundHeld = true
+                let close = closeHubSockets(state)
+                return .concatenate(.send(.node(.client(.holdOutbound(true)))), close, endBackgroundTask(&state))
 
             case ._flushLearnedDestinations:
                 // Debounce timer fired: write the current learned table. The table may have grown
@@ -1055,6 +1108,11 @@ public struct AppFeature {
                     .send(.node(.client(.endpoint(
                         .registerRequestHandler(path: AppFeature.publicKeyRequestPath, policy: .all))))),
                 ]
+                // Amendment A3: an interface is back, so held retries resume from where they stood.
+                if state.outboundHeld {
+                    state.outboundHeld = false
+                    effects.append(.send(.node(.client(.holdOutbound(false)))))
+                }
                 // Group copies waiting on members whose persisted path just became usable.
                 effects.append(groupDispatchEffect(state, members: state.reachablePeers))
                 // I1: a registration the push feature asked for before the hub socket was up is
@@ -2253,10 +2311,11 @@ public struct AppFeature {
             case let .node(.client(.delegate(.propagationAccepted(hash)))):
                 let hex = hash.hexString
                 state.inFlightSends.remove(hash)
+                let finished = finishSendingInBackground(&state)
                 let openPeer = state.openPeerHex
                 let accepted: Bool? = true   // Optional on purpose, like `milestoneAt`.
                 let milestoneAt: Date? = date.now
-                return .run { [database] send in
+                return .merge(finished, .run { [database] send in
                     try await database.write { db in
                         // Same hash-collision hazard as `deliveryFailed` above: scope to outgoing
                         // rows only so an incoming row sharing this hash isn't rewritten.
@@ -2285,7 +2344,7 @@ public struct AppFeature {
                     if let openPeer {
                         try await reloadThread(database, openPeer, send)
                     }
-                }
+                })
 
             case let .node(.client(.delegate(.deliveryConfirmed(hash)))):
                 // The recipient proved receipt of the delivery copy (for opportunistic sends, via
@@ -2295,12 +2354,13 @@ public struct AppFeature {
                 state.outgoingProgress[hex] = nil
                 // Idempotent: the propagated copy can also be accepted, before or after this.
                 state.inFlightSends.remove(hash)
+                let finished = finishSendingInBackground(&state)
                 let openPeer = state.openPeerHex
                 let milestoneAt: Date? = date.now
                 // Optional on purpose, like `milestoneAt`: the update subscript takes an optional
                 // expression, not a nil literal.
                 let noReason: String? = nil
-                return .run { [database] send in
+                return .merge(finished, .run { [database] send in
                     try await database.write { db in
                         // Same hash-collision hazard as `deliveryFailed` above: scope to outgoing
                         // rows only so an incoming row sharing this hash isn't rewritten.
@@ -2322,7 +2382,7 @@ public struct AppFeature {
                     if let openPeer {
                         try await reloadThread(database, openPeer, send)
                     }
-                }
+                })
 
             case let .node(.delegate(.messagesStored(entries))):
                 let rows = entries.map {
@@ -2640,9 +2700,10 @@ public struct AppFeature {
         let hex = hash.hexString
         state.outgoingProgress[hex] = nil
         state.inFlightSends.remove(hash)
+        let finished = finishSendingInBackground(&state)
         let openPeer = state.openPeerHex
         let milestoneAt: Date? = date.now
-        return .run { [database] send in
+        return .merge(finished, .run { [database] send in
             try await database.write { db in
                 try Message.where {
                     $0.messageHash.eq(hex)
@@ -2668,7 +2729,31 @@ public struct AppFeature {
             if let openPeer {
                 try await reloadThread(database, openPeer, send)
             }
-        }
+        })
+    }
+
+    /// Disconnects every TCP client: the hub's side of a suspended app's socket never goes
+    /// dormant otherwise (see `.backgrounded`). BLE peers are left to run on their own terms.
+    private func closeHubSockets(_ state: State) -> Effect<Action> {
+        .merge(state.node.client.endpoint.tcpClients.ids.map {
+            .send(.node(.client(.endpoint(.tcpClients(.element(id: $0, action: .disconnect))))))
+        })
+    }
+
+    /// Gives back the background time held for sends in flight, if any, and stops waiting for it
+    /// to run out. Clearing the id first makes it once only.
+    private func endBackgroundTask(_ state: inout State) -> Effect<Action> {
+        guard let id = state.backgroundTaskID else { return .none }
+        state.backgroundTaskID = nil
+        return .merge(.cancel(id: CancelID.backgroundTask), .run { [backgroundTask] _ in await backgroundTask.end(id) })
+    }
+
+    /// A send settled. If it was the last one and the app is in the background on borrowed time,
+    /// close the sockets now and give the time back (amendment A4).
+    private func finishSendingInBackground(_ state: inout State) -> Effect<Action> {
+        guard !state.isForeground, state.inFlightSends.isEmpty, state.backgroundTaskID != nil else { return .none }
+        let close = closeHubSockets(state)
+        return .merge(close, endBackgroundTask(&state))
     }
 
     /// The outgoing LXMessage and its `sending` row. Outgoing Info metadata: `wireSize` is the

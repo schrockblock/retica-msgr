@@ -115,6 +115,8 @@ final class AppRuntime {
             }
             // The package's liveValue only reports an issue: the app owns UIKit.
             $0.pushPlatform = .uiKit
+            // Likewise: background time for sends still in flight (spec 2026-10-21, A4).
+            $0.backgroundTask = .uiKit
             // Explicit for the same hosted-XCTest reason as `\.date` (its testValue is unimplemented):
             // the live radio scan over MeshtasticKit (spec 2026-10-16 §7 lane E).
             MeshtasticLiveWiring.installScanner(into: &$0)
