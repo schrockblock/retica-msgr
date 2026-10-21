@@ -381,10 +381,10 @@ private func isRemove(_ id: InterfaceID, _ action: AppFeature.Action) -> Bool {
     }
     await store.send(.sendTapped)
     await store.receive { action in
-        if case let .node(.client(.sendMessage(msg, alsoViaPropagation))) = action {
+        if case let .node(.client(.sendMessage(msg, fallbackToPropagation))) = action {
             #expect(msg.destinationHash == Data(hexString: peerA))
             #expect(msg.content == Data("hello".utf8))
-            #expect(alsoViaPropagation == false)
+            #expect(fallbackToPropagation == false)
             return true
         }
         return false
@@ -502,7 +502,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     }
     await store.send(.sendTapped)
     await store.receive { action in
-        if case let .node(.client(.sendMessage(_, alsoViaPropagation))) = action { return alsoViaPropagation }
+        if case let .node(.client(.sendMessage(_, fallbackToPropagation))) = action { return fallbackToPropagation }
         return false
     }
 }
@@ -515,7 +515,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     }
     await store.send(.sendTapped)
     await store.receive { action in
-        if case let .node(.client(.sendMessage(_, alsoViaPropagation))) = action { return !alsoViaPropagation }
+        if case let .node(.client(.sendMessage(_, fallbackToPropagation))) = action { return !fallbackToPropagation }
         return false
     }
 }
@@ -2446,9 +2446,9 @@ private func sendAndFetch(propagationNode: String) async -> (LXMessage?, Message
     #expect(stored.stampState == nil)
 }
 
-@MainActor @Test func infoSendRecordsPropagationNodeCopy() async throws {
+@MainActor @Test func infoSendDoesNotClaimAPropagationCopyUntilAccepted() async throws {
     let (_, row) = await sendAndFetch(propagationNode: String(repeating: "c", count: 32))
-    #expect(try #require(row).sentViaPropagation == true)
+    #expect(try #require(row).sentViaPropagation == false)
 }
 
 // MARK: - Message Info: milestone timestamps
@@ -5185,7 +5185,7 @@ private func groupSends(_ store: TestStoreOf<AppFeature>, _ action: AppFeature.A
     #expect(row.isGroupEvent == false)
     #expect(row.body == "sandbags at 6")
     #expect(row.status == MessageStatus.sending)
-    #expect(row.sentViaPropagation == true)
+    #expect(row.sentViaPropagation == false)
     #expect(row.fieldKeys == "0xfd")
     #expect(row.titleSize == 10)
     #expect(row.contentSize == 13)

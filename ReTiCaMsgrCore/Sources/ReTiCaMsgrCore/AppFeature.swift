@@ -163,6 +163,9 @@ public struct AppFeature {
         /// Outgoing transfer progress by message hash hex, from `deliveryProgress`: monotonic, and
         /// cleared by every terminal delivery outcome. Session-only.
         public var outgoingProgress: [String: Double] = [:]
+        /// Hashes of sends handed to the node and not yet settled: inserted on `sendMessage`,
+        /// removed by every terminal delegate (an unknown hash is a no-op). Session-only.
+        public var inFlightSends: Set<Data> = []
         /// Inbound transfers by link ID, from `inboundTransferProgress`. Session-only.
         public var inboundTransfers: [Data: InboundTransfer] = [:]
 
@@ -1239,7 +1242,7 @@ public struct AppFeature {
                 let reachable = others.intersection(state.reachablePeers)
                 let identity = state.identity
                 let myName = state.myName
-                let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
+                let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
                 // Spec §3: members with no path get a request now; their copies wait.
                 let pathRequests = others.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
                 let myVersion = state.myPhotoVersion
@@ -1254,7 +1257,7 @@ public struct AppFeature {
                         try GroupDelivery.refreshDerivedStatus(messageId: line.id, db)
                     }
                     _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
-                                                             myName: myName, alsoViaPropagation: alsoViaPropagation,
+                                                             myName: myName, fallbackToPropagation: fallbackToPropagation,
                                                              now: now, myVersion: myVersion,
                                                              myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                              imageAllowed: imageAllowed, send)
@@ -1268,7 +1271,7 @@ public struct AppFeature {
                 let current = Set(state.openGroupMembers.map(\.memberHex))
                 let added = Set(hexes.map { $0.lowercased() }.filter { isValidPeerAddress($0) }).subtracting(current)
                 guard !added.isEmpty, current.count + added.count <= GroupWire.maxMembers else { return .none }
-                let who = added.sorted().map { state.groupMemberName($0) }.joined(separator: ", ")
+                let who: String = added.sorted().map { state.groupMemberName($0) }.joined(separator: ", ")
                 let groupHex = group.groupHex
                 return groupChange(state, groupHex: groupHex, line: GroupEventText.added(by: GroupEventText.you, who: who),
                                    control: GroupControl.roster,
@@ -1422,7 +1425,7 @@ public struct AppFeature {
                 let knownExpiry: Int?? = state.openConversationExpiryLoaded ? .some(state.openConversationExpiry) : nil
                 let identity = state.identity
                 let now = date.now
-                let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
+                let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
                 let attachmentStore = self.attachmentStore
                 let attachmentCacheEvictor = self.attachmentCacheEvictor
                 // My profile photo (spec 2026-10-19): the plan is built in the effect from the
@@ -1447,7 +1450,7 @@ public struct AppFeature {
                                                                   myVersion: myVersion, imageAllowed: imageAllowed)
                             let (msg, row) = Self.outgoing(
                                 identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
-                                fields: replyFields + expiryFields + plan.fields, alsoViaPropagation: alsoViaPropagation,
+                                fields: replyFields + expiryFields + plan.fields,
                                 replyToHash: replyToHash, replyQuote: replyQuote,
                                 expirySeconds: expiry,
                                 expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
@@ -1457,7 +1460,7 @@ public struct AppFeature {
                                     try ProfilePhotoDelivery.markPending(peerHex, version: version, hash: row.messageHash, db)
                                 }
                             }
-                            await send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation))))
+                            await send(.node(.client(.sendMessage(message: msg, fallbackToPropagation: fallbackToPropagation))))
                             try await reloadThread(database, peerHex, send)
                             try await reloadConversations(database, send)
                             if expiry != nil {
@@ -1484,7 +1487,6 @@ public struct AppFeature {
                         let (msg, row) = Self.outgoing(
                             identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
                             fields: attachmentFields + replyFields + expiryFields + plan.fields,
-                            alsoViaPropagation: alsoViaPropagation,
                             replyToHash: replyToHash, replyQuote: replyQuote,
                             expirySeconds: expiry,
                             expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
@@ -1516,7 +1518,7 @@ public struct AppFeature {
                             await send(.attachmentSendFailed(draft: text))
                             return
                         }
-                        await send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation))))
+                        await send(.node(.client(.sendMessage(message: msg, fallbackToPropagation: fallbackToPropagation))))
                         try await reloadThread(database, peerHex, send)
                         try await reloadConversations(database, send)
                         if expiry != nil {
@@ -1551,9 +1553,9 @@ public struct AppFeature {
                     state.setThreadReactionRows(
                         state.threadReactionRows.filter { !($0.messageHash == messageHash && $0.reactorHex == me) } + [row]
                     )
-                    let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
+                    let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
                     let sends: [Effect<Action>] = copies.map {
-                        .send(.node(.client(.sendMessage(message: $0, alsoViaPropagation: alsoViaPropagation))))
+                        .send(.node(.client(.sendMessage(message: $0, fallbackToPropagation: fallbackToPropagation))))
                     }
                     return .merge(sends + [.run { [database] send in
                         _ = try await database.write { try Reaction.apply(row, $0) }
@@ -1582,9 +1584,9 @@ public struct AppFeature {
                 state.setThreadReactionRows(
                     state.threadReactionRows.filter { !($0.messageHash == messageHash && $0.reactorHex == me) } + [row]
                 )
-                let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
+                let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
                 return .merge(
-                    .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
+                    .send(.node(.client(.sendMessage(message: msg, fallbackToPropagation: fallbackToPropagation)))),
                     .run { [database] send in
                         try await database.write { try Reaction.apply(row, $0) }
                         try await reloadThread(database, peerHex, send)
@@ -2059,16 +2061,16 @@ public struct AppFeature {
                 // The user's pick is the truth from here on, ahead of the database write below.
                 state.openConversationExpiryLoaded = true
                 let now = date.now
-                let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
+                let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
                 // The change goes out as a message with a readable body (spec §1): other LXMF
                 // clients show the sentence, ReTiCaMsgr peers adopt the timer from the field.
                 let (msg, row) = Self.outgoing(
                     identity: state.identity, peer: peer, peerHex: peerHex,
                     text: ExpiryPreset.announcement(seconds: seconds), now: now,
-                    fields: ExpiryWire.encodeChange(seconds: seconds), alsoViaPropagation: alsoViaPropagation,
+                    fields: ExpiryWire.encodeChange(seconds: seconds),
                     replyToHash: nil, replyQuote: nil, isTimerChange: true)
                 return .merge(
-                    .send(.node(.client(.sendMessage(message: msg, alsoViaPropagation: alsoViaPropagation)))),
+                    .send(.node(.client(.sendMessage(message: msg, fallbackToPropagation: fallbackToPropagation)))),
                     .run { [database] send in
                         try await database.write { db in
                             try ConversationSetting.set(peerHex, seconds: seconds, at: now, db)
@@ -2250,7 +2252,9 @@ public struct AppFeature {
 
             case let .node(.client(.delegate(.propagationAccepted(hash)))):
                 let hex = hash.hexString
+                state.inFlightSends.remove(hash)
                 let openPeer = state.openPeerHex
+                let accepted: Bool? = true   // Optional on purpose, like `milestoneAt`.
                 let milestoneAt: Date? = date.now
                 return .run { [database] send in
                     try await database.write { db in
@@ -2262,6 +2266,10 @@ public struct AppFeature {
                             $0.messageHash.eq(hex) && $0.status.neq(MessageStatus.delivered) && $0.isOutgoing
                         }
                             .update { $0.status = MessageStatus.propagated }
+                            .execute(db)
+                        // The node holds a copy whatever the status says, so Info reports it.
+                        try Message.where { $0.messageHash.eq(hex) && $0.isOutgoing }
+                            .update { $0.sentViaPropagation = accepted }
                             .execute(db)
                         // Info milestone: the FIRST acceptance time, including a late acceptance
                         // after "delivered" (the status stays delivered, the time is still news).
@@ -2285,6 +2293,8 @@ public struct AppFeature {
                 // forever, because a proving peer never yields a later `deliveryFailed`.
                 let hex = hash.hexString
                 state.outgoingProgress[hex] = nil
+                // Idempotent: the propagated copy can also be accepted, before or after this.
+                state.inFlightSends.remove(hash)
                 let openPeer = state.openPeerHex
                 let milestoneAt: Date? = date.now
                 // Optional on purpose, like `milestoneAt`: the update subscript takes an optional
@@ -2458,6 +2468,10 @@ public struct AppFeature {
                 state.inboundTransfers[linkID] = nil
                 return .none
 
+            case let .node(.client(.sendMessage(message, _))):
+                state.inFlightSends.insert(message.hash)
+                return .none
+
             case .node, .binding, .pushRegistrationTimedOut, .unregisterFromHub:
                 return .none
 
@@ -2625,6 +2639,7 @@ public struct AppFeature {
     private func markUndeliverable(_ state: inout State, _ hash: Data, status: String, reason: String?) -> Effect<Action> {
         let hex = hash.hexString
         state.outgoingProgress[hex] = nil
+        state.inFlightSends.remove(hash)
         let openPeer = state.openPeerHex
         let milestoneAt: Date? = date.now
         return .run { [database] send in
@@ -2660,7 +2675,7 @@ public struct AppFeature {
     /// unstamped packed size (LXMFNode adds any stamp downstream, where the app cannot see it, hence
     /// no stampState either). `packed` is a computed re-encode, so it is read once.
     static func outgoing(identity: Identity, peer: Data, peerHex: String, text: String, now: Date,
-                         fields: [MsgPackValue.IntPair], alsoViaPropagation: Bool,
+                         fields: [MsgPackValue.IntPair],
                          replyToHash: String?, replyQuote: String?,
                          expirySeconds: Int? = nil, expiresAt: Date? = nil,
                          isTimerChange: Bool = false) -> (LXMessage, Message) {
@@ -2683,7 +2698,7 @@ public struct AppFeature {
             validated: false,
             messageHash: msg.hash.hexString,
             senderTimestamp: now,
-            sentViaPropagation: alsoViaPropagation,
+            sentViaPropagation: false,
             wireSize: packed.count,
             titleSize: msg.title.count,
             contentSize: msg.content.count,
@@ -2751,7 +2766,7 @@ public struct AppFeature {
         guard !members.isEmpty else { return .none }
         let identity = state.identity
         let myName = state.myName
-        let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
+        let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
         let openPeer = state.openPeerHex
         let now = date.now
         let myVersion = state.myPhotoVersion
@@ -2759,7 +2774,7 @@ public struct AppFeature {
         let avatarStore = self.avatarStore
         return .run { [database] send in
             let sent = try await dispatchWaitingGroupCopies(database, members: members, identity: identity,
-                                                            myName: myName, alsoViaPropagation: alsoViaPropagation,
+                                                            myName: myName, fallbackToPropagation: fallbackToPropagation,
                                                             now: now, groupHex: groupHex, myVersion: myVersion,
                                                             myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                             imageAllowed: imageAllowed, send)
@@ -2793,11 +2808,11 @@ public struct AppFeature {
             replyQuote = quote.isEmpty ? nil : quote
         }
         let fields = replyFields + GroupWire.encodePost(groupId: groupId, postId: postId)
-        let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
+        let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
         let row = Message(
             id: UUID(), peerHex: me, isOutgoing: true, body: text, timestamp: now,
             status: MessageStatus.sending, validated: false, messageHash: postId.hexString,
-            senderTimestamp: now, sentViaPropagation: alsoViaPropagation,
+            senderTimestamp: now, sentViaPropagation: false,
             titleSize: GroupWire.trimName(group.name).utf8.count, contentSize: text.utf8.count,
             fieldKeys: MessageMetadata.fieldKeys(fields),
             replyToHash: replyToHash, replyQuote: replyQuote,
@@ -2821,7 +2836,7 @@ public struct AppFeature {
                 try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
             }
             _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
-                                                     myName: myName, alsoViaPropagation: alsoViaPropagation,
+                                                     myName: myName, fallbackToPropagation: fallbackToPropagation,
                                                      now: now, myVersion: myVersion,
                                                      myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                      imageAllowed: imageAllowed, send)
@@ -2921,7 +2936,7 @@ public struct AppFeature {
         let reachable = recipients.intersection(state.reachablePeers)
         let identity = state.identity
         let myName = state.myName
-        let alsoViaPropagation = !state.effectivePropagationNodeHex.isEmpty
+        let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
         let pathRequests = recipients.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
         // The roster/leave copy carries no photo, but a waiting post for the same member may go too.
         let myVersion = state.myPhotoVersion
@@ -2938,7 +2953,7 @@ public struct AppFeature {
                 try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
             }
             _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
-                                                     myName: myName, alsoViaPropagation: alsoViaPropagation,
+                                                     myName: myName, fallbackToPropagation: fallbackToPropagation,
                                                      now: now, myVersion: myVersion,
                                                      myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                      imageAllowed: imageAllowed, send)
@@ -3273,7 +3288,7 @@ private func reloadThread(_ database: any DatabaseWriter, _ key: String, _ send:
 /// member (spec 2026-10-19), planned against that member's delivery row and marked pending in the
 /// same write; roster and leave copies never do.
 private func dispatchWaitingGroupCopies(_ database: any DatabaseWriter, members: Set<String>,
-                                        identity: Identity, myName: String, alsoViaPropagation: Bool,
+                                        identity: Identity, myName: String, fallbackToPropagation: Bool,
                                         now: Date, groupHex onlyGroupHex: String? = nil,
                                         myVersion: String, myPhoto: Data?, imageAllowed: Bool,
                                         _ send: Send<AppFeature.Action>) async throws -> Int {
@@ -3325,7 +3340,7 @@ private func dispatchWaitingGroupCopies(_ database: any DatabaseWriter, members:
         return copies
     }
     for copy in copies {
-        await send(.node(.client(.sendMessage(message: copy, alsoViaPropagation: alsoViaPropagation))))
+        await send(.node(.client(.sendMessage(message: copy, fallbackToPropagation: fallbackToPropagation))))
     }
     return copies.count
 }
