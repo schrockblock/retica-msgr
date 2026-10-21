@@ -3225,6 +3225,7 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
         $0.draft = ""
         $0.pendingAttachment = nil
         $0.attachmentError = nil
+        $0.pendingHandOvers = 1
     }
     await store.receive(.attachmentSendFailed(draft: "cap")) {
         $0.attachmentError = AttachmentPreparation.storeFailed
@@ -3233,6 +3234,7 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
         $0.$drafts.withLock {
             $0[peerA] = ConversationDraft(text: "cap", updatedAt: Date(timeIntervalSince1970: 1700000000))
         }
+        $0.pendingHandOvers = 0
     }
     // Exhaustive probe: no sendMessage, no reload followed.
     await store.send(.replyCancelled)
@@ -3309,6 +3311,7 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
         $0.draft = ""
         $0.pendingAttachment = nil
         $0.attachmentError = nil
+        $0.pendingHandOvers = 1
     }
     await store.receive(.attachmentSendFailed(draft: "cap")) {
         $0.attachmentError = AttachmentPreparation.storeFailed
@@ -3317,6 +3320,7 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
         $0.$drafts.withLock {
             $0[peerA] = ConversationDraft(text: "cap", updatedAt: Date(timeIntervalSince1970: 1700000000))
         }
+        $0.pendingHandOvers = 0
     }
     // Exhaustive probe: no sendMessage, no reload followed.
     await store.send(.replyCancelled)
@@ -5185,7 +5189,7 @@ private func groupSends(_ store: TestStoreOf<AppFeature>, _ action: AppFeature.A
     #expect(row.isGroupEvent == false)
     #expect(row.body == "sandbags at 6")
     #expect(row.status == MessageStatus.sending)
-    #expect(row.sentViaPropagation == false)
+    #expect(row.sentViaPropagation == nil)   // member copies carry their own hashes (final review M2)
     #expect(row.fieldKeys == "0xfd")
     #expect(row.titleSize == 10)
     #expect(row.contentSize == 13)

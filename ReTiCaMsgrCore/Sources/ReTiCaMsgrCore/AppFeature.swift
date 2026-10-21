@@ -179,6 +179,13 @@ public struct AppFeature {
         /// Hashes of sends handed to the node and not yet settled: inserted on `sendMessage`,
         /// removed by every terminal delegate (an unknown hash is a no-op). Session-only.
         public var inFlightSends: Set<Data> = []
+        /// Sends reserved by the reducer whose effect has not yet handed them to the node (a send
+        /// builds and stores its message first). Ended by `.handOverEnded`, or by a failure action
+        /// that sends nothing (`attachmentSendFailed`). Counts as in flight for `.backgrounded`.
+        public var pendingHandOvers = 0
+        /// Whether the TCP sockets were closed for the background (`closeHubSockets`). Cleared on
+        /// foreground and on the next `interfaceConnected` (a push wake re-dials). Session-only.
+        var hubSocketsClosed = false
         /// The background time held while sends finish after `.backgrounded` (amendment A4), nil
         /// when none is held. Ended when the last send settles, the time runs out, or on foreground.
         public var backgroundTaskID: Int? = nil
@@ -520,6 +527,9 @@ public struct AppFeature {
         case backgroundTaskBegan(Int?)
         /// That background time ran out with sends still in flight. Internal.
         case backgroundTimeExpired
+        /// An effect-side hand-over finished: its message(s) went to the node, or it threw before
+        /// they could. Ends the reservation in `pendingHandOvers`. Internal.
+        case handOverEnded
         /// A background push woke the process (AppDelegate). Re-dials like `foregrounded`, then
         /// drains the push inbox.
         case pushWake
@@ -934,6 +944,7 @@ public struct AppFeature {
                 // failing or falling back.
                 let release: Effect<Action> = state.outboundHeld ? .send(.node(.client(.holdOutbound(false)))) : .none
                 state.outboundHeld = false
+                state.hubSocketsClosed = false
                 // A redial's `interfaceConnected` already syncs from the propagation node; only a
                 // foreground that dials nothing needs to ask.
                 let sync = tcpDownIDs(state).isEmpty ? propagationSyncEffect(state) : .none
@@ -1011,11 +1022,19 @@ public struct AppFeature {
                 // they settle, the time nearly runs out, or none is granted (`backgroundTaskBegan(nil)`).
                 // The effect stays alive until the time runs out, so `onExpire` sends through a live
                 // effect; ending the task cancels it.
-                let closeOrFinishSending: Effect<Action> = state.inFlightSends.isEmpty
-                    ? closeHubSockets(state)
+                // A send still in its hand-over effect counts too (`pendingHandOvers`).
+                let nothingInFlight = state.inFlightSends.isEmpty && state.pendingHandOvers == 0
+                let closeOrFinishSending: Effect<Action> = nothingInFlight
+                    ? closeHubSockets(&state)
                     : .run { [backgroundTask] send in
                         let (expired, expire) = AsyncStream.makeStream(of: Void.self)
                         let id = await backgroundTask.begin { expire.yield() }
+                        // Ended while iOS was answering (a later task settled): this grant's `send`
+                        // would be dropped, so give it back here or it leaks.
+                        if Task.isCancelled {
+                            if let id { await backgroundTask.end(id) }
+                            return
+                        }
                         await send(.backgroundTaskBegan(id))
                         guard id != nil else { return }
                         for await _ in expired {
@@ -1047,8 +1066,8 @@ public struct AppFeature {
                 if state.isForeground { return .merge(replaced, endBackgroundTask(&state)) }
                 // None granted, or the last send settled while asking: close now, as with nothing
                 // in flight.
-                guard id != nil, !state.inFlightSends.isEmpty else {
-                    let close = closeHubSockets(state)
+                guard id != nil, !state.inFlightSends.isEmpty || state.pendingHandOvers > 0 else {
+                    let close = closeHubSockets(&state)
                     return .merge(replaced, close, endBackgroundTask(&state))
                 }
                 // Hold and close early, while the process certainly still runs: by the time iOS's
@@ -1068,8 +1087,14 @@ public struct AppFeature {
                 // Hold FIRST: ReTiCA's hold protects an attempt only if it is already on when the
                 // link-closed events of the closing sockets reach the router (`holdOutbound` doc).
                 state.outboundHeld = true
-                let close = closeHubSockets(state)
+                let close = closeHubSockets(&state)
                 return .concatenate(.send(.node(.client(.holdOutbound(true)))), close, endBackgroundTask(&state))
+
+            case .handOverEnded:
+                // Sent after the hand-over's `sendMessage`, so its hash is already in flight; a
+                // hand-over that threw sent nothing and may have been the last thing in flight.
+                state.pendingHandOvers = max(0, state.pendingHandOvers - 1)
+                return finishSendingInBackground(&state)
 
             case ._flushLearnedDestinations:
                 // Debounce timer fired: write the current learned table. The table may have grown
@@ -1149,6 +1174,7 @@ public struct AppFeature {
                         .registerRequestHandler(path: AppFeature.publicKeyRequestPath, policy: .all))))),
                 ]
                 // Amendment A3: an interface is back, so held retries resume from where they stood.
+                state.hubSocketsClosed = false
                 if state.outboundHeld {
                     state.outboundHeld = false
                     effects.append(.send(.node(.client(.holdOutbound(false)))))
@@ -1346,19 +1372,22 @@ public struct AppFeature {
                 let myVersion = state.myPhotoVersion
                 let imageAllowed = state.profilePhotoMayRide
                 let avatarStore = self.avatarStore
+                state.pendingHandOvers += 1
                 let write: Effect<Action> = .run { [database] send in
-                    try await database.write { db in
-                        try ChatGroup.upsert(group, db)
-                        try GroupMember.replace(groupHex, with: roster, db)
-                        try Message.insert { line }.execute(db)
-                        for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
-                        try GroupDelivery.refreshDerivedStatus(messageId: line.id, db)
+                    try await handingOver(send) {
+                        try await database.write { db in
+                            try ChatGroup.upsert(group, db)
+                            try GroupMember.replace(groupHex, with: roster, db)
+                            try Message.insert { line }.execute(db)
+                            for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
+                            try GroupDelivery.refreshDerivedStatus(messageId: line.id, db)
+                        }
+                        _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
+                                                                 myName: myName, fallbackToPropagation: fallbackToPropagation,
+                                                                 now: now, myVersion: myVersion,
+                                                                 myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                                                                 imageAllowed: imageAllowed, send)
                     }
-                    _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
-                                                             myName: myName, fallbackToPropagation: fallbackToPropagation,
-                                                             now: now, myVersion: myVersion,
-                                                             myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
-                                                             imageAllowed: imageAllowed, send)
                     try await reloadThread(database, groupHex, send)
                     try await reloadConversations(database, send)
                 }
@@ -1369,11 +1398,11 @@ public struct AppFeature {
                 let current = Set(state.openGroupMembers.map(\.memberHex))
                 let added = Set(hexes.map { $0.lowercased() }.filter { isValidPeerAddress($0) }).subtracting(current)
                 guard !added.isEmpty, current.count + added.count <= GroupWire.maxMembers else { return .none }
-                let who: String = added.sorted().map { state.groupMemberName($0) }.joined(separator: ", ")
+                let who = added.sorted().map { state.groupMemberName($0) }.joined(separator: ", ")
                 let groupHex = group.groupHex
-                return groupChange(state, groupHex: groupHex, line: GroupEventText.added(by: GroupEventText.you, who: who),
-                                   control: GroupControl.roster,
-                                   recipients: current.union(added).subtracting([state.myAddressHex])) { group, db in
+                let recipients = current.union(added).subtracting([state.myAddressHex])
+                return groupChange(&state, groupHex: groupHex, line: GroupEventText.added(by: GroupEventText.you, who: who),
+                                   control: GroupControl.roster, recipients: recipients) { group, db in
                     group.revision += 1
                     let members = try GroupMember.members(of: groupHex, db)
                     try GroupMember.replace(groupHex, with: members + Array(added), db)
@@ -1384,9 +1413,10 @@ public struct AppFeature {
                       hex != state.myAddressHex, state.openGroupMembers.contains(where: { $0.memberHex == hex })
                 else { return .none }
                 let groupHex = group.groupHex
-                return groupChange(state, groupHex: groupHex,
-                                   line: GroupEventText.removed(by: GroupEventText.you, who: state.groupMemberName(hex)),
-                                   control: GroupControl.roster, recipients: Set(state.openGroupOthers)) { group, db in
+                let line = GroupEventText.removed(by: GroupEventText.you, who: state.groupMemberName(hex))
+                let recipients = Set(state.openGroupOthers)
+                return groupChange(&state, groupHex: groupHex, line: line,
+                                   control: GroupControl.roster, recipients: recipients) { group, db in
                     group.revision += 1
                     try GroupMember.where { $0.groupHex.eq(groupHex) && $0.memberHex.eq(hex) }.delete().execute(db)
                 }
@@ -1396,9 +1426,10 @@ public struct AppFeature {
                 guard let group = state.openGroup, state.isOpenGroupCreator, group.state == GroupState.active,
                       !trimmed.isEmpty, trimmed != group.name
                 else { return .none }
-                return groupChange(state, groupHex: group.groupHex,
+                let recipients = Set(state.openGroupOthers)
+                return groupChange(&state, groupHex: group.groupHex,
                                    line: GroupEventText.renamed(by: GroupEventText.you, to: trimmed),
-                                   control: GroupControl.roster, recipients: Set(state.openGroupOthers)) { group, _ in
+                                   control: GroupControl.roster, recipients: recipients) { group, _ in
                     group.revision += 1
                     group.name = trimmed
                 }
@@ -1406,8 +1437,9 @@ public struct AppFeature {
             case .deleteGroup:
                 guard let group = state.openGroup, state.isOpenGroupCreator, group.state == GroupState.active else { return .none }
                 let groupHex = group.groupHex
-                return groupChange(state, groupHex: groupHex, line: GroupEventText.deleted(by: GroupEventText.you),
-                                   control: GroupControl.roster, recipients: Set(state.openGroupOthers)) { group, db in
+                let recipients = Set(state.openGroupOthers)
+                return groupChange(&state, groupHex: groupHex, line: GroupEventText.deleted(by: GroupEventText.you),
+                                   control: GroupControl.roster, recipients: recipients) { group, db in
                     group.revision += 1
                     group.state = GroupState.dissolved
                     try GroupMember.replace(groupHex, with: [], db)
@@ -1418,8 +1450,9 @@ public struct AppFeature {
                 guard let group = state.openGroup, !state.isOpenGroupCreator, group.state == GroupState.active else { return .none }
                 let groupHex = group.groupHex
                 let me = state.myAddressHex
-                return groupChange(state, groupHex: groupHex, line: GroupEventText.left(who: GroupEventText.you),
-                                   control: GroupControl.leave, recipients: Set(state.openGroupOthers)) { group, db in
+                let recipients = Set(state.openGroupOthers)
+                return groupChange(&state, groupHex: groupHex, line: GroupEventText.left(who: GroupEventText.you),
+                                   control: GroupControl.leave, recipients: recipients) { group, db in
                     group.state = GroupState.left
                     try GroupMember.where { $0.groupHex.eq(groupHex) && $0.memberHex.eq(me) }.delete().execute(db)
                 }
@@ -1443,7 +1476,7 @@ public struct AppFeature {
                 guard let group = state.openGroup, group.state == GroupState.invited else { return .none }
                 let groupHex = group.groupHex
                 let me = state.myAddressHex
-                return groupChange(state, groupHex: groupHex, line: GroupEventText.declined(),
+                return groupChange(&state, groupHex: groupHex, line: GroupEventText.declined(),
                                    control: GroupControl.leave, recipients: [group.creatorHex]) { group, db in
                     group.state = GroupState.left
                     try GroupMember.where { $0.groupHex.eq(groupHex) && $0.memberHex.eq(me) }.delete().execute(db)
@@ -1536,29 +1569,41 @@ public struct AppFeature {
                 state.replyTarget = nil
                 state.pendingAttachment = nil
                 state.attachmentError = nil
+                // Reserved now, handed over at the end of the effect: a `.backgrounded` in between
+                // still finds it in flight. Every path below ends it exactly once.
+                state.pendingHandOvers += 1
                 // The guard above refuses while preparing, so nothing should be in flight here;
                 // cancelling anyway means no late result can land on the emptied composer.
                 guard let pending else {
                     return .merge(
                         .cancel(id: CancelID.attachmentPreparation),
                         .run { [database, replyFields, replyToHash, replyQuote] send in
-                            let expiry = try await resolveExpiry(knownExpiry, peerHex: peerHex, database)
-                            let expiryFields = expiry.map { ExpiryWire.encode(seconds: $0) } ?? []
-                            let plan = try await profilePhotoPlan(database, avatarStore, peerHex: peerHex,
-                                                                  myVersion: myVersion, imageAllowed: imageAllowed)
-                            let (msg, row) = Self.outgoing(
-                                identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
-                                fields: replyFields + expiryFields + plan.fields,
-                                replyToHash: replyToHash, replyQuote: replyQuote,
-                                expirySeconds: expiry,
-                                expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
-                            try await database.write { db in
-                                try Message.insert { row }.execute(db)
-                                if let version = plan.pendingVersion {
-                                    try ProfilePhotoDelivery.markPending(peerHex, version: version, hash: row.messageHash, db)
+                            let msg: LXMessage
+                            let expiry: Int?
+                            do {
+                                expiry = try await resolveExpiry(knownExpiry, peerHex: peerHex, database)
+                                let expiryFields = expiry.map { ExpiryWire.encode(seconds: $0) } ?? []
+                                let plan = try await profilePhotoPlan(database, avatarStore, peerHex: peerHex,
+                                                                      myVersion: myVersion, imageAllowed: imageAllowed)
+                                let (built, row) = Self.outgoing(
+                                    identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
+                                    fields: replyFields + expiryFields + plan.fields,
+                                    replyToHash: replyToHash, replyQuote: replyQuote,
+                                    expirySeconds: expiry,
+                                    expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
+                                try await database.write { db in
+                                    try Message.insert { row }.execute(db)
+                                    if let version = plan.pendingVersion {
+                                        try ProfilePhotoDelivery.markPending(peerHex, version: version, hash: row.messageHash, db)
+                                    }
                                 }
+                                msg = built
+                            } catch {
+                                await send(.handOverEnded)
+                                throw error
                             }
                             await send(.node(.client(.sendMessage(message: msg, fallbackToPropagation: fallbackToPropagation))))
+                            await send(.handOverEnded)
                             try await reloadThread(database, peerHex, send)
                             try await reloadConversations(database, send)
                             if expiry != nil {
@@ -1574,14 +1619,23 @@ public struct AppFeature {
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
                     .run { [database, replyFields, replyToHash, replyQuote] send in
-                        let expiry = try await resolveExpiry(knownExpiry, peerHex: peerHex, database)
+                        // A failed read hands nothing over; the store and write failures below end
+                        // the reservation through `attachmentSendFailed` instead.
+                        let expiry: Int?
+                        let plan: ProfilePhotoOutbox.Plan
+                        do {
+                            expiry = try await resolveExpiry(knownExpiry, peerHex: peerHex, database)
+                            plan = try await profilePhotoPlan(database, avatarStore, peerHex: peerHex,
+                                                              myVersion: myVersion, imageAllowed: imageAllowed)
+                        } catch {
+                            await send(.handOverEnded)
+                            throw error
+                        }
                         let expiryFields = expiry.map { ExpiryWire.encode(seconds: $0) } ?? []
                         // The attachment field (0x05 or 0x06) comes first, then any reply fields.
                         let attachmentFields = pending.isImage
                             ? AttachmentWire.encodeImage(pending.data)
                             : AttachmentWire.encodeFile(name: pending.name, data: pending.data)
-                        let plan = try await profilePhotoPlan(database, avatarStore, peerHex: peerHex,
-                                                              myVersion: myVersion, imageAllowed: imageAllowed)
                         let (msg, row) = Self.outgoing(
                             identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
                             fields: attachmentFields + replyFields + expiryFields + plan.fields,
@@ -1617,6 +1671,7 @@ public struct AppFeature {
                             return
                         }
                         await send(.node(.client(.sendMessage(message: msg, fallbackToPropagation: fallbackToPropagation))))
+                        await send(.handOverEnded)
                         try await reloadThread(database, peerHex, send)
                         try await reloadConversations(database, send)
                         if expiry != nil {
@@ -1773,7 +1828,9 @@ public struct AppFeature {
                 state.attachmentError = AttachmentPreparation.storeFailed
                 state.draft = draft
                 state.saveDraft(now: date.now)
-                return .none
+                // Its hand-over ends here, with nothing handed over.
+                state.pendingHandOvers = max(0, state.pendingHandOvers - 1)
+                return finishSendingInBackground(&state)
 
             case .binding(\.draft):
                 // Every edit is saved, so backgrounding or leaving the chat loses nothing.
@@ -2570,7 +2627,14 @@ public struct AppFeature {
 
             case let .node(.client(.sendMessage(message, _))):
                 state.inFlightSends.insert(message.hash)
-                return .none
+                // Handed over after the sockets closed for the background (a group copy dispatched
+                // there, or a hand-over that outlived its background time): hold its retries until
+                // an interface or the foreground comes back (A3). Not while time is held or still
+                // being asked for: the sockets are open then, and the send should go.
+                guard !state.isForeground, state.backgroundTaskID == nil, state.hubSocketsClosed,
+                      !state.outboundHeld else { return .none }
+                state.outboundHeld = true
+                return .send(.node(.client(.holdOutbound(true))))
 
             case .node, .binding, .pushRegistrationTimedOut, .unregisterFromHub:
                 return .none
@@ -2774,8 +2838,9 @@ public struct AppFeature {
 
     /// Disconnects every TCP client: the hub's side of a suspended app's socket never goes
     /// dormant otherwise (see `.backgrounded`). BLE peers are left to run on their own terms.
-    private func closeHubSockets(_ state: State) -> Effect<Action> {
-        .merge(state.node.client.endpoint.tcpClients.ids.map {
+    private func closeHubSockets(_ state: inout State) -> Effect<Action> {
+        state.hubSocketsClosed = true
+        return .merge(state.node.client.endpoint.tcpClients.ids.map {
             .send(.node(.client(.endpoint(.tcpClients(.element(id: $0, action: .disconnect))))))
         })
     }
@@ -2789,11 +2854,13 @@ public struct AppFeature {
                       .run { [backgroundTask] _ in await backgroundTask.end(id) })
     }
 
-    /// A send settled. If it was the last one and the app is in the background on borrowed time,
-    /// close the sockets now and give the time back (amendment A4).
+    /// A send settled or a hand-over ended. If nothing is left in flight or being handed over and
+    /// the app is in the background on borrowed time, close the sockets now and give the time back
+    /// (amendment A4).
     private func finishSendingInBackground(_ state: inout State) -> Effect<Action> {
-        guard !state.isForeground, state.inFlightSends.isEmpty, state.backgroundTaskID != nil else { return .none }
-        let close = closeHubSockets(state)
+        guard !state.isForeground, state.inFlightSends.isEmpty, state.pendingHandOvers == 0,
+              state.backgroundTaskID != nil else { return .none }
+        let close = closeHubSockets(&state)
         return .merge(close, endBackgroundTask(&state))
     }
 
@@ -2935,10 +3002,13 @@ public struct AppFeature {
         }
         let fields = replyFields + GroupWire.encodePost(groupId: groupId, postId: postId)
         let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
+        // `sentViaPropagation` stays nil: each member copy has its own hash, so no acceptance ever
+        // names this row, and Info hides the row rather than say "No" (the Members section shows
+        // which copies a node holds).
         let row = Message(
             id: UUID(), peerHex: me, isOutgoing: true, body: text, timestamp: now,
             status: MessageStatus.sending, validated: false, messageHash: postId.hexString,
-            senderTimestamp: now, sentViaPropagation: false,
+            senderTimestamp: now, sentViaPropagation: nil,
             titleSize: GroupWire.trimName(group.name).utf8.count, contentSize: text.utf8.count,
             fieldKeys: MessageMetadata.fieldKeys(fields),
             replyToHash: replyToHash, replyQuote: replyQuote,
@@ -2955,17 +3025,20 @@ public struct AppFeature {
         let myVersion = state.myPhotoVersion
         let imageAllowed = state.profilePhotoMayRide
         let avatarStore = self.avatarStore
+        state.pendingHandOvers += 1
         let write: Effect<Action> = .run { [database] send in
-            try await database.write { db in
-                try Message.insert { row }.execute(db)
-                for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
-                try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
+            try await handingOver(send) {
+                try await database.write { db in
+                    try Message.insert { row }.execute(db)
+                    for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
+                    try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
+                }
+                _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
+                                                         myName: myName, fallbackToPropagation: fallbackToPropagation,
+                                                         now: now, myVersion: myVersion,
+                                                         myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                                                         imageAllowed: imageAllowed, send)
             }
-            _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
-                                                     myName: myName, fallbackToPropagation: fallbackToPropagation,
-                                                     now: now, myVersion: myVersion,
-                                                     myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
-                                                     imageAllowed: imageAllowed, send)
             try await reloadThread(database, groupHex, send)
             try await reloadConversations(database, send)
         }
@@ -3052,7 +3125,7 @@ public struct AppFeature {
     /// group row and its members inside the write, `line` becomes an outgoing event row carrying
     /// `control` to `recipients` through waiting delivery rows, copies go to the reachable
     /// recipients at once and the rest get a path request.
-    private func groupChange(_ state: State, groupHex: String, line: String, control: String,
+    private func groupChange(_ state: inout State, groupHex: String, line: String, control: String,
                              recipients: Set<String>,
                              mutate: @escaping @Sendable (inout ChatGroup, GRDB.Database) throws -> Void) -> Effect<Action> {
         let me = state.myAddressHex
@@ -3068,21 +3141,24 @@ public struct AppFeature {
         let myVersion = state.myPhotoVersion
         let imageAllowed = state.profilePhotoMayRide
         let avatarStore = self.avatarStore
+        state.pendingHandOvers += 1
         let write: Effect<Action> = .run { [database] send in
-            try await database.write { db in
-                guard var group = try ChatGroup.fetch(groupHex, db) else { return }
-                try mutate(&group, db)
-                group.updatedAt = now
-                try ChatGroup.upsert(group, db)
-                try Message.insert { row }.execute(db)
-                for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
-                try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
+            try await handingOver(send) {
+                try await database.write { db in
+                    guard var group = try ChatGroup.fetch(groupHex, db) else { return }
+                    try mutate(&group, db)
+                    group.updatedAt = now
+                    try ChatGroup.upsert(group, db)
+                    try Message.insert { row }.execute(db)
+                    for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
+                    try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
+                }
+                _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
+                                                         myName: myName, fallbackToPropagation: fallbackToPropagation,
+                                                         now: now, myVersion: myVersion,
+                                                         myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                                                         imageAllowed: imageAllowed, send)
             }
-            _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
-                                                     myName: myName, fallbackToPropagation: fallbackToPropagation,
-                                                     now: now, myVersion: myVersion,
-                                                     myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
-                                                     imageAllowed: imageAllowed, send)
             try await reloadThread(database, groupHex, send)
             try await reloadConversations(database, send)
         }
@@ -3499,6 +3575,18 @@ private func stampViewed(_ database: any DatabaseWriter, _ peerHex: String, now:
         }
         return unstamped.count
     }
+}
+
+/// Runs the hand-over part of a group effect (its write and the copies to reachable members), then
+/// ends the reservation the reducer made in `pendingHandOvers`, whether it handed over or threw.
+private func handingOver(_ send: Send<AppFeature.Action>, _ body: () async throws -> Void) async throws {
+    do {
+        try await body()
+    } catch {
+        await send(.handOverEnded)
+        throw error
+    }
+    await send(.handOverEnded)
 }
 
 /// The profile-photo plan for one outgoing one-to-one message (spec 2026-10-19): my bytes are read

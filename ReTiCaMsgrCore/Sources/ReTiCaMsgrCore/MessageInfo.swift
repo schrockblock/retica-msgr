@@ -39,7 +39,9 @@ public enum MessageInfo {
     public static func sections(for message: Message, attachment: Attachment? = nil,
                                 deliveries: [GroupDelivery] = [], memberNames: [String: String] = [:],
                                 timeZone: TimeZone = .current) -> [Section] {
+        // A Delivery section with nothing to say (a group post, see `delivery`) is left out.
         var sections = [timeline(message, timeZone), delivery(message), identity(message), payload(message)]
+            .filter { !$0.rows.isEmpty }
         if let attachment {
             sections.append(attachmentSection(attachment))
         }
@@ -95,9 +97,16 @@ public enum MessageInfo {
     }
 
     static func delivery(_ m: Message) -> Section {
-        var rows = [m.isOutgoing
-            ? optionalRow("Propagation node copy", m.sentViaPropagation.map { $0 ? "Yes" : "No" })
-            : optionalRow("Arrival", m.arrivalMethod.map(arrivalName))]
+        var rows: [Row] = []
+        if !m.isOutgoing {
+            rows.append(optionalRow("Arrival", m.arrivalMethod.map(arrivalName)))
+        } else if let viaNode = m.sentViaPropagation {
+            rows.append(Row("Propagation node copy", viaNode ? "Yes" : "No"))
+        } else if m.fieldKeys == nil {
+            // Not recorded before this feature. A recorded row with no value (a group post, whose
+            // member copies have their own hashes) has no such row at all.
+            rows.append(missingRow("Propagation node copy"))
+        }
         if m.isOutgoing, let refusal = m.propagationRefused {
             rows.append(Row("Propagation refusal", "Refused: \(refusal)"))
         }
