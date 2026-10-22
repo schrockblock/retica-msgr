@@ -76,24 +76,6 @@ public struct AppFeature {
         }
     }
 
-    /// A Resource arriving on one link (spec 2026-09-28 §4). `sourceHash` is the peer when we
-    /// opened the link, nil when a peer linked to our own destination (the sender is unknown until
-    /// the message unpacks), so the UI shows an unattributed one everywhere.
-    public struct InboundTransfer: Equatable, Sendable {
-        public var sourceHash: Data?
-        public var fraction: Double
-        public var updatedAt: Date
-
-        public init(sourceHash: Data?, fraction: Double, updatedAt: Date) {
-            self.sourceHash = sourceHash
-            self.fraction = fraction
-            self.updatedAt = updatedAt
-        }
-    }
-
-    /// An inbound transfer that stops reporting for this long is dropped from the UI.
-    public static let inboundTransferTimeout: Duration = .seconds(60)
-
     /// How long before iOS's background time runs out the app holds and closes on its own, so the
     /// close lands while the process still runs (amendment A4). iOS's own expiry is the backstop.
     public static let backgroundTimeMargin: TimeInterval = 5
@@ -199,8 +181,6 @@ public struct AppFeature {
         /// Whether ReTiCA's outbound retries are held (amendment A3): set when the background time
         /// ran out, released on foreground or the next `interfaceConnected`. Session-only.
         public var outboundHeld = false
-        /// Inbound transfers by link ID, from `inboundTransferProgress`. Session-only.
-        public var inboundTransfers: [Data: InboundTransfer] = [:]
 
         /// How far the incoming downloads have got, for the "Receiving a message…" banner: the
         /// mean of ReTiCA's per-link fractions, clamped to 0...1, or nil when nothing is arriving.
@@ -211,31 +191,6 @@ public struct AppFeature {
             guard !fractions.isEmpty else { return nil }
             let mean = fractions.reduce(0, +) / Double(fractions.count)
             return min(max(mean, 0), 1)
-        }
-
-        /// Transfers to show in the open thread: the unattributed ones, plus those attributed to
-        /// the open peer.
-        public var inboundTransfersForOpenThread: [InboundTransfer] {
-            let open = openPeerHex.flatMap { Data(hexString: $0) }
-            return sortedInboundTransfers { $0.sourceHash == nil || $0.sourceHash == open }
-        }
-
-        /// Transfers nobody can be named for, shown on the conversation list.
-        public var unattributedInboundTransfers: [InboundTransfer] {
-            sortedInboundTransfers { $0.sourceHash == nil }
-        }
-
-        /// A stable order for the UI (a dictionary's is arbitrary): oldest report first, ties by
-        /// link ID hex.
-        private func sortedInboundTransfers(_ include: (InboundTransfer) -> Bool) -> [InboundTransfer] {
-            inboundTransfers
-                .filter { include($0.value) }
-                .sorted { a, b in
-                    a.value.updatedAt != b.value.updatedAt
-                        ? a.value.updatedAt < b.value.updatedAt
-                        : a.key.hexString < b.key.hexString
-                }
-                .map(\.value)
         }
         // Derived list of peers, reloaded after every write.
         public var conversations: [Conversation] = []
@@ -694,8 +649,6 @@ public struct AppFeature {
         case attachmentOriginalToggled(Bool)
         /// Long-press → Cancel Send on an outgoing message still sending.
         case cancelSendTapped(Message.ID)
-        /// The 60 s silence timer for one inbound transfer fired. Internal.
-        case inboundTransferTimedOut(linkID: Data)
         /// The send could not write the attachment's bytes, so nothing was sent: show `storeFailed`
         /// in the attachment bar and give the caption back. Internal.
         case attachmentSendFailed(draft: String)
@@ -733,8 +686,6 @@ public struct AppFeature {
         case learnedDebounce
         /// The one in-flight preparation (photo encode) of a picked attachment.
         case attachmentPreparation
-        /// The silence timer of one inbound transfer, keyed by link ID.
-        case inboundTransfer(Data)
         /// The 20 s timeout of the in-flight push-registration attempt (spec amendment A2).
         case pushRegistration
         /// The one sleeper waiting for the earliest `expiresAt` (spec §3). Re-armed with
@@ -1287,14 +1238,6 @@ public struct AppFeature {
                 case .poweredOff, .other: break
                 }
                 return .none
-
-            case let .node(.client(.endpoint(.delegate(.linkClosed(linkID, _))))):
-                // An inbound transfer on this link is over, one way or the other.
-                var effects: [Effect<Action>] = []
-                if state.inboundTransfers.removeValue(forKey: linkID) != nil {
-                    effects.append(.cancel(id: CancelID.inboundTransfer(linkID)))
-                }
-                return .merge(effects)
 
             case let .openConversation(peerHex):
                 state.openPeerHex = peerHex
@@ -2649,25 +2592,6 @@ public struct AppFeature {
                       let hash = Data(hexString: message.messageHash), !hash.isEmpty
                 else { return .none }
                 return .send(.node(.client(.cancelOutbound(messageHash: hash))))
-
-            case let .node(.client(.delegate(.inboundTransferProgress(sourceHash, linkID, fraction)))):
-                if fraction >= 1 {
-                    state.inboundTransfers[linkID] = nil
-                    return .cancel(id: CancelID.inboundTransfer(linkID))
-                }
-                // Clamped like `deliveryProgress`; NaN (which fails every comparison) reads as 0.
-                let clamped = fraction.isNaN ? 0 : min(max(fraction, 0), 1)
-                state.inboundTransfers[linkID] = InboundTransfer(sourceHash: sourceHash, fraction: clamped, updatedAt: date.now)
-                // Review Focus 7: every report restarts the silence timer.
-                return .run { [clock] send in
-                    try await clock.sleep(for: AppFeature.inboundTransferTimeout)
-                    await send(.inboundTransferTimedOut(linkID: linkID))
-                }
-                .cancellable(id: CancelID.inboundTransfer(linkID), cancelInFlight: true)
-
-            case let .inboundTransferTimedOut(linkID):
-                state.inboundTransfers[linkID] = nil
-                return .none
 
             case let .node(.client(.sendMessage(message, _))):
                 state.inFlightSends.insert(message.hash)

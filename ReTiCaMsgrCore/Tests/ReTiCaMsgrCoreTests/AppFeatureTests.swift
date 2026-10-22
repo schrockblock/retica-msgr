@@ -3456,15 +3456,8 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 
 // MARK: - Attachments: transfer state (spec 2026-09-28 §3–§4)
 
-private let linkL = Data(repeating: 0x4C, count: 16)
-private let linkM = Data(repeating: 0x4D, count: 16)
-
 private func progress(_ hex: String, _ fraction: Double) -> AppFeature.Action {
     .node(.client(.delegate(.deliveryProgress(messageHash: hashData(hex), fraction: fraction))))
-}
-
-private func inbound(_ link: Data, _ fraction: Double, source: Data? = nil) -> AppFeature.Action {
-    .node(.client(.delegate(.inboundTransferProgress(sourceHash: source, linkID: link, fraction: fraction))))
 }
 
 /// Review Focus 5: never backwards, and every terminal outcome clears the bar — including the two
@@ -3584,47 +3577,6 @@ private func inbound(_ link: Data, _ fraction: Double, source: Data? = nil) -> A
     store.exhaustivity = .off
 }
 
-@MainActor @Test func attachTransferInboundEntryTracksLinksAndAttribution() async {
-    let peerHash = hashData(peerA)
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity()) { s in s.openPeerHex = peerA }
-    await store.send(inbound(linkL, 0.3))
-    #expect(store.state.inboundTransfers[linkL] == AppFeature.InboundTransfer(sourceHash: nil, fraction: 0.3, updatedAt: infoT0))
-    // Report times set apart (the frozen \.date would make them all equal) so the ORDER the UI
-    // gets is pinned: oldest report first, then link ID hex for a tie. Neither matches the order
-    // the reports were sent in, and a dictionary's own order is arbitrary.
-    func at(_ seconds: TimeInterval) { store.dependencies.date = .constant(infoT0.addingTimeInterval(seconds)) }
-    at(2); await store.send(inbound(linkL, 0.7))
-    #expect(store.state.inboundTransfers[linkL]?.fraction == 0.7)
-    at(1); await store.send(inbound(linkM, 0.1, source: peerHash))
-    at(0); await store.send(inbound(Data(repeating: 0x4E, count: 16), 0.2, source: hashData(peerB)))
-    at(3); await store.send(inbound(Data(repeating: 0x4A, count: 16), 0.5, source: peerHash))
-    at(1); await store.send(inbound(Data(repeating: 0x4B, count: 16), 0.9))   // ties linkM, sorts first
-    // The open thread shows the unattributed ones and those attributed to its peer, not peerB's.
-    #expect(store.state.inboundTransfersForOpenThread.map(\.fraction) == [0.9, 0.1, 0.7, 0.5])
-    #expect(store.state.unattributedInboundTransfers.map(\.fraction) == [0.9, 0.7])
-    // Done: the entry goes away.
-    await store.send(inbound(linkL, 1.0))
-    #expect(store.state.inboundTransfers[linkL] == nil)
-    #expect(store.state.inboundTransfers.count == 4)
-    // A closed link clears its entry too.
-    await store.send(.node(.client(.endpoint(.delegate(.linkClosed(linkID: linkM, reason: .timedOut))))))
-    #expect(store.state.inboundTransfers[linkM] == nil)
-    #expect(store.state.inboundTransfers.count == 3)
-}
-
-/// T8-m3: the stored fraction is clamped like `deliveryProgress` (NaN reads as 0), and a report at
-/// or past 1 still ends the transfer.
-@MainActor @Test func attachTransferInboundFractionIsClamped() async {
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity())
-    await store.send(inbound(linkL, -0.5))
-    #expect(store.state.inboundTransfers[linkL]?.fraction == 0)
-    await store.send(inbound(linkL, 0.4))
-    await store.send(inbound(linkL, .nan))
-    #expect(store.state.inboundTransfers[linkL]?.fraction == 0)
-    await store.send(inbound(linkL, 1.7))
-    #expect(store.state.inboundTransfers[linkL] == nil)
-}
-
 /// FR-1: the user's cancel is terminal: a failure or rejection reported afterwards for the same
 /// message changes neither its status nor its reason.
 @MainActor @Test func attachTransferCancelledIsTerminalAgainstLaterFailures() async {
@@ -3654,34 +3606,6 @@ private func inbound(_ link: Data, _ fraction: Double, source: Data? = nil) -> A
     let row = await rowsByHashAndDirection(db)["\(h)/out"]
     #expect(row?.status == MessageStatus.delivered)
     #expect(row?.failureReason == nil)
-}
-
-/// Review Focus 7: a transfer that stops reporting disappears after 60 s of silence; a report
-/// restarts the clock.
-@MainActor @Test func attachTransferInboundEntryExpiresAfterSilence() async {
-    let clock = TestClock()
-    let store = makeStore(try! AppDatabase.makeInMemory(), identity: Identity(), clock: clock)
-    await store.send(inbound(linkL, 0.3))
-    await clock.advance(by: .seconds(59))
-    await store.send(inbound(linkL, 0.4))          // restarts the 60 s
-    // Exhaustive window: 59 s after the restart (118 s after the first report) nothing may fire.
-    // A timer that was NOT restarted fires at 60 s from the first report, inside this window, and
-    // its `inboundTransferTimedOut` fails the probe. (Under `.off`, a bare `store.state` check here
-    // would assert nothing: state lags until a receive.)
-    store.exhaustivity = .on
-    await clock.advance(by: .seconds(59))
-    await store.send(.replyCancelled)              // probe
-    store.exhaustivity = .off
-    await clock.advance(by: .seconds(1))
-    await store.receive(.inboundTransferTimedOut(linkID: linkL))
-    #expect(store.state.inboundTransfers[linkL] == nil)
-    // Completion cancels the timer: nothing fires later.
-    await store.send(inbound(linkM, 0.5))
-    await store.send(inbound(linkM, 1.0))
-    store.exhaustivity = .on
-    await clock.advance(by: .seconds(120))
-    await store.send(.replyCancelled)   // probe
-    store.exhaustivity = .off
 }
 
 // MARK: - Disappearing messages: setting the timer and sending (spec 2026-10-05 §3)
