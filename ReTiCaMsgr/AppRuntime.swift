@@ -117,6 +117,8 @@ final class AppRuntime {
             $0.pushPlatform = .uiKit
             // Likewise: background time for sends still in flight (spec 2026-10-21, A4).
             $0.backgroundTask = .uiKit
+            // Likewise: the "Message not sent" notification (brief 2026-10-21).
+            $0.localNotifications = .userNotifications
             // Explicit for the same hosted-XCTest reason as `\.date` (its testValue is unimplemented):
             // the live radio scan over MeshtasticKit (spec 2026-10-16 §7 lane E).
             MeshtasticLiveWiring.installScanner(into: &$0)
@@ -234,6 +236,19 @@ final class AppRuntime {
 
     func propagatedPush() {
         store?.send(.propagatedPush)
+    }
+
+    /// Bumped when something outside the chat list asks to show a chat, so `RootView` switches to
+    /// the Chat tab.
+    private(set) var chatRequests = 0
+
+    /// A tap on a "Message not sent" notification: open that conversation on the Chat tab. Builds
+    /// the store first if the tap launched the app.
+    func openFailedSend(_ peerHex: String) {
+        build()
+        guard let store else { return }
+        chatRequests += 1
+        store.send(.sendFailedNotificationTapped(peerHex))
     }
 
     var pushStorage: PushStorage { environment.pushStorage }

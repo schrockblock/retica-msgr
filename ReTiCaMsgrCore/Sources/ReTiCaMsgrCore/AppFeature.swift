@@ -649,6 +649,13 @@ public struct AppFeature {
         case attachmentOriginalToggled(Bool)
         /// Long-press → Cancel Send on an outgoing message still sending.
         case cancelSendTapped(Message.ID)
+        /// Long-press → Retry on an outgoing message that failed (brief 2026-10-21): a one-to-one
+        /// row is rebuilt under a new hash and sent again; a group post's failed copies go back to
+        /// waiting and the group dispatch runs.
+        case retryTapped(Message.ID)
+        /// A tap on a "Message not sent" notification (AppDelegate): opens that peer's or group's
+        /// chat.
+        case sendFailedNotificationTapped(String)
         /// The send could not write the attachment's bytes, so nothing was sent: show `storeFailed`
         /// in the attachment bar and give the caption back. Internal.
         case attachmentSendFailed(draft: String)
@@ -706,6 +713,7 @@ public struct AppFeature {
     @Dependency(\.attachmentCacheEvictor) var attachmentCacheEvictor
     @Dependency(\.avatarStore) var avatarStore
     @Dependency(\.backgroundTask) var backgroundTask
+    @Dependency(\.localNotifications) var localNotifications
 
     /// Path expiry for pruning `learnedDestinationRows`, taken from the library rather than copied.
     ///
@@ -2593,6 +2601,57 @@ public struct AppFeature {
                 else { return .none }
                 return .send(.node(.client(.cancelOutbound(messageHash: hash))))
 
+            case let .retryTapped(id):
+                guard let message = state.threadMessages.first(where: { $0.id == id }), message.isOutgoing,
+                      !message.isTimerChange, !message.isGroupEvent
+                else { return .none }
+                let openPeer = state.openPeerHex
+                if let groupHex = message.groupHex {
+                    // A group post: its failed copies wait again, and the dispatch sends them to
+                    // the members with a path (the rest go when their path is learned).
+                    let reset: Effect<Action> = .run { [database] send in
+                        try await resetFailedGroupCopies(database, messageId: id)
+                        try await reloadConversations(database, send)
+                        if let openPeer { try await reloadThread(database, openPeer, send) }
+                    }
+                    return .concatenate(reset, groupDispatchEffect(state, members: state.reachablePeers, groupHex: groupHex))
+                }
+                guard message.status == MessageStatus.failed else { return .none }
+                let identity = state.identity
+                let now = date.now
+                let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
+                let myVersion = state.myPhotoVersion
+                let imageAllowed = state.profilePhotoMayRide
+                let avatarStore = self.avatarStore
+                let attachmentStore = self.attachmentStore
+                // Reserved like `sendTapped`'s send, until the rebuilt message is handed over.
+                state.pendingHandOvers += 1
+                return .run { [database] send in
+                    var rehashed: [String: String] = [:]
+                    try await handingOver(send) {
+                        guard let rebuilt = try await rebuildForRetry(
+                            database, attachmentStore, id: id, identity: identity, now: now,
+                            myVersion: myVersion, myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                            imageAllowed: imageAllowed)
+                        else { return }
+                        rehashed[rebuilt.oldHash] = rebuilt.newHash
+                        await send(.node(.client(.sendMessage(message: rebuilt.message,
+                                                              fallbackToPropagation: fallbackToPropagation))))
+                    }
+                    // The composer's reply target follows the new hash, as after the launch resend.
+                    if !rehashed.isEmpty { await send(.orphansRehashed(rehashed)) }
+                    try await reloadConversations(database, send)
+                    if let openPeer { try await reloadThread(database, openPeer, send) }
+                }
+
+            case let .sendFailedNotificationTapped(hex):
+                // The notification carries only the conversation's hex; a group id and a peer
+                // address are the same length, so the groups table tells them apart.
+                return .run { [database] send in
+                    let isGroup = try await database.read { try ChatGroup.fetch(hex, $0) } != nil
+                    await send(isGroup ? .openGroupConversation(hex) : .startConversation(hex))
+                }
+
             case let .node(.client(.sendMessage(message, _))):
                 state.inFlightSends.insert(message.hash)
                 // Handed over after the sockets closed for the background (a group copy dispatched
@@ -2775,8 +2834,13 @@ public struct AppFeature {
         let finished = finishSendingInBackground(&state)
         let openPeer = state.openPeerHex
         let milestoneAt: Date? = date.now
-        return .merge(finished, .run { [database] send in
-            try await database.write { db in
+        // The chat the user is looking at right now, if any: a failure there shows in the bubble,
+        // anywhere else it posts a local notification (brief 2026-10-21).
+        let watchedChat = state.isForeground && state.chatVisible ? openPeer?.lowercased() : nil
+        let notifyOnFailure = status == MessageStatus.failed
+        return .merge(finished, .run { [database, localNotifications] send in
+            let failedChat: String? = try await database.write { db in
+                let failedChat = notifyOnFailure ? try conversationNewlyFailing(hash: hex, db) : nil
                 try Message.where {
                     $0.messageHash.eq(hex)
                         && $0.status.neq(MessageStatus.propagated)
@@ -2796,6 +2860,13 @@ public struct AppFeature {
                                                at: milestoneAt ?? .distantPast, db)
                 // The photo it carried did not arrive: the next message attaches it again.
                 try ProfilePhotoDelivery.applyOutcome(hash: hex, confirmed: false, db)
+                return failedChat
+            }
+            if let failedChat, failedChat.lowercased() != watchedChat {
+                await localNotifications.post(
+                    id: SendFailedNotification.id(peerHex: failedChat), title: SendFailedNotification.title,
+                    body: SendFailedNotification.body, threadID: SendFailedNotification.id(peerHex: failedChat),
+                    userInfo: SendFailedNotification.userInfo(peerHex: failedChat))
             }
             try await reloadConversations(database, send)
             if let openPeer {
@@ -3642,33 +3713,15 @@ private func rebuildOrphans(_ database: any DatabaseWriter, _ attachmentStore: A
         return (orphans, try Attachment.where { $0.messageId.in(ids) }.fetchAll(db))
     }
     // Every orphan's bytes are held at once, unlike `sendTapped`'s one; orphans are few (accepted).
-    var attachmentBytes: [UUID: (attachment: Attachment, data: Data)] = [:]
-    var bytesMissing: Set<UUID> = []
-    for attachment in attachments {
-        guard attachment.hasBytes,
-              let bytes = try? Data(contentsOf: attachmentStore.url(forRelativePath: attachment.path))
-        else {
-            bytesMissing.insert(attachment.messageId)
-            continue
-        }
-        attachmentBytes[attachment.messageId] = (attachment, bytes)
-    }
+    let (attachmentBytes, bytesMissing) = readAttachmentBytes(attachments, attachmentStore)
     return try await database.write { [attachmentBytes, bytesMissing] db in
         let stuck = try GroupDelivery.where { $0.status.eq(MessageStatus.sending) }.fetchAll(db)
         var reset: Set<UUID> = []
-        let noHash: String? = nil
         for copy in stuck {
             if let hash = copy.messageHash, inFlight.contains(hash) { continue }
             let row = try Message.where { $0.id.eq(copy.messageId) }.fetchOne(db)
             guard let row, row.timestamp < launchedAt else { continue }
-            try GroupDelivery
-                .where { $0.messageId.eq(copy.messageId) && $0.memberHex.eq(copy.memberHex) }
-                .update {
-                    $0.status = GroupDeliveryStatus.waiting
-                    $0.messageHash = noHash
-                }
-                .execute(db)
-            if let hash = copy.messageHash { try ProfilePhotoDelivery.applyOutcome(hash: hash, confirmed: false, db) }
+            try resetGroupCopy(copy, db)
             reset.insert(copy.messageId)
         }
         for messageId in reset {
@@ -3682,54 +3735,180 @@ private func rebuildOrphans(_ database: any DatabaseWriter, _ attachmentStore: A
             let fetched = try Message.where { $0.id.eq(entry.id) }.fetchOne(db)
             guard let orphan = fetched, orphan.status == MessageStatus.sending,
                   orphan.messageHash == entry.messageHash else { continue }
-            let oldHash = orphan.messageHash
-            // The photo pending on the old hash will never be settled by the node.
-            try ProfilePhotoDelivery.applyOutcome(hash: oldHash, confirmed: false, db)
-            let blocked = try BlockedPeer.fetch(peerHex: orphan.peerHex.lowercased(), db) != nil
-            guard !blocked, !bytesMissing.contains(orphan.id), let peer = Data(hexString: orphan.peerHex) else {
-                let failedAt: Date? = orphan.failedAt ?? now
-                try Message.where { $0.id.eq(orphan.id) }
-                    .update {
-                        $0.status = MessageStatus.failed
-                        $0.failedAt = failedAt
-                    }
-                    .execute(db)
-                continue
-            }
-            let plan = ProfilePhotoOutbox.plan(myVersion: myVersion, myPhoto: myPhoto,
-                                               delivery: try ProfilePhotoDelivery.fetch(orphan.peerHex, db),
-                                               imageAllowed: imageAllowed)
-            let stored = attachmentBytes[orphan.id]
             // A millisecond apart, so two identical orphans to one peer still hash differently.
-            let (message, rebuilt) = AppFeature.outgoing(
-                identity: identity, peer: peer, peerHex: orphan.peerHex, text: orphan.body,
-                now: now.addingTimeInterval(Double(index) / 1000),
-                fields: AppFeature.outgoingFields(
-                    attachment: stored.map { (kind: $0.attachment.kind, name: $0.attachment.name, data: $0.data) },
-                    replyTo: orphan.replyToHash.flatMap { Data(hexString: $0) },
-                    replyQuote: orphan.replyQuote, expirySeconds: orphan.expirySeconds, photo: plan),
-                replyToHash: orphan.replyToHash, replyQuote: orphan.replyQuote)
-            let newHash = rebuilt.messageHash
-            try Message.where { $0.id.eq(orphan.id) }
-                .update {
-                    $0.messageHash = newHash
-                    $0.senderTimestamp = rebuilt.senderTimestamp
-                    $0.wireSize = rebuilt.wireSize
-                    $0.titleSize = rebuilt.titleSize
-                    $0.contentSize = rebuilt.contentSize
-                    $0.fieldKeys = rebuilt.fieldKeys
-                }
-                .execute(db)
-            try Reaction.where { $0.messageHash.eq(oldHash) }.update { $0.messageHash = newHash }.execute(db)
-            let newReplyTo: String? = newHash
-            try Message.where { $0.replyToHash.eq(oldHash) }.update { $0.replyToHash = newReplyTo }.execute(db)
-            if let version = plan.pendingVersion {
-                try ProfilePhotoDelivery.markPending(orphan.peerHex, version: version, hash: newHash, db)
-            }
-            rehashed[oldHash] = newHash
-            messages.append(message)
+            guard let rebuilt = try rebuildOutgoingRow(
+                orphan, stored: attachmentBytes[orphan.id], bytesMissing: bytesMissing.contains(orphan.id),
+                identity: identity, now: now.addingTimeInterval(Double(index) / 1000), failedNow: now,
+                myVersion: myVersion, myPhoto: myPhoto, imageAllowed: imageAllowed, db)
+            else { continue }
+            rehashed[orphan.messageHash] = rebuilt.newHash
+            messages.append(rebuilt.message)
         }
         return (messages, rehashed)
+    }
+}
+
+/// The stored bytes of `attachments` by message id, and the message ids whose bytes are gone.
+private func readAttachmentBytes(_ attachments: [Attachment], _ attachmentStore: AttachmentStore)
+    -> (bytes: [UUID: (attachment: Attachment, data: Data)], missing: Set<UUID>) {
+    var attachmentBytes: [UUID: (attachment: Attachment, data: Data)] = [:]
+    var bytesMissing: Set<UUID> = []
+    for attachment in attachments {
+        guard attachment.hasBytes,
+              let bytes = try? Data(contentsOf: attachmentStore.url(forRelativePath: attachment.path))
+        else {
+            bytesMissing.insert(attachment.messageId)
+            continue
+        }
+        attachmentBytes[attachment.messageId] = (attachment, bytes)
+    }
+    return (attachmentBytes, bytesMissing)
+}
+
+/// One member's group copy back to waiting with no hash, so the group dispatch sends it again once
+/// the member has a path. The photo pending on its old hash is settled as not delivered. The
+/// caller refreshes the post's derived status.
+private func resetGroupCopy(_ copy: GroupDelivery, _ db: GRDB.Database) throws {
+    let noHash: String? = nil
+    try GroupDelivery
+        .where { $0.messageId.eq(copy.messageId) && $0.memberHex.eq(copy.memberHex) }
+        .update {
+            $0.status = GroupDeliveryStatus.waiting
+            $0.messageHash = noHash
+        }
+        .execute(db)
+    if let hash = copy.messageHash { try ProfilePhotoDelivery.applyOutcome(hash: hash, confirmed: false, db) }
+}
+
+/// Rebuilds one outgoing one-to-one row like a first send (`AppFeature.outgoingFields`) with a
+/// fresh profile-photo plan, under the LXMF timestamp `now` and so a new hash, inside the caller's
+/// write. Every local reference to the old hash moves with it: the reactions on it and other rows'
+/// `replyToHash`. A profile photo pending on the old hash is settled as not delivered and
+/// re-planned. A row to a blocked peer, or whose attachment bytes are gone, is marked failed
+/// instead (keeping its first `failedAt`, else `failedNow`) and nil is returned. Shared by the
+/// launch resend and Retry.
+private func rebuildOutgoingRow(_ row: Message, stored: (attachment: Attachment, data: Data)?, bytesMissing: Bool,
+                                identity: Identity, now: Date, failedNow: Date,
+                                myVersion: String, myPhoto: Data?, imageAllowed: Bool,
+                                _ db: GRDB.Database) throws -> (message: LXMessage, newHash: String)? {
+    let oldHash = row.messageHash
+    // The photo pending on the old hash will never be settled by the node.
+    try ProfilePhotoDelivery.applyOutcome(hash: oldHash, confirmed: false, db)
+    let blocked = try BlockedPeer.fetch(peerHex: row.peerHex.lowercased(), db) != nil
+    guard !blocked, !bytesMissing, let peer = Data(hexString: row.peerHex) else {
+        let failedAt: Date? = row.failedAt ?? failedNow
+        try Message.where { $0.id.eq(row.id) }
+            .update {
+                $0.status = MessageStatus.failed
+                $0.failedAt = failedAt
+            }
+            .execute(db)
+        return nil
+    }
+    let plan = ProfilePhotoOutbox.plan(myVersion: myVersion, myPhoto: myPhoto,
+                                       delivery: try ProfilePhotoDelivery.fetch(row.peerHex, db),
+                                       imageAllowed: imageAllowed)
+    let (message, rebuilt) = AppFeature.outgoing(
+        identity: identity, peer: peer, peerHex: row.peerHex, text: row.body, now: now,
+        fields: AppFeature.outgoingFields(
+            attachment: stored.map { (kind: $0.attachment.kind, name: $0.attachment.name, data: $0.data) },
+            replyTo: row.replyToHash.flatMap { Data(hexString: $0) },
+            replyQuote: row.replyQuote, expirySeconds: row.expirySeconds, photo: plan),
+        replyToHash: row.replyToHash, replyQuote: row.replyQuote)
+    let newHash = rebuilt.messageHash
+    try Message.where { $0.id.eq(row.id) }
+        .update {
+            $0.messageHash = newHash
+            $0.senderTimestamp = rebuilt.senderTimestamp
+            $0.wireSize = rebuilt.wireSize
+            $0.titleSize = rebuilt.titleSize
+            $0.contentSize = rebuilt.contentSize
+            $0.fieldKeys = rebuilt.fieldKeys
+        }
+        .execute(db)
+    try Reaction.where { $0.messageHash.eq(oldHash) }.update { $0.messageHash = newHash }.execute(db)
+    let newReplyTo: String? = newHash
+    try Message.where { $0.replyToHash.eq(oldHash) }.update { $0.replyToHash = newReplyTo }.execute(db)
+    if let version = plan.pendingVersion {
+        try ProfilePhotoDelivery.markPending(row.peerHex, version: version, hash: newHash, db)
+    }
+    return (message, newHash)
+}
+
+/// Retry (brief 2026-10-21) of one failed outgoing one-to-one row, in one write: rebuilt by
+/// `rebuildOutgoingRow` under a new hash, then `sending` again with its failure cleared. A row that
+/// is no longer failed, is a timer change, or whose disappearing timer fell due is left alone; a
+/// blocked peer or missing attachment bytes leave it failed. Returns the message to hand over and
+/// the old and new hash, or nil when nothing is to be sent.
+private func rebuildForRetry(_ database: any DatabaseWriter, _ attachmentStore: AttachmentStore, id: UUID,
+                             identity: Identity, now: Date, myVersion: String, myPhoto: Data?, imageAllowed: Bool)
+    async throws -> (message: LXMessage, oldHash: String, newHash: String)? {
+    let (listed, attachments) = try await database.read { db in
+        (try Message.where { $0.id.eq(id) }.fetchOne(db),
+         try Attachment.where { $0.messageId.eq(id) }.fetchAll(db))
+    }
+    guard let listed else { return nil }
+    let (attachmentBytes, bytesMissing) = readAttachmentBytes(attachments, attachmentStore)
+    return try await database.write { [attachmentBytes, bytesMissing] db in
+        let fetched = try Message.where { $0.id.eq(id) }.fetchOne(db)
+        guard let row = fetched, row.isOutgoing, row.status == MessageStatus.failed, row.groupHex == nil,
+              !row.isTimerChange, !row.isGroupEvent, row.messageHash == listed.messageHash,
+              row.expiresAt.map({ $0 > now }) ?? true
+        else { return nil }
+        guard let rebuilt = try rebuildOutgoingRow(
+            row, stored: attachmentBytes[id], bytesMissing: bytesMissing.contains(id),
+            identity: identity, now: now, failedNow: now,
+            myVersion: myVersion, myPhoto: myPhoto, imageAllowed: imageAllowed, db)
+        else { return nil }
+        let noFailure: Date? = nil
+        let noReason: String? = nil
+        try Message.where { $0.id.eq(id) }
+            .update {
+                $0.status = MessageStatus.sending
+                $0.failedAt = noFailure
+                $0.failureReason = noReason
+            }
+            .execute(db)
+        return (rebuilt.message, row.messageHash, rebuilt.newHash)
+    }
+}
+
+/// Read before a failure report for `hash` is applied: the conversation it is about to fail in,
+/// when that is news the user should hear (brief 2026-10-21). A one-to-one outgoing message that
+/// is not yet settled (not stored, delivered, cancelled or already failed) gives its peer. A group
+/// post's copy gives the group, once per post: only when no other copy of that post has failed
+/// yet. Timer changes and group event lines can't be retried, so they give nil.
+private func conversationNewlyFailing(hash: String, _ db: GRDB.Database) throws -> String? {
+    let settled = [MessageStatus.propagated, MessageStatus.delivered, MessageStatus.cancelled, MessageStatus.failed]
+    let direct = try Message
+        .where {
+            $0.messageHash.eq(hash) && $0.isOutgoing && $0.groupHex.is(nil)
+                && $0.isTimerChange.eq(false) && $0.isGroupEvent.eq(false)
+        }
+        .fetchOne(db)
+    if let direct {
+        return settled.contains(direct.status) ? nil : direct.peerHex
+    }
+    let copy = try GroupDelivery.where { $0.messageHash.eq(hash) }.fetchOne(db)
+    guard let copy, !settled.contains(copy.status) else { return nil }
+    let post = try Message.where { $0.id.eq(copy.messageId) }.fetchOne(db)
+    guard let post, !post.isGroupEvent, let groupHex = post.groupHex else { return nil }
+    let alreadyFailed = try GroupDelivery
+        .where { $0.messageId.eq(copy.messageId) && $0.status.eq(MessageStatus.failed) }
+        .fetchAll(db)
+    return alreadyFailed.isEmpty ? groupHex : nil
+}
+
+/// Retry of a group post: its failed member copies go back to waiting and its derived status is
+/// refreshed, the same reset the launch resend uses. The caller runs the group dispatch.
+private func resetFailedGroupCopies(_ database: any DatabaseWriter, messageId: UUID) async throws {
+    try await database.write { db in
+        let failed = try GroupDelivery
+            .where { $0.messageId.eq(messageId) && $0.status.eq(MessageStatus.failed) }
+            .fetchAll(db)
+        guard !failed.isEmpty else { return }
+        for copy in failed { try resetGroupCopy(copy, db) }
+        try GroupDelivery.refreshDerivedStatus(messageId: messageId, db)
     }
 }
 

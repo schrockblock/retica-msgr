@@ -93,8 +93,14 @@ public enum MessageInfo {
         } else if let seconds = m.expirySeconds {
             rows.append(Row("Disappears after", ExpiryPreset.label(forSeconds: seconds)))
         }
-        return Section(title: "Timeline", rows: rows)
+        // The Status row says "stored"; the footer under it says what that means, and no more than
+        // the sender can know (whether a push alert went out is not).
+        let storedNote = m.isOutgoing && m.status == MessageStatus.propagated ? storedFooter : nil
+        return Section(title: "Timeline", rows: rows, footer: storedNote)
     }
+
+    public static let storedFooter =
+        "Stored on your propagation node until they check in. If they have notifications on, they're alerted."
 
     static func delivery(_ m: Message) -> Section {
         var rows: [Row] = []

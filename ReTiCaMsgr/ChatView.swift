@@ -123,6 +123,12 @@ struct ChatView: View {
                                     store.send(.cancelSendTapped(message.id))
                                 }
                             }
+                            // Offline too: a retry falls back to the propagation node like any send.
+                            if canRetry(message) {
+                                Button("Retry", systemImage: "arrow.clockwise") {
+                                    store.send(.retryTapped(message.id))
+                                }
+                            }
                             Button("Info", systemImage: "info.circle") {
                                 infoTarget = InfoTarget(id: message.id)
                             }
@@ -363,10 +369,23 @@ struct ChatView: View {
         }
     }
 
-    /// A group row's status comes from its delivery rows (spec §4); a peer row's from its column.
+    /// A group row's status comes from its delivery rows (spec §4); a peer row's from its column,
+    /// in words (`MessageStatusLabel`).
     private func statusText(for message: Message) -> String {
-        guard isGroup, message.isOutgoing, let rows = store.deliveriesByMessageId[message.id] else { return message.status }
+        guard isGroup, message.isOutgoing, let rows = store.deliveriesByMessageId[message.id] else {
+            return MessageStatusLabel.text(for: message.status)
+        }
         return GroupRoster.statusLabel(rows)
+    }
+
+    /// Retry is offered on our own failed message: a peer row whose status is failed, or a group
+    /// post with at least one failed member copy. Cancelled is never retried.
+    private func canRetry(_ message: Message) -> Bool {
+        guard message.isOutgoing, !message.isTimerChange, !message.isGroupEvent else { return false }
+        if isGroup {
+            return store.deliveriesByMessageId[message.id]?.contains { $0.status == MessageStatus.failed } ?? false
+        }
+        return message.status == MessageStatus.failed
     }
 }
 
@@ -453,7 +472,7 @@ struct MessageBubble: View {
                                 .accessibilityLabel("Disappearing message")
                         }
                         if message.isOutgoing {
-                            Text(statusText ?? message.status)
+                            Text(statusText ?? MessageStatusLabel.text(for: message.status))
                         }
                     }
                     .font(.caption2)

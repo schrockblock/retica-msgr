@@ -41,6 +41,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        // A send that failed outside the open chat: the user is on another screen, so show it
+        // even while the app is active.
+        if SendFailedNotification.peerHex(from: notification.request.content.userInfo) != nil {
+            return [.banner, .list, .sound]
+        }
         // Foreground: the message is about to appear in the UI, so no banner. Drain instead.
         if UIApplication.shared.applicationState == .active {
             let packets = (try? PushPayload.decode(notification.request.content.userInfo)) ?? []
@@ -57,6 +62,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
+        // A local "Message not sent": open that chat. Not a push, so no wake.
+        if let peerHex = SendFailedNotification.peerHex(from: response.notification.request.content.userInfo) {
+            runtime.openFailedSend(peerHex)
+            return
+        }
         let packets = (try? PushPayload.decode(response.notification.request.content.userInfo)) ?? []
         stash(packets)
         // M2: a tap means the user is already looking at the app — nothing to hold for.
