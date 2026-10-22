@@ -32,6 +32,10 @@ struct ChatView: View {
     /// Set once the thread has been scrolled to its latest message, so a later message never
     /// pulls the reader away from what they scrolled back to.
     @State private var openedAtLatest = false
+    /// Whether the reader is within `ChatScroll.nearBottomThreshold` of the bottom of the thread.
+    @State private var nearBottom = true
+    /// Messages that arrived below the reader while they were scrolled up; drives the jump button.
+    @State private var unseenCount = 0
 
     private var isGroup: Bool { store.openConversationKind == .group }
 
@@ -142,6 +146,7 @@ struct ChatView: View {
                     if let hex = MessageLinks.conversationTarget(for: url, ownAddress: store.myAddressHex),
                        isGroup || hex != store.openPeerHex {
                         openedAtLatest = false
+                        unseenCount = 0
                         highlightedMessageID = nil
                         store.send(.startConversation(hex))
                     }
@@ -151,10 +156,60 @@ struct ChatView: View {
                 // appears, so the anchor alone can land on an empty list: scroll once the last
                 // message is known, on the next run loop so the row exists to scroll to.
                 .defaultScrollAnchor(.bottom)
-                .onChange(of: store.threadMessages.last?.id, initial: true) { _, last in
-                    guard !openedAtLatest, let last else { return }
-                    openedAtLatest = true
-                    Task { @MainActor in proxy.scrollTo(last, anchor: .bottom) }
+                // Where the reader is. Content growing under a still viewport (a message landing)
+                // isn't the reader scrolling, so it leaves `nearBottom` as it was: the follow
+                // decision below must see where they were before the new row arrived.
+                .onScrollGeometryChange(for: ScrollSpot.self) { geometry in
+                    ScrollSpot(contentHeight: geometry.contentSize.height, visibleMaxY: geometry.visibleRect.maxY)
+                } action: { old, new in
+                    if new.visibleMaxY == old.visibleMaxY, new.contentHeight > old.contentHeight { return }
+                    nearBottom = ChatScroll.isNearBottom(contentHeight: new.contentHeight, visibleMaxY: new.visibleMaxY)
+                    if nearBottom { unseenCount = 0 }
+                }
+                .onChange(of: store.threadMessages.last?.id, initial: true) { old, last in
+                    guard let last else { return }
+                    guard openedAtLatest else {
+                        openedAtLatest = true
+                        Task { @MainActor in proxy.scrollTo(last, anchor: .bottom) }
+                        return
+                    }
+                    // Only rows appended after the previous last one are new; if that one is gone
+                    // (a disappearing message purged), nothing arrived.
+                    let thread = store.threadMessages
+                    guard let old, let oldIndex = thread.firstIndex(where: { $0.id == old }) else { return }
+                    let newOutgoing = thread.last?.isOutgoing ?? false
+                    if ChatScroll.shouldFollow(newLastIsOutgoing: newOutgoing, wasNearBottom: nearBottom) {
+                        unseenCount = 0
+                        withAnimation { proxy.scrollTo(last, anchor: .bottom) }
+                    } else {
+                        unseenCount += thread.count - 1 - oldIndex
+                    }
+                }
+                .onChange(of: store.openPeerHex) {
+                    // Another conversation (`startConversation` or an LXMF link) starts fresh and
+                    // opens on its latest message. The thread itself loads later, in an effect.
+                    openedAtLatest = false
+                    unseenCount = 0
+                    nearBottom = true
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if unseenCount > 0, let last = store.threadMessages.last?.id {
+                        Button {
+                            unseenCount = 0
+                            withAnimation { proxy.scrollTo(last, anchor: .bottom) }
+                        } label: {
+                            Text(unseenCount == 1 ? "↓ New message" : "↓ \(unseenCount) new messages")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(.regularMaterial, in: Capsule())
+                                // UI rule: the whole capsule is the tap target, not just the glyphs.
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(12)
+                        .accessibilityHint("Scrolls to the latest message")
+                    }
                 }
                 .sheet(item: $infoTarget) { target in
                     MessageInfoSheet(store: store, messageID: target.id)
@@ -222,12 +277,7 @@ struct ChatView: View {
         // Amendment A11: a message is "viewed" only while this screen is actually showing.
         .onAppear { store.send(.chatAppeared) }
         .onDisappear { store.send(.chatDisappeared) }
-        .safeAreaInset(edge: .top) {
-            let transfers = store.inboundTransfersForOpenThread
-            if !transfers.isEmpty {
-                ReceivingCapsule(transfers: transfers).padding(.top, 4)
-            }
-        }
+        .incomingDownloadBanner(store.incomingDownloadFraction)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 if isGroup {
@@ -323,6 +373,12 @@ struct ChatView: View {
 private struct PickerTarget: Identifiable {
     let messageHash: String
     var id: String { messageHash }
+}
+
+/// The scroll geometry `ChatScroll.isNearBottom` needs, in the scroll content's coordinates.
+private struct ScrollSpot: Equatable {
+    let contentHeight: CGFloat
+    let visibleMaxY: CGFloat
 }
 
 private struct InfoTarget: Identifiable {

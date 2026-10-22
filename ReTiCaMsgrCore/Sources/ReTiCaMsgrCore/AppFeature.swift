@@ -202,6 +202,17 @@ public struct AppFeature {
         /// Inbound transfers by link ID, from `inboundTransferProgress`. Session-only.
         public var inboundTransfers: [Data: InboundTransfer] = [:]
 
+        /// How far the incoming downloads have got, for the "Receiving a message…" banner: the
+        /// mean of ReTiCA's per-link fractions, clamped to 0...1, or nil when nothing is arriving.
+        /// ReTiCA clears an entry when its resource lands, fails or its link closes, and leaves
+        /// out what this device serves as a propagation node.
+        public var incomingDownloadFraction: Double? {
+            let fractions = node.client.inboundProgress.values
+            guard !fractions.isEmpty else { return nil }
+            let mean = fractions.reduce(0, +) / Double(fractions.count)
+            return min(max(mean, 0), 1)
+        }
+
         /// Transfers to show in the open thread: the unattributed ones, plus those attributed to
         /// the open peer.
         public var inboundTransfersForOpenThread: [InboundTransfer] {

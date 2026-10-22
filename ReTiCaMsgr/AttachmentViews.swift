@@ -249,30 +249,6 @@ struct TransferProgressBar: View {
     }
 }
 
-// MARK: - Inbound capsule
-
-/// "Receiving… 43%" for transfers on their way in. Shows the lowest fraction when several run.
-struct ReceivingCapsule: View {
-    let transfers: [AppFeature.InboundTransfer]
-
-    var body: some View {
-        if !transfers.isEmpty {
-            let lowest = transfers.map(\.fraction).min() ?? 0
-            let label = transfers.count == 1
-                ? "Receiving… \(Int(lowest * 100))%"
-                : "Receiving \(transfers.count)… \(Int(lowest * 100))%"
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text(label).font(.caption.weight(.semibold))
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(.regularMaterial, in: Capsule())
-            .accessibilityLabel(label)
-        }
-    }
-}
-
 // MARK: - Composer bar
 
 /// The pending attachment above the text field: preview, name · size, size note, Original toggle

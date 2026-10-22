@@ -73,16 +73,12 @@ struct ConversationListView: View {
                     }
                 }
             }
+            // A larger message on its way in, from anyone (the sender isn't known yet).
+            .incomingDownloadBanner(store.incomingDownloadFraction)
             .navigationTitle("Chats")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Circle().fill(connectionColor).frame(width: 10, height: 10)
-                }
-                // No transfers, no toolbar item (an empty one still takes a slot).
-                if !store.unattributedInboundTransfers.isEmpty {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        ReceivingCapsule(transfers: store.unattributedInboundTransfers)
-                    }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showingAnnounces = true } label: {
