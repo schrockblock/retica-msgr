@@ -162,11 +162,10 @@ struct ChatView: View {
                 // appears, so the anchor alone can land on an empty list: scroll once the last
                 // message is known, on the next run loop so the row exists to scroll to.
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
-                // A short thread sits above the composer, and the keyboard or a growing composer
-                // keeps the last bubble in view. Content growth (a message landing) is left
-                // unanchored, so a reader scrolled up stays put; the follow logic below scrolls.
+                // A short thread sits above the composer. No `.sizeChanges` anchor: that role also
+                // covers content growth, so a message landing would move a reader scrolled up; the
+                // follow logic below decides when to scroll instead.
                 .defaultScrollAnchor(.bottom, for: .alignment)
-                .defaultScrollAnchor(.bottom, for: .sizeChanges)
                 // Where the reader is. Content growing under a still viewport (a message landing)
                 // isn't the reader scrolling, so it leaves `nearBottom` as it was: the follow
                 // decision below must see where they were before the new row arrived.
