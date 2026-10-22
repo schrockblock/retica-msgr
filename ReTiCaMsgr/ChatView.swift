@@ -155,7 +155,7 @@ struct ChatView: View {
                 // A conversation opens on its latest message. The thread loads after the screen
                 // appears, so the anchor alone can land on an empty list: scroll once the last
                 // message is known, on the next run loop so the row exists to scroll to.
-                .defaultScrollAnchor(.bottom)
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
                 // Where the reader is. Content growing under a still viewport (a message landing)
                 // isn't the reader scrolling, so it leaves `nearBottom` as it was: the follow
                 // decision below must see where they were before the new row arrived.
