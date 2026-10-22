@@ -181,6 +181,10 @@ public struct AppFeature {
         /// Whether ReTiCA's outbound retries are held (amendment A3): set when the background time
         /// ran out, released on foreground or the next `interfaceConnected`. Session-only.
         public var outboundHeld = false
+        /// Retried one-to-one sends still in flight, by hash, with their conversation: when one is
+        /// stored or delivered, that conversation's "Message not sent" notification is withdrawn.
+        /// Session-only.
+        public var retriedSends: [Data: String] = [:]
 
         /// How far the incoming downloads have got, for the "Receiving a message…" banner: the
         /// mean of ReTiCA's per-link fractions, clamped to 0...1, or nil when nothing is arriving.
@@ -619,7 +623,9 @@ public struct AppFeature {
         case announceRowTapped(destinationHashHex: String)
         case sendTapped
         case conversationsLoaded([Conversation])
-        case threadLoaded([Message], reactions: [Reaction] = [], attachments: [Attachment] = [])
+        /// `key` is the thread `reloadThread` read (a peer's address or a group's id); a load for a
+        /// thread that is no longer open is dropped. nil applies unconditionally.
+        case threadLoaded([Message], reactions: [Reaction] = [], attachments: [Attachment] = [], key: String? = nil)
         /// The open thread's group, members and delivery rows, sent by `reloadThread` before
         /// `threadLoaded` (nil group for a peer thread) and guarded on the open key.
         case groupLoaded(groupHex: String, group: ChatGroup?, members: [GroupMember], deliveries: [GroupDelivery])
@@ -656,6 +662,8 @@ public struct AppFeature {
         /// A tap on a "Message not sent" notification (AppDelegate): opens that peer's or group's
         /// chat.
         case sendFailedNotificationTapped(String)
+        /// Retry rebuilt the row to `peerHex` under `messageHash` and is handing it over. Internal.
+        case retryHandedOver(messageHash: Data, peerHex: String)
         /// The send could not write the attachment's bytes, so nothing was sent: show `storeFailed`
         /// in the attachment bar and give the caption back. Internal.
         case attachmentSendFailed(draft: String)
@@ -1276,7 +1284,9 @@ public struct AppFeature {
                     // After a relaunch a conversation peer may have no path (session-only gate, none
                     // persisted or it expired): ask for one instead of leaving Send disabled until
                     // the peer happens to re-announce.
-                    state.pathRequestIfUnreachable(peerHex)
+                    state.pathRequestIfUnreachable(peerHex),
+                    // The chat is open now, so its "Message not sent" has been seen.
+                    withdrawSendFailedNotice(peerHex)
                 )
 
             case .closeConversation:
@@ -1317,7 +1327,8 @@ public struct AppFeature {
                 // No first-view stamp and no purge: timers are one-to-one only in v1.
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
-                    .run { [database] send in try await reloadThread(database, groupHex, send) }
+                    .run { [database] send in try await reloadThread(database, groupHex, send) },
+                    withdrawSendFailedNotice(groupHex)
                 )
 
             case let .groupLoaded(groupHex, group, members, deliveries):
@@ -1509,7 +1520,8 @@ public struct AppFeature {
                         try await reloadThread(database, hex, send)
                         try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: now, send)
                     },
-                    state.pathRequestIfUnreachable(hex)
+                    state.pathRequestIfUnreachable(hex),
+                    withdrawSendFailedNotice(hex)
                 )
 
             case .chatAppeared:
@@ -2182,7 +2194,10 @@ public struct AppFeature {
                 state.conversations = rows
                 return .none
 
-            case let .threadLoaded(rows, reactions, attachments):
+            case let .threadLoaded(rows, reactions, attachments, key):
+                // Guarded like `groupLoaded` and the timer: a late load of the thread the user just
+                // left must not replace the new one's rows (and spend ChatView's first scroll).
+                if let key, key != state.openPeerHex { return .none }
                 state.threadMessages = rows
                 // Spec §2: in a group thread the reactor must be me or a current member; in a peer
                 // thread me or the open peer. `groupLoaded` lands first, so the members are known.
@@ -2407,7 +2422,9 @@ public struct AppFeature {
                 let openPeer = state.openPeerHex
                 let accepted: Bool? = true   // Optional on purpose, like `milestoneAt`.
                 let milestoneAt: Date? = date.now
-                return .merge(finished, .run { [database] send in
+                // A retried send the node now holds: its "Message not sent" no longer applies.
+                let withdraw = state.retriedSends.removeValue(forKey: hash).map(withdrawSendFailedNotice) ?? .none
+                return .merge(finished, withdraw, .run { [database] send in
                     try await database.write { db in
                         // Same hash-collision hazard as `deliveryFailed` above: scope to outgoing
                         // rows only so an incoming row sharing this hash isn't rewritten.
@@ -2452,7 +2469,9 @@ public struct AppFeature {
                 // Optional on purpose, like `milestoneAt`: the update subscript takes an optional
                 // expression, not a nil literal.
                 let noReason: String? = nil
-                return .merge(finished, .run { [database] send in
+                // A retried send that got through: its "Message not sent" no longer applies.
+                let withdraw = state.retriedSends.removeValue(forKey: hash).map(withdrawSendFailedNotice) ?? .none
+                return .merge(finished, withdraw, .run { [database] send in
                     try await database.write { db in
                         // Same hash-collision hazard as `deliveryFailed` above: scope to outgoing
                         // rows only so an incoming row sharing this hash isn't rewritten.
@@ -2607,14 +2626,14 @@ public struct AppFeature {
                 else { return .none }
                 let openPeer = state.openPeerHex
                 if let groupHex = message.groupHex {
-                    // A group post: its failed copies wait again, and the dispatch sends them to
-                    // the members with a path (the rest go when their path is learned).
-                    let reset: Effect<Action> = .run { [database] send in
-                        try await resetFailedGroupCopies(database, messageId: id)
-                        try await reloadConversations(database, send)
-                        if let openPeer { try await reloadThread(database, openPeer, send) }
+                    // A group post: its failed copies wait again and go out like a new post's, to
+                    // the members with a path at once and to the rest once their path answers.
+                    let failedMembers = Set((state.deliveriesByMessageId[id] ?? [])
+                        .filter { $0.status == MessageStatus.failed }.map(\.memberHex))
+                    return groupHandOver(&state, groupHex: groupHex, members: failedMembers, now: date.now,
+                                         dispatchGroupHex: groupHex) { db in
+                        try resetFailedGroupCopies(messageId: id, db)
                     }
-                    return .concatenate(reset, groupDispatchEffect(state, members: state.reachablePeers, groupHex: groupHex))
                 }
                 guard message.status == MessageStatus.failed else { return .none }
                 let identity = state.identity
@@ -2635,6 +2654,7 @@ public struct AppFeature {
                             imageAllowed: imageAllowed)
                         else { return }
                         rehashed[rebuilt.oldHash] = rebuilt.newHash
+                        await send(.retryHandedOver(messageHash: rebuilt.message.hash, peerHex: message.peerHex))
                         await send(.node(.client(.sendMessage(message: rebuilt.message,
                                                               fallbackToPropagation: fallbackToPropagation))))
                     }
@@ -2643,6 +2663,10 @@ public struct AppFeature {
                     try await reloadConversations(database, send)
                     if let openPeer { try await reloadThread(database, openPeer, send) }
                 }
+
+            case let .retryHandedOver(hash, peerHex):
+                state.retriedSends[hash] = peerHex
+                return .none
 
             case let .sendFailedNotificationTapped(hex):
                 // The notification carries only the conversation's hex; a group id and a peer
@@ -2821,6 +2845,14 @@ public struct AppFeature {
         }
     }
 
+    /// Withdraws the delivered "Message not sent" notification for `hex` (a peer or a group): the
+    /// user opened that chat, or a retried send in it got through.
+    private func withdrawSendFailedNotice(_ hex: String) -> Effect<Action> {
+        .run { [localNotifications] _ in
+            await localNotifications.removeDelivered(ids: [SendFailedNotification.id(peerHex: hex)])
+        }
+    }
+
     /// A message that will not go out: `failed` or `cancelled`, with the reason the Info sheet
     /// shows. The status guards keep a stored or delivered row as it is (a success is never
     /// clobbered) and a cancelled one too (the user's cancel is terminal, and a later failure
@@ -2831,6 +2863,7 @@ public struct AppFeature {
         let hex = hash.hexString
         state.outgoingProgress[hex] = nil
         state.inFlightSends.remove(hash)
+        state.retriedSends[hash] = nil
         let finished = finishSendingInBackground(&state)
         let openPeer = state.openPeerHex
         let milestoneAt: Date? = date.now
@@ -3102,7 +3135,6 @@ public struct AppFeature {
             replyQuote = quote.isEmpty ? nil : quote
         }
         let fields = replyFields + GroupWire.encodePost(groupId: groupId, postId: postId)
-        let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
         // `sentViaPropagation` stays nil: each member copy has its own hash, so no acceptance ever
         // names this row, and Info hides the row rather than say "No" (the Members section shows
         // which copies a node holds).
@@ -3119,31 +3151,47 @@ public struct AppFeature {
         state.saveDraft(now: now)
         state.replyTarget = nil
         state.attachmentError = nil
-        let reachable = others.intersection(state.reachablePeers)
+        return .merge(
+            .cancel(id: CancelID.attachmentPreparation),
+            groupHandOver(&state, groupHex: groupHex, members: others, now: now) { db in
+                try Message.insert { row }.execute(db)
+                for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
+                try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
+            }
+        )
+    }
+
+    /// A group write handed over like a send (spec §3 "Sending a post", shared with Retry): the
+    /// members of `members` with no path get a path request and their copies wait for it; the
+    /// reservation in `pendingHandOvers` holds until `write` and the copies to the reachable members
+    /// are handed over (`handingOver`), then the thread and the list reload. `dispatchGroupHex`
+    /// limits the dispatch to that group's waiting copies; nil sends every waiting copy addressed
+    /// to the reachable members.
+    private func groupHandOver(_ state: inout State, groupHex: String, members: Set<String>, now: Date,
+                               dispatchGroupHex: String? = nil,
+                               write: @escaping @Sendable (GRDB.Database) throws -> Void) -> Effect<Action> {
+        let reachable = members.intersection(state.reachablePeers)
         let identity = state.identity
         let myName = state.myName
-        let pathRequests = others.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
+        let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
+        let pathRequests = members.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
         let myVersion = state.myPhotoVersion
         let imageAllowed = state.profilePhotoMayRide
         let avatarStore = self.avatarStore
         state.pendingHandOvers += 1
-        let write: Effect<Action> = .run { [database] send in
+        let handOver: Effect<Action> = .run { [database] send in
             try await handingOver(send) {
-                try await database.write { db in
-                    try Message.insert { row }.execute(db)
-                    for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
-                    try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
-                }
+                try await database.write(write)
                 _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
                                                          myName: myName, fallbackToPropagation: fallbackToPropagation,
-                                                         now: now, myVersion: myVersion,
+                                                         now: now, groupHex: dispatchGroupHex, myVersion: myVersion,
                                                          myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                          imageAllowed: imageAllowed, send)
             }
             try await reloadThread(database, groupHex, send)
             try await reloadConversations(database, send)
         }
-        return .merge(pathRequests + [.cancel(id: CancelID.attachmentPreparation), write])
+        return .merge(pathRequests + [handOver])
     }
 
     /// Spec §3 "Receiving" for `.roster` and `.leave` (amendments A5, A7): the rules run inside
@@ -3591,7 +3639,7 @@ private func reloadThread(_ database: any DatabaseWriter, _ key: String, _ send:
         return (rows, reactions, attachments, expiry, group, members, deliveries)
     }
     await send(.groupLoaded(groupHex: key, group: loaded.4, members: loaded.5, deliveries: loaded.6))
-    await send(.threadLoaded(loaded.0, reactions: loaded.1, attachments: loaded.2))
+    await send(.threadLoaded(loaded.0, reactions: loaded.1, attachments: loaded.2, key: key))
     await send(.conversationExpiryLoaded(peerHex: key, seconds: loaded.3))
 }
 
@@ -3689,7 +3737,8 @@ private func stampViewed(_ database: any DatabaseWriter, _ peerHex: String, now:
 ///   profile-photo plan, under a new LXMF timestamp and so a new hash. Every local reference to
 ///   the old hash moves with it: the reactions on it and other rows' `replyToHash`. A profile
 ///   photo pending on the old hash is settled as not delivered and re-planned, so a photo that
-///   never arrived rides again. `expiresAt` keeps the first send's deadline;
+///   never arrived rides again. `expiresAt` keeps the first send's deadline. A row whose hash is
+///   in `inFlight` (a Retry this run already handed over) is left alone;
 /// - a row to a peer blocked since the send (spec 2026-10-15 §2), or whose attachment bytes are
 ///   gone, is marked failed instead;
 /// - a row whose disappearing timer fell due (`expiresAt <= now`) is left for the purge.
@@ -3733,8 +3782,10 @@ private func rebuildOrphans(_ database: any DatabaseWriter, _ attachmentStore: A
         for (index, entry) in listed.enumerated() {
             // Re-read: an earlier orphan's rehash may have moved this row's `replyToHash`.
             let fetched = try Message.where { $0.id.eq(entry.id) }.fetchOne(db)
+            // A row this run already handed over (a Retry tapped before this first connect) is
+            // live under its current hash, like a group copy in flight.
             guard let orphan = fetched, orphan.status == MessageStatus.sending,
-                  orphan.messageHash == entry.messageHash else { continue }
+                  orphan.messageHash == entry.messageHash, !inFlight.contains(orphan.messageHash) else { continue }
             // A millisecond apart, so two identical orphans to one peer still hash differently.
             guard let rebuilt = try rebuildOutgoingRow(
                 orphan, stored: attachmentBytes[orphan.id], bytesMissing: bytesMissing.contains(orphan.id),
@@ -3900,16 +3951,15 @@ private func conversationNewlyFailing(hash: String, _ db: GRDB.Database) throws 
 }
 
 /// Retry of a group post: its failed member copies go back to waiting and its derived status is
-/// refreshed, the same reset the launch resend uses. The caller runs the group dispatch.
-private func resetFailedGroupCopies(_ database: any DatabaseWriter, messageId: UUID) async throws {
-    try await database.write { db in
-        let failed = try GroupDelivery
-            .where { $0.messageId.eq(messageId) && $0.status.eq(MessageStatus.failed) }
-            .fetchAll(db)
-        guard !failed.isEmpty else { return }
-        for copy in failed { try resetGroupCopy(copy, db) }
-        try GroupDelivery.refreshDerivedStatus(messageId: messageId, db)
-    }
+/// refreshed, the same reset the launch resend uses, inside the caller's write. The caller runs
+/// the group dispatch.
+private func resetFailedGroupCopies(messageId: UUID, _ db: GRDB.Database) throws {
+    let failed = try GroupDelivery
+        .where { $0.messageId.eq(messageId) && $0.status.eq(MessageStatus.failed) }
+        .fetchAll(db)
+    guard !failed.isEmpty else { return }
+    for copy in failed { try resetGroupCopy(copy, db) }
+    try GroupDelivery.refreshDerivedStatus(messageId: messageId, db)
 }
 
 /// Runs the hand-over part of a group effect (its write and the copies to reachable members), then

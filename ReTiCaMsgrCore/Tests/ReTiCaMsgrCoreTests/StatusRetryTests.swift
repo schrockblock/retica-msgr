@@ -19,13 +19,18 @@ private let earlier = now.addingTimeInterval(-600)
 private let peer = String(repeating: "a", count: 32)
 private let otherPeer = String(repeating: "b", count: 32)
 
-/// `sent` records every message handed to the node and `posted` every local notification, in
-/// order: a `.off` TestStore cannot assert an action absent.
+/// `sent` records every message handed to the node, `paths` every path request, `posted` every
+/// local notification and `removed` every withdrawn one, in order: a `.off` TestStore cannot
+/// assert an action absent.
 @MainActor
 private func makeStore(_ db: any DatabaseWriter, sent: LockIsolated<[LXMessage]> = LockIsolated([]),
+                       paths: LockIsolated<[Data]> = LockIsolated([]),
                        posted: LockIsolated<[LocalNotificationClient.Posted]> = LockIsolated([]),
+                       removed: LockIsolated<[String]> = LockIsolated([]),
+                       launchedAt: Date? = nil,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: Identity())
+    initial.launchedAt = launchedAt
     configure?(&initial)
     let store = TestStore(initialState: initial) {
         CombineReducers {
@@ -34,13 +39,16 @@ private func makeStore(_ db: any DatabaseWriter, sent: LockIsolated<[LXMessage]>
                 if case let .node(.client(.sendMessage(message, _))) = action {
                     sent.withValue { $0.append(message) }
                 }
+                if case let .node(.client(.endpoint(.requestPath(hash)))) = action {
+                    paths.withValue { $0.append(hash) }
+                }
                 return .none
             }
         }
     } withDependencies: {
         $0.defaultDatabase = db
         $0.attachmentStore = AttachmentStore.testValue
-        $0.localNotifications = .recording(into: posted)
+        $0.localNotifications = .recording(into: posted, removed: removed)
         $0.date = .constant(now)
         $0.transportDate = .constant(now)
         $0.uuid = .incrementing
@@ -103,7 +111,8 @@ private func failed(_ row: Message) -> AppFeature.Action {
 
 // MARK: - Retry, one-to-one
 
-/// Mutation: don't send → nothing is handed to the node and the row stays failed.
+/// Mutations: don't send → nothing is handed to the node and the row stays failed; drop the
+/// reservation (`+= 1`) → `pendingHandOvers` is 0 while the rebuild waits on the database.
 @MainActor @Test func retryResendsAFailedMessageUnderANewHash() async throws {
     let db = try AppDatabase.makeInMemory()
     let original = outgoingRow(1, "did this go?")
@@ -113,7 +122,15 @@ private func failed(_ row: Message) -> AppFeature.Action {
         s.openPeerHex = peer
         s.threadMessages = [original]
     }
-    await run(store, .retryTapped(original.id))
+    // Reserved from the tap, as `sendTapped` reserves its send: a `.backgrounded` before the row
+    // is rebuilt still asks for time.
+    let gate = DatabaseGate()
+    await gate.hold(db)
+    await store.send(.retryTapped(original.id))
+    #expect(store.state.pendingHandOvers == 1)
+    gate.release()
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
     let message = try #require(sent.value.first)
     #expect(sent.value.count == 1)
     #expect(message.content == Data("did this go?".utf8))
@@ -184,6 +201,60 @@ private let groupHex = String(repeating: "1a", count: 16)
 private let memberC = String(repeating: "c", count: 32)
 private let memberD = String(repeating: "d", count: 32)
 
+/// My group of me, C and D, with one post whose copies to C and D both failed.
+private func failedGroupPost(_ db: any DatabaseWriter) async throws
+    -> (me: Identity, myHex: String, group: ChatGroup, post: Message, copies: [GroupDelivery]) {
+    let me = Identity()
+    let myHex = lxmfAddressHex(me)
+    let group = ChatGroup(groupHex: groupHex, name: "Mutual Aid", creatorHex: myHex, revision: 1,
+                          state: GroupState.active, updatedAt: earlier)
+    let postId = String(repeating: "31", count: 16)
+    let post = Message(id: UUID(), peerHex: myHex, isOutgoing: true, body: "post", timestamp: earlier,
+                       status: MessageStatus.failed, validated: false, messageHash: postId,
+                       groupHex: groupHex, groupPostId: postId)
+    let copies = [memberC, memberD].map {
+        GroupDelivery(messageId: post.id, memberHex: $0, messageHash: String(repeating: "7\($0.prefix(1))", count: 32),
+                      status: MessageStatus.failed, storedAt: nil, deliveredAt: nil, failedAt: earlier)
+    }
+    try await db.write { db in
+        try ChatGroup.upsert(group, db)
+        try GroupMember.replace(groupHex, with: [myHex, memberC, memberD].sorted(), db)
+        try Message.insert { post }.execute(db)
+        for copy in copies { try GroupDelivery.insert { copy }.execute(db) }
+    }
+    return (me, myHex, group, post, copies)
+}
+
+/// Retry hands the post over like a new one: reserved from the tap, and the failed member with no
+/// path is asked for one, so its copy goes when the path answers rather than whenever it announces.
+/// Mutations: drop the reservation → `pendingHandOvers` is 0 while the reset waits on the
+/// database; no path requests → nothing is asked for C.
+@MainActor @Test func groupRetryIsReservedAndAsksForPaths() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let (me, myHex, group, post, copies) = try await failedGroupPost(db)
+    let paths = LockIsolated<[Data]>([])
+    let store = makeStore(db, paths: paths) { s in
+        s.identity = me
+        s.myAddressHex = myHex
+        s.openPeerHex = groupHex
+        s.openConversationKind = .group
+        // Already loaded, so the reload's first-open path requests don't ask on Retry's behalf.
+        s.openGroup = group
+        s.threadMessages = [post]
+        s.deliveriesByMessageId = [post.id: copies]
+        s.reachablePeers = [memberD]
+    }
+    let gate = DatabaseGate()
+    await gate.hold(db)
+    await store.send(.retryTapped(post.id))
+    #expect(store.state.pendingHandOvers == 1)
+    gate.release()
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.pendingHandOvers == 0)
+    #expect(paths.value == [Data(hexString: memberC)!])
+}
+
 /// A failed copy to D (who has a path) goes out again at once under a new hash; one to C (no
 /// path) waits for it. The post's derived status is refreshed.
 /// Mutation: leave them failed → nothing is sent and both copies stay failed.
@@ -215,6 +286,7 @@ private let memberD = String(repeating: "d", count: 32)
         s.openPeerHex = groupHex
         s.openConversationKind = .group
         s.threadMessages = [post]
+        s.deliveriesByMessageId = [post.id: [toC, toD]]
         s.reachablePeers = [memberD]
     }
     await run(store, .retryTapped(post.id))
@@ -300,4 +372,131 @@ private let memberD = String(repeating: "d", count: 32)
     await run(store, .node(.client(.delegate(.deliveryCancelled(messageHash: Data(hexString: original.messageHash)!)))))
     #expect(posted.value.isEmpty)
     #expect(try await row(db, original.id).status == MessageStatus.cancelled)
+}
+
+// MARK: - Fix round 1
+
+/// A Retry tapped before this launch's first connect (offline at launch) is live under its new
+/// hash, so the launch resend must not send it a second time under a third.
+/// Mutation: drop the in-flight filter for one-to-one orphans → two sends.
+@MainActor @Test func retryBeforeFirstConnectIsNotResentAgain() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let original = outgoingRow(1, "once only")
+    try await insert(db, [original])
+    let sent = LockIsolated<[LXMessage]>([])
+    let store = makeStore(db, sent: sent, launchedAt: now) { s in
+        s.openPeerHex = peer
+        s.threadMessages = [original]
+    }
+    await run(store, .retryTapped(original.id))
+    let message = try #require(sent.value.first)
+    await run(store, .node(.client(.endpoint(.transport(.interfaceConnected(DefaultNode.entry.interfaceID, .tcp))))))
+    #expect(store.state.orphansResent == true)
+    #expect(sent.value.count == 1)
+    #expect(try await row(db, original.id).messageHash == message.hash.hexString)
+}
+
+/// The common case: send in a chat, leave the app, the send fails. `chatVisible` stays true
+/// across backgrounding (no onDisappear), so only `isForeground` says nobody is looking.
+/// Mutation: drop `state.isForeground &&` → nothing is posted.
+@MainActor @Test func failureAfterBackgroundingTheOpenChatNotifies() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let original = outgoingRow(1, "hello", status: MessageStatus.sending)
+    try await insert(db, [original])
+    let posted = LockIsolated<[LocalNotificationClient.Posted]>([])
+    let store = makeStore(db, posted: posted) { s in
+        s.isForeground = false
+        s.chatVisible = true
+        s.openPeerHex = peer
+    }
+    await run(store, failed(original))
+    #expect(posted.value.map(\.id) == ["send-failed-\(peer)"])
+}
+
+/// The same peer's chat is open but not on screen (the Settings tab, or the list).
+/// Mutation: drop `&& state.chatVisible` → nothing is posted.
+@MainActor @Test func failureWithTheChatNotVisibleNotifies() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let original = outgoingRow(1, "hello", status: MessageStatus.sending)
+    try await insert(db, [original])
+    let posted = LockIsolated<[LocalNotificationClient.Posted]>([])
+    let store = makeStore(db, posted: posted) { s in
+        s.isForeground = true
+        s.chatVisible = false
+        s.openPeerHex = peer
+    }
+    await run(store, failed(original))
+    #expect(posted.value.map(\.id) == ["send-failed-\(peer)"])
+}
+
+/// A recipient's refusal fails the send too.
+/// Mutation: notify only when there is no reason (plain `deliveryFailed`) → nothing is posted.
+@MainActor @Test func rejectionNotifies() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let original = outgoingRow(1, "hello", status: MessageStatus.sending)
+    try await insert(db, [original])
+    let posted = LockIsolated<[LocalNotificationClient.Posted]>([])
+    let store = makeStore(db, posted: posted) { s in s.isForeground = false }
+    await run(store, .node(.client(.delegate(.deliveryRejected(messageHash: Data(hexString: original.messageHash)!)))))
+    #expect(posted.value.map(\.id) == ["send-failed-\(peer)"])
+    #expect(try await row(db, original.id).status == MessageStatus.failed)
+}
+
+/// A failure reported twice for one hash is one failure.
+/// Mutation: drop `failed` from the settled statuses → two posts.
+@MainActor @Test func repeatedFailureReportPostsOnce() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let original = outgoingRow(1, "hello", status: MessageStatus.sending)
+    try await insert(db, [original])
+    let posted = LockIsolated<[LocalNotificationClient.Posted]>([])
+    let store = makeStore(db, posted: posted) { s in s.isForeground = false }
+    await run(store, failed(original))
+    await run(store, failed(original))
+    #expect(posted.value.count == 1)
+}
+
+/// Opening the chat a "Message not sent" is about means it has been seen.
+/// Mutation: don't remove → nothing is withdrawn.
+@MainActor @Test func openingTheChatWithdrawsItsFailureNotice() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let removed = LockIsolated<[String]>([])
+    let store = makeStore(db, removed: removed)
+    await run(store, .openConversation(peer))
+    #expect(removed.value == ["send-failed-\(peer)"])
+}
+
+/// A retried send that is delivered takes its conversation's notice away.
+/// Mutation: skip the withdrawal on delivery → nothing is withdrawn.
+@MainActor @Test func retriedSendDeliveredWithdrawsTheNotice() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let original = outgoingRow(1, "again")
+    try await insert(db, [original])
+    let sent = LockIsolated<[LXMessage]>([])
+    let removed = LockIsolated<[String]>([])
+    let store = makeStore(db, sent: sent, removed: removed) { s in
+        s.openPeerHex = peer
+        s.threadMessages = [original]
+    }
+    await run(store, .retryTapped(original.id))
+    let message = try #require(sent.value.first)
+    #expect(removed.value.isEmpty)
+    await run(store, .node(.client(.delegate(.deliveryConfirmed(messageHash: message.hash)))))
+    #expect(removed.value == ["send-failed-\(peer)"])
+    #expect(store.state.retriedSends.isEmpty)
+}
+
+/// A load of a thread that is no longer open (a reload that finished after the switch) leaves
+/// the open thread's rows alone.
+/// Mutation: drop the key guard → the other thread's rows replace them.
+@MainActor @Test func lateLoadOfAnotherThreadIsDropped() async throws {
+    let mine = outgoingRow(1, "this chat")
+    let theirs = outgoingRow(2, "the chat I left", to: otherPeer)
+    let store = makeStore(try AppDatabase.makeInMemory()) { s in
+        s.openPeerHex = peer
+        s.threadMessages = [mine]
+    }
+    await store.send(.threadLoaded([theirs], key: otherPeer))
+    #expect(store.state.threadMessages == [mine])
+    await store.send(.threadLoaded([mine, theirs], key: peer))
+    #expect(store.state.threadMessages == [mine, theirs])
 }

@@ -1,21 +1,29 @@
 import Foundation
 import ComposableArchitecture
 
-/// Posts a local notification (brief 2026-10-21). The core package has no UserNotifications
-/// wiring, so the live value posts nothing and `AppRuntime` installs one over
-/// `UNUserNotificationCenter`, which does nothing while notifications aren't authorized and
-/// never asks for permission.
+/// Posts and withdraws local notifications (brief 2026-10-21). The core package has no
+/// UserNotifications wiring, so the live value does nothing and `AppRuntime` installs one over
+/// `UNUserNotificationCenter`, which posts nothing while notifications aren't authorized and never
+/// asks for permission.
 public struct LocalNotificationClient: Sendable {
     public var postNotification: @Sendable (_ id: String, _ title: String, _ body: String,
                                             _ threadID: String, _ userInfo: [String: String]) async -> Void
+    /// Takes delivered notifications with these ids off the screen and out of Notification Center.
+    public var removeDeliveredNotifications: @Sendable (_ ids: [String]) async -> Void
 
     public init(post: @escaping @Sendable (_ id: String, _ title: String, _ body: String,
-                                           _ threadID: String, _ userInfo: [String: String]) async -> Void) {
+                                           _ threadID: String, _ userInfo: [String: String]) async -> Void,
+                removeDelivered: @escaping @Sendable (_ ids: [String]) async -> Void) {
         self.postNotification = post
+        self.removeDeliveredNotifications = removeDelivered
     }
 
     public func post(id: String, title: String, body: String, threadID: String, userInfo: [String: String]) async {
         await postNotification(id, title, body, threadID, userInfo)
+    }
+
+    public func removeDelivered(ids: [String]) async {
+        await removeDeliveredNotifications(ids)
     }
 
     /// One posted notification, as a test records it.
@@ -35,18 +43,21 @@ public struct LocalNotificationClient: Sendable {
         }
     }
 
-    /// Appends every post to `log`.
-    public static func recording(into log: LockIsolated<[Posted]>) -> LocalNotificationClient {
-        LocalNotificationClient { id, title, body, threadID, userInfo in
-            log.withValue { $0.append(Posted(id: id, title: title, body: body, threadID: threadID, userInfo: userInfo)) }
-        }
+    /// Appends every post to `log` and every withdrawn id to `removed`.
+    public static func recording(into log: LockIsolated<[Posted]>,
+                                 removed: LockIsolated<[String]> = LockIsolated([])) -> LocalNotificationClient {
+        LocalNotificationClient(
+            post: { id, title, body, threadID, userInfo in
+                log.withValue { $0.append(Posted(id: id, title: title, body: body, threadID: threadID, userInfo: userInfo)) }
+            },
+            removeDelivered: { ids in removed.withValue { $0.append(contentsOf: ids) } })
     }
 }
 
 extension LocalNotificationClient: DependencyKey {
-    public static let liveValue = LocalNotificationClient { _, _, _, _, _ in }
-    /// Records into a log nobody reads, so the many tests that fail a send don't have to say so;
-    /// a test that checks posts installs `recording(into:)`.
+    public static let liveValue = LocalNotificationClient(post: { _, _, _, _, _ in }, removeDelivered: { _ in })
+    /// Records into logs nobody reads, so the many tests that fail a send or open a chat don't
+    /// have to say so; a test that checks them installs `recording(into:removed:)`.
     public static let testValue = LocalNotificationClient.recording(into: LockIsolated([]))
 }
 
@@ -65,8 +76,9 @@ public enum SendFailedNotification {
     public static let title = "Message not sent"
     public static let body = "Tap to retry."
 
-    /// The request id and thread id for `peerHex` (a peer's address or a group's id).
-    public static func id(peerHex: String) -> String { "send-failed-\(peerHex)" }
+    /// The request id and thread id for `peerHex` (a peer's address or a group's id), in lower
+    /// case so a post and its later removal always agree.
+    public static func id(peerHex: String) -> String { "send-failed-\(peerHex.lowercased())" }
 
     public static func userInfo(peerHex: String) -> [String: String] {
         ["kind": kind, "peerHex": peerHex]

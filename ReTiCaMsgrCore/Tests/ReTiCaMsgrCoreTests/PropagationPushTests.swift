@@ -493,26 +493,6 @@ private func isHold(_ on: Bool, _ action: AppFeature.Action) -> Bool {
 
 // MARK: - Sends still in their hand-over effect (final review I1, M1)
 
-/// Holds the database's one writer queue until `release()`, so an effect's next database step
-/// waits there: a test can act while a send is still being built.
-private final class DatabaseGate: Sendable {
-    private let semaphore = DispatchSemaphore(value: 0)
-
-    /// Returns once the queue is held.
-    func hold(_ db: any DatabaseWriter) async {
-        let (held, holding) = AsyncStream.makeStream(of: Void.self)
-        Task.detached { [semaphore] in
-            try? await db.write { _ in
-                holding.yield()
-                semaphore.wait()
-            }
-        }
-        for await _ in held { return }
-    }
-
-    func release() { semaphore.signal() }
-}
-
 private let pendingPDF = PendingAttachment(kind: AttachmentKind.file, name: "Trail map.pdf", format: "pdf",
                                            data: Data("%PDF fake".utf8), width: nil, height: nil,
                                            originalSource: nil, isOriginal: false)

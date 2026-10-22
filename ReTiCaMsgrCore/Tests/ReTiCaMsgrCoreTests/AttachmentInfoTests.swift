@@ -60,7 +60,7 @@ private func file(name: String = "notes.pdf", format: String = "pdf") -> Attachm
 @Test func attachInfoNoAttachmentNoSectionAndNoReasonRows() {
     let sections = MessageInfo.sections(for: outgoing(), timeZone: utc)
     #expect(sections.map(\.title) == ["Timeline", "Delivery", "Identity", "Payload"])
-    #expect(sections[0].rows.last == MessageInfo.Row("Status", "sending"))
+    #expect(sections[0].rows.last == MessageInfo.Row("Status", "Sending…"))
     #expect(sections[1].rows == [MessageInfo.Row("Propagation node copy", "Yes")])
 }
 
@@ -69,7 +69,7 @@ private func file(name: String = "notes.pdf", format: String = "pdf") -> Attachm
         for: outgoing(status: MessageStatus.cancelled, failureReason: FailureReason.cancelled,
                       propagationRefused: PropagationRefusal.tooLargeForNode),
         timeZone: utc)
-    #expect(Array(cancelled[0].rows.suffix(2)) == [MessageInfo.Row("Status", "cancelled"), MessageInfo.Row("Reason", "Cancelled")])
+    #expect(Array(cancelled[0].rows.suffix(2)) == [MessageInfo.Row("Status", "Cancelled"), MessageInfo.Row("Reason", "Cancelled")])
     #expect(cancelled[1].rows == [
         MessageInfo.Row("Propagation node copy", "Yes"),
         MessageInfo.Row("Propagation refusal", "Refused: too large for node"),

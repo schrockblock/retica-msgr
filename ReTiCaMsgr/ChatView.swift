@@ -162,6 +162,11 @@ struct ChatView: View {
                 // appears, so the anchor alone can land on an empty list: scroll once the last
                 // message is known, on the next run loop so the row exists to scroll to.
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
+                // A short thread sits above the composer, and the keyboard or a growing composer
+                // keeps the last bubble in view. Content growth (a message landing) is left
+                // unanchored, so a reader scrolled up stays put; the follow logic below scrolls.
+                .defaultScrollAnchor(.bottom, for: .alignment)
+                .defaultScrollAnchor(.bottom, for: .sizeChanges)
                 // Where the reader is. Content growing under a still viewport (a message landing)
                 // isn't the reader scrolling, so it leaves `nearBottom` as it was: the follow
                 // decision below must see where they were before the new row arrived.
@@ -379,13 +384,14 @@ struct ChatView: View {
     }
 
     /// Retry is offered on our own failed message: a peer row whose status is failed, or a group
-    /// post with at least one failed member copy. Cancelled is never retried.
+    /// post with at least one failed member copy. Cancelled is never retried, and neither is a
+    /// message to a blocked peer (nothing is sent to them, so Retry would do nothing).
     private func canRetry(_ message: Message) -> Bool {
         guard message.isOutgoing, !message.isTimerChange, !message.isGroupEvent else { return false }
         if isGroup {
             return store.deliveriesByMessageId[message.id]?.contains { $0.status == MessageStatus.failed } ?? false
         }
-        return message.status == MessageStatus.failed
+        return message.status == MessageStatus.failed && !store.state.isBlocked(message.peerHex)
     }
 }
 

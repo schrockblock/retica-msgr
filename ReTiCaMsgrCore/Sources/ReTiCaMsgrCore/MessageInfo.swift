@@ -82,7 +82,7 @@ public enum MessageInfo {
                 rows.append(missingRow("Skew"))
             }
         }
-        rows.append(Row("Status", m.status))
+        rows.append(Row("Status", MessageStatusLabel.text(for: m.status)))
         if let reason = m.failureReason {
             rows.append(Row("Reason", failureReasonName(reason)))
         }

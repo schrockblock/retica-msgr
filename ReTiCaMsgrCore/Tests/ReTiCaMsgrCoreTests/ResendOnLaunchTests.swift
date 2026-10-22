@@ -390,8 +390,9 @@ private func deliveries(_ db: any DatabaseWriter) async throws -> [String: Group
     #expect(settled.pendingVersion == nil)
 }
 
-/// Holds the database's writer queue until released, so an effect's write waits.
-private final class DatabaseGate: Sendable {
+/// Holds the database's writer queue until released, so an effect's write waits. Shared by the
+/// hand-over tests in this module (PropagationPushTests, StatusRetryTests).
+final class DatabaseGate: Sendable {
     private let semaphore = DispatchSemaphore(value: 0)
 
     func hold(_ db: any DatabaseWriter) async {

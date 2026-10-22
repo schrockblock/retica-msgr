@@ -3440,7 +3440,7 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
         // carries the (absent) conversation timer alongside the thread's messages, and leads with
         // the (nil, for a peer) group load (Task 4).
         await store.receive(.groupLoaded(groupHex: peerB, group: nil, members: [], deliveries: []))
-        await store.receive(.threadLoaded([], reactions: [], attachments: []))
+        await store.receive(.threadLoaded([], reactions: [], attachments: [], key: peerB))
         await store.receive(.conversationExpiryLoaded(peerHex: peerB, seconds: nil)) {
             $0.openConversationExpiryLoaded = true
         }

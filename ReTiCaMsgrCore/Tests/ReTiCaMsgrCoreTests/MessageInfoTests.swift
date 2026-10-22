@@ -28,7 +28,7 @@ private func missingRow(_ label: String) -> MessageInfo.Row {
             MessageInfo.Row(label: "Stored on node", display: "22:13:24 (+4s)", copy: "2023-11-14T22:13:24.000Z"),
             MessageInfo.Row(label: "Delivered", display: "22:14:41 (+1m 21s)", copy: "2023-11-14T22:14:41.000Z"),
             MessageInfo.Row(label: "Failed", display: "23:16:20 (+1h 03m)", copy: "2023-11-14T23:16:20.000Z"),
-            MessageInfo.Row("Status", "delivered"),
+            MessageInfo.Row("Status", "Delivered"),
         ]),
         MessageInfo.Section(title: "Delivery", rows: [MessageInfo.Row("Propagation node copy", "Yes")]),
         MessageInfo.Section(title: "Identity", rows: [
@@ -57,7 +57,7 @@ private func missingRow(_ label: String) -> MessageInfo.Row {
     #expect(sections.map(\.title) == ["Timeline", "Delivery", "Identity", "Payload"])
     #expect(sections[0].rows == [
         MessageInfo.Row(label: "Sent", display: "22:13:20", copy: "2023-11-14T22:13:20.000Z"),
-        MessageInfo.Row("Status", "sending"),
+        MessageInfo.Row("Status", "Sending…"),
     ])
     #expect(sections[1].rows == [MessageInfo.Row("Propagation node copy", "No")])
     #expect(sections[2].footer == nil)
@@ -75,7 +75,7 @@ private func missingRow(_ label: String) -> MessageInfo.Row {
             MessageInfo.Row(label: "Written", display: "22:11:59", copy: "2023-11-14T22:11:59.000Z"),
             MessageInfo.Row(label: "Received", display: "22:13:20", copy: "2023-11-14T22:13:20.000Z"),
             MessageInfo.Row("Skew", "+1m 21s"),
-            MessageInfo.Row("Status", "received"),
+            MessageInfo.Row("Status", "Received"),
         ]),
         MessageInfo.Section(title: "Delivery", rows: [MessageInfo.Row("Arrival", "Direct link")]),
         MessageInfo.Section(title: "Identity", rows: [
@@ -107,7 +107,7 @@ private func missingRow(_ label: String) -> MessageInfo.Row {
             missingRow("Written"),
             MessageInfo.Row(label: "Received", display: "22:13:20", copy: "2023-11-14T22:13:20.000Z"),
             missingRow("Skew"),
-            MessageInfo.Row("Status", "received"),
+            MessageInfo.Row("Status", "Received"),
         ]),
         MessageInfo.Section(title: "Delivery", rows: [missingRow("Arrival")]),
         MessageInfo.Section(title: "Identity", rows: [
