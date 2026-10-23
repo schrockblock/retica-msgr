@@ -62,15 +62,7 @@ struct ConversationListView: View {
             .listStyle(.plain)
             .overlay {
                 if store.conversationRows.isEmpty {
-                    ContentUnavailableView {
-                        Label("No Chats Yet", systemImage: "bubble.left.and.bubble.right")
-                    } description: {
-                        Text("Start a conversation by scanning a friend's QR code, or tap the "
-                             + "antenna to see who has announced themselves recently.")
-                    } actions: {
-                        Button("New Conversation") { showingCompose = true }
-                            .buttonStyle(.borderedProminent)
-                    }
+                    ChatsWelcomeView { showingCompose = true }
                 }
             }
             // A larger message on its way in, from anyone (the sender isn't known yet).
