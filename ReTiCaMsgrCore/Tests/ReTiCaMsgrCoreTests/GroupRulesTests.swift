@@ -61,12 +61,12 @@ private func delivery(_ member: String, _ status: String) -> GroupDelivery {
 /// Spec §4: "Delivered to d of n" while partial, else the derived status word.
 @Test func groupRulesStatusLabelCountsDeliveries() {
     let d = MessageStatus.delivered, f = MessageStatus.failed, g = MessageStatus.sending
-    #expect(GroupRoster.statusLabel([]) == "sent")
-    #expect(GroupRoster.statusLabel([delivery(creator, g), delivery(other, g)]) == "sending")
+    #expect(GroupRoster.statusLabel([]) == "Sent")
+    #expect(GroupRoster.statusLabel([delivery(creator, g), delivery(other, g)]) == "Sending…")
     #expect(GroupRoster.statusLabel([delivery(creator, d), delivery(other, g)]) == "Delivered to 1 of 2")
     #expect(GroupRoster.statusLabel([delivery(creator, d), delivery(other, f)]) == "Delivered to 1 of 2")
-    #expect(GroupRoster.statusLabel([delivery(creator, d), delivery(other, d)]) == "delivered")
-    #expect(GroupRoster.statusLabel([delivery(creator, f), delivery(other, f)]) == "failed")
+    #expect(GroupRoster.statusLabel([delivery(creator, d), delivery(other, d)]) == "Delivered")
+    #expect(GroupRoster.statusLabel([delivery(creator, f), delivery(other, f)]) == "Not sent")
 }
 
 @Test func groupRulesEventLinesReadAsSpecified() {

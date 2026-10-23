@@ -64,6 +64,6 @@ public enum GroupRoster {
         if delivered > 0, delivered < rows.count {
             return "Delivered to \(delivered) of \(rows.count)"
         }
-        return derivedStatus(rows)
+        return MessageStatusLabel.text(for: derivedStatus(rows))
     }
 }

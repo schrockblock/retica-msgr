@@ -10,7 +10,7 @@ public enum MessageStatusLabel {
         case MessageStatus.sent: return "Sent"
         case MessageStatus.propagated: return "Stored for pickup"
         case MessageStatus.delivered: return "Delivered"
-        case MessageStatus.failed: return "Failed"
+        case MessageStatus.failed: return "Not sent"
         case MessageStatus.cancelled: return "Cancelled"
         case MessageStatus.received: return "Received"
         default: return status

@@ -27,7 +27,7 @@ private func missingRow(_ label: String) -> MessageInfo.Row {
             MessageInfo.Row(label: "Sent", display: "22:13:20", copy: "2023-11-14T22:13:20.000Z"),
             MessageInfo.Row(label: "Stored on node", display: "22:13:24 (+4s)", copy: "2023-11-14T22:13:24.000Z"),
             MessageInfo.Row(label: "Delivered", display: "22:14:41 (+1m 21s)", copy: "2023-11-14T22:14:41.000Z"),
-            MessageInfo.Row(label: "Failed", display: "23:16:20 (+1h 03m)", copy: "2023-11-14T23:16:20.000Z"),
+            MessageInfo.Row(label: "Not sent", display: "23:16:20 (+1h 03m)", copy: "2023-11-14T23:16:20.000Z"),
             MessageInfo.Row("Status", "Delivered"),
         ]),
         MessageInfo.Section(title: "Delivery", rows: [MessageInfo.Row("Propagation node copy", "Yes")]),

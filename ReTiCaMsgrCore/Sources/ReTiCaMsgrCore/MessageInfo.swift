@@ -60,7 +60,7 @@ public enum MessageInfo {
             let milestones: [(String, Date?)] = [
                 ("Stored on node", m.storedAt),
                 ("Delivered", m.deliveredAt),
-                ("Failed", m.failedAt),
+                ("Not sent", m.failedAt),
             ]
             for (label, at) in milestones {
                 guard let at else { continue }   // a milestone that never happened is hidden
