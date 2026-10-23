@@ -19,6 +19,8 @@ struct ChatView: View {
     @Dependency(\.attachmentStore) private var attachmentStore
     @State private var pickerTarget: PickerTarget?
     @State private var infoTarget: InfoTarget?
+    /// The status ⓘ's explanation on screen, if any (spec 2026-10-22).
+    @State private var explaining: ExplainerTopic?
     @State private var viewerTarget: ViewerTarget?
     /// A file to open in QuickLook (the system preview with share / save to Files).
     @State private var quickLookURL: URL?
@@ -86,6 +88,8 @@ struct ChatView: View {
                             senderName: isGroup && !message.isOutgoing
                                 ? store.state.groupMemberName(message.peerHex) : nil,
                             statusText: statusText(for: message),
+                            infoTopic: infoTopic(for: message),
+                            onInfoTap: { explaining = $0 },
                             reactions: reactions,
                             replyPreview: replyPreview,
                             attachment: attachment,
@@ -337,6 +341,7 @@ struct ChatView: View {
             if let peer = store.openPeerHex { PeerInfoView(store: store, peerHex: peer) }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $explaining) { ExplainerSheet(topic: $0) }
         .sheet(item: $pickerTarget) { target in
             EmojiPickerSheet { emoji in
                 store.send(.reactionSelected(messageHash: target.messageHash, emoji: emoji))
@@ -373,13 +378,32 @@ struct ChatView: View {
         }
     }
 
-    /// A group row's status comes from its delivery rows (spec §4); a peer row's from its column,
-    /// in words (`MessageStatusLabel`).
+    /// A group row's status comes from its delivery rows (spec §4); a peer row still sending shows
+    /// its live stage (spec 2026-10-22); any other peer row its column, in words (`MessageStatusLabel`).
     private func statusText(for message: Message) -> String {
         guard isGroup, message.isOutgoing, let rows = store.deliveriesByMessageId[message.id] else {
+            if let stage = store.state.sendStage(for: message) { return stage.label }
             return MessageStatusLabel.text(for: message.status)
         }
         return GroupRoster.statusLabel(rows)
+    }
+
+    /// What the status ⓘ explains: the live stage while sending, or the two settled states that
+    /// need explaining. A group post explains group delivery until every member has it. Nil hides
+    /// the ⓘ (delivered, cancelled, and incoming rows).
+    private func infoTopic(for message: Message) -> ExplainerTopic? {
+        guard message.isOutgoing, !message.isTimerChange, !message.isGroupEvent else { return nil }
+        if isGroup {
+            guard let rows = store.deliveriesByMessageId[message.id], !rows.isEmpty else { return nil }
+            return rows.allSatisfy { $0.status == MessageStatus.delivered } ? nil : .groupDelivery
+        }
+        if let stage = store.state.sendStage(for: message) { return stage.topic }
+        switch message.status {
+        case MessageStatus.sending: return .sending
+        case MessageStatus.propagated: return .storedForPickup
+        case MessageStatus.failed: return .notSent
+        default: return nil
+        }
     }
 
     /// Retry is offered on our own failed message: a peer row whose status is failed, or a group
@@ -423,6 +447,9 @@ struct MessageBubble: View {
     var senderName: String? = nil
     /// What the status area shows; a group post passes its "Delivered to d of n" label.
     var statusText: String? = nil
+    /// When set, the status line ends in an ⓘ that asks for this explanation.
+    var infoTopic: ExplainerTopic? = nil
+    var onInfoTap: ((ExplainerTopic) -> Void)? = nil
     var reactions: [ReactionSummary.Item] = []
     var replyPreview: ReplyPreview.Resolved? = nil
     var attachment: Attachment? = nil
@@ -477,7 +504,23 @@ struct MessageBubble: View {
                                 .accessibilityLabel("Disappearing message")
                         }
                         if message.isOutgoing {
-                            Text(statusText ?? MessageStatusLabel.text(for: message.status))
+                            let label = statusText ?? MessageStatusLabel.text(for: message.status)
+                            if let infoTopic, let onInfoTap {
+                                // Only the status line is the hit area, so the bubble keeps its
+                                // long-press menu.
+                                Button { onInfoTap(infoTopic) } label: {
+                                    HStack(spacing: 3) {
+                                        Text(label)
+                                        Image(systemName: "info.circle")
+                                            .foregroundStyle(.tint)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("About \(label)")
+                            } else {
+                                Text(label)
+                            }
                         }
                     }
                     .font(.caption2)
