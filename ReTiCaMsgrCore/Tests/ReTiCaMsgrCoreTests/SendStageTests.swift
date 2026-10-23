@@ -62,6 +62,17 @@ private func row(peerHex: String = destHexUpper, isOutgoing: Bool = true, status
     #expect(stage(c).label == "Leaving it for pickup…")
 }
 
+/// Mutation: check the link rules before the pickup rule (final review I1: the router hands the
+/// pickup copy over mid-establishment, while the recipient's link is still parked or opening).
+@Test func pickupBeatsALinkStillOpening() {
+    var c = freshClient()
+    c.router.pendingPropagatedCopies = [h]
+    c.router.directLinks[dest] = .awaitingPath
+    #expect(stage(c) == .leavingForPickup(fraction: nil))
+    c.router.directLinks[dest] = .establishing
+    #expect(stage(c) == .leavingForPickup(fraction: nil))
+}
+
 /// Mutation: check the retry rule before the pickup rule.
 @Test func pickupBeatsDeliveryRetry() {
     var c = freshClient()

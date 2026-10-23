@@ -32,8 +32,8 @@ private func post(outgoing: Bool, peer: String) -> Message {
     let sections = MessageInfo.sections(for: m, deliveries: deliveries, memberNames: [memberC: "Cy"], timeZone: utc)
     #expect(sections.map(\.title) == ["Timeline", "Delivery", "Identity", "Payload", "Members"])
     #expect(sections[4].rows == [
-        MessageInfo.Row(label: "Cy", display: "delivered 22:14:41", copy: hashC),
-        MessageInfo.Row(label: "dddd…dddd", display: "waiting", copy: ""),
+        MessageInfo.Row(label: "Cy", display: "Delivered 22:14:41", copy: hashC),
+        MessageInfo.Row(label: "dddd…dddd", display: "Waiting", copy: ""),
     ])
 }
 

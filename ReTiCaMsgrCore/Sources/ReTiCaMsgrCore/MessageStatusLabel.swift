@@ -12,6 +12,7 @@ public enum MessageStatusLabel {
         case MessageStatus.delivered: return "Delivered"
         case MessageStatus.failed: return "Not sent"
         case MessageStatus.cancelled: return "Cancelled"
+        case GroupDeliveryStatus.waiting: return "Waiting"
         case MessageStatus.received: return "Received"
         default: return status
         }

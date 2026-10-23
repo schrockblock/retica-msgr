@@ -50,14 +50,16 @@ public enum SendStage: Equatable, Sendable {
         if delivery?.phase == .transferring {
             return .sending(fraction: clamped(client.transferProgress[.delivery(messageHash)]))
         }
+        // Above the link rules: the router hands the pickup copy over from inside link
+        // establishment, while the recipient's link is still parked or opening.
+        if router.pendingPropagatedCopies.contains(messageHash)
+            || router.pendingDeliveries[.propagated(messageHash)] != nil {
+            return .leavingForPickup(fraction: clamped(client.transferProgress[.propagated(messageHash)]))
+        }
         switch router.directLinks[recipient] {
         case .establishing: return .connecting
         case .awaitingPath: return .lookingForThem
         default: break
-        }
-        if router.pendingPropagatedCopies.contains(messageHash)
-            || router.pendingDeliveries[.propagated(messageHash)] != nil {
-            return .leavingForPickup(fraction: clamped(client.transferProgress[.propagated(messageHash)]))
         }
         if let delivery, delivery.phase == .retrying, delivery.attempts >= 2 {
             return .tryingAgain(attempt: delivery.attempts, of: LXMFDelivery.maxAttempts)

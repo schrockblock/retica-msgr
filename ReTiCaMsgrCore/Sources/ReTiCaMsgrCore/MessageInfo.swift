@@ -161,7 +161,7 @@ public enum MessageInfo {
     static func members(_ deliveries: [GroupDelivery], names: [String: String], sameDayAs reference: Date,
                         _ tz: TimeZone) -> Section {
         let rows = deliveries.sorted { $0.memberHex < $1.memberHex }.map { d -> Row in
-            var display = d.status
+            var display = MessageStatusLabel.text(for: d.status)
             if let at = d.deliveredAt {
                 display += " " + time(at, sameDayAs: reference, timeZone: tz)
             }

@@ -43,6 +43,14 @@ private let t0 = Date(timeIntervalSince1970: 1700000000)
     #expect(GroupRoster.statusLabel([delivered]) == "Delivered")
 }
 
+/// Mutation: the Info sheet's Members rows show the raw status again (final review I2).
+@Test func groupInfoMembersUsePlainWords() {
+    let failed = GroupDelivery(messageId: UUID(), memberHex: String(repeating: "d", count: 32), messageHash: "h",
+                               status: MessageStatus.failed, storedAt: nil, deliveredAt: nil, failedAt: nil)
+    let section = MessageInfo.members([failed], names: [:], sameDayAs: t0, TimeZone(identifier: "UTC")!)
+    #expect(section.rows.map(\.display) == ["Not sent"])
+}
+
 /// Mutation: the Info timeline's failure milestone back to "Failed".
 @Test func infoTimelineSaysNotSent() {
     let m = Message(
