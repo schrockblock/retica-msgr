@@ -73,14 +73,17 @@ struct GroupMemberPicker: View {
         Section("By address") {
             TextField("32 hex characters", text: $address)
                 .autocorrectionDisabled()
-                .autocapitalization(.never)
+                .platformAutocapitalization(.never)
                 .font(.system(.body, design: .monospaced))
             Button("Add address") {
                 selected.insert(address.lowercased())
                 address = ""
             }
             .disabled(!canAddTyped)
+            // Camera QR scanning is hidden on macOS (macOS port Global Constraints).
+            #if os(iOS)
             Button { showingScanner = true } label: { Label("Scan QR code", systemImage: "qrcode.viewfinder") }
+            #endif
             ForEach(typedOnly, id: \.self) { hex in
                 HStack {
                     Text(shortHex(hex)).font(.system(.body, design: .monospaced))

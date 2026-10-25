@@ -19,7 +19,7 @@ extension View {
         #endif
     }
 
-    func autocapitalization(_ mode: PlatformAutocapitalization) -> some View {
+    func platformAutocapitalization(_ mode: PlatformAutocapitalization) -> some View {
         #if os(iOS)
         textInputAutocapitalization(mode == .never ? .never : .words)
         #else
@@ -65,6 +65,16 @@ extension View {
         sheet(isPresented: isPresented) {
             content().frame(minWidth: 480, minHeight: 480)
         }
+        #endif
+    }
+
+    /// A Mac sheet sizes to its content's ideal size, and a `List` root has none, so the sheet
+    /// collapses to a sliver. Nothing on iOS, where sheets take the screen's width.
+    func macSheetFrame() -> some View {
+        #if os(iOS)
+        self
+        #else
+        frame(minWidth: 480, minHeight: 400)
         #endif
     }
 

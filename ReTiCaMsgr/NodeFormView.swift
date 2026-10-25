@@ -44,7 +44,7 @@ struct NodeFormView: View {
                         .autocorrectionDisabled()
                     TextField("Host", text: $host)
                         .autocorrectionDisabled()
-                        .autocapitalization(.never)
+                        .platformAutocapitalization(.never)
                         .platformKeyboard(.url)
                     TextField("Port", text: $portText)
                         .platformKeyboard(.numberPad)
@@ -57,7 +57,7 @@ struct NodeFormView: View {
                 Section("Push") {
                     TextField("Push hub destination (32 hex)", text: $pushHex)
                         .platformKeyboard(.asciiCapable)
-                        .autocapitalization(.never)
+                        .platformAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
                     Text("Your hub must support ReTiCA push and must have announced its registration "

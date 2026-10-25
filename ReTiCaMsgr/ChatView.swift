@@ -256,6 +256,7 @@ struct ChatView: View {
                 }
                 .sheet(item: $infoTarget) { target in
                     MessageInfoSheet(store: store, messageID: target.id)
+                        .macSheetFrame()
                 }
             }
 
@@ -365,9 +366,10 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showingGroupInfo) {
             GroupInfoView(store: store)
+                .macSheetFrame()
         }
         .sheet(isPresented: $showingPeerInfo) {
-            if let peer = store.openPeerHex { PeerInfoView(store: store, peerHex: peer) }
+            if let peer = store.openPeerHex { PeerInfoView(store: store, peerHex: peer).macSheetFrame() }
         }
         .inlineNavigationTitle()
         .sheet(item: $explaining) { ExplainerSheet(topic: $0) }
@@ -375,6 +377,7 @@ struct ChatView: View {
             EmojiPickerSheet { emoji in
                 store.send(.reactionSelected(messageHash: target.messageHash, emoji: emoji))
             }
+            .macSheetFrame()
         }
         .fullScreenCoverOrSheet(item: $viewerTarget) { target in
             ImageViewerSheet(attachment: target.attachment, url: target.url, shareURL: target.shareURL)

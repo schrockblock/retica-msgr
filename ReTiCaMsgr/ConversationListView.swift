@@ -124,6 +124,7 @@ struct ConversationListView: View {
                     announcePick = hex
                     showingAnnounces = false
                 }
+                .macSheetFrame()
             }
         }
     }
@@ -206,13 +207,16 @@ struct ComposeSheet: View {
                 Section {
                     TextField("Their address (32 characters)", text: $address)
                         .autocorrectionDisabled()
-                        .autocapitalization(.never)
+                        .platformAutocapitalization(.never)
                         .font(.system(.body, design: .monospaced))
+                    // Camera QR scanning is hidden on macOS (macOS port Global Constraints).
+                    #if os(iOS)
                     Button {
                         showingScanner = true
                     } label: {
                         Label("Scan QR code", systemImage: "qrcode.viewfinder")
                     }
+                    #endif
                 } header: {
                     Text("Address")
                 } footer: {

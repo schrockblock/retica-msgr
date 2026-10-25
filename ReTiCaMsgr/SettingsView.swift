@@ -97,6 +97,7 @@ struct SettingsView: View {
             // Driven by state: a swipe sends `.radioPicker(.dismiss)`, like Cancel and a pick.
             .sheet(item: $store.scope(state: \.radioPicker, action: \.radioPicker)) { pickerStore in
                 RadioPickerView(store: pickerStore)
+                    .macSheetFrame()
             }
             // Seed the field from persisted state, so opening Settings with a name set does not
             // show a blank box whose Save button would clear it. (The propagation-node field below
@@ -143,7 +144,7 @@ struct SettingsView: View {
                     TextField("Your name", text: $nameInput)
                         .font(.title3.weight(.semibold))
                         .autocorrectionDisabled()
-                        .autocapitalization(PlatformAutocapitalization.words)
+                        .platformAutocapitalization(.words)
                         .submitLabel(.done)
                         .focused($focusedField, equals: .name)
                         // Saved on commit rather than per keystroke: each save re-announces on every
@@ -433,7 +434,7 @@ struct SettingsView: View {
             }
             TextField("Node LXMF address (hex)", text: $pnInput)
                 .autocorrectionDisabled()
-                .autocapitalization(.never)
+                .platformAutocapitalization(.never)
                 .font(.system(.body, design: .monospaced))
                 .submitLabel(.done)
                 .focused($focusedField, equals: .propagationNode)
