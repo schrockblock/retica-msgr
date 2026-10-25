@@ -110,7 +110,7 @@ struct BlockedAddressesView: View {
             }
         }
         .navigationTitle("Blocked Addresses")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
     }
 }
 
@@ -124,17 +124,28 @@ struct ReportPromptsModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .sheet(item: Binding(
-                get: { MFMailComposeViewController.canSendMail() ? store.reportDraft : nil },
+                get: { Self.canSendMail ? store.reportDraft : nil },
                 set: { if $0 == nil { store.send(.reportDismissed) } }
             )) { draft in
+                #if canImport(MessageUI)
                 ReportMailSheet(draft: draft) { store.send(.reportDismissed) }
                     .ignoresSafeArea()
+                #endif
             }
             .onChange(of: store.reportDraft) { _, draft in
-                guard let draft, !MFMailComposeViewController.canSendMail() else { return }
+                guard let draft, !Self.canSendMail else { return }
                 if let url = Self.mailtoURL(draft) { openURL(url) }
                 store.send(.reportDismissed)
             }
+    }
+
+    /// The in-app composer exists only where MessageUI does; the Mac takes the `mailto:` path.
+    private static var canSendMail: Bool {
+        #if canImport(MessageUI)
+        MFMailComposeViewController.canSendMail()
+        #else
+        false
+        #endif
     }
 
     static func mailtoURL(_ draft: ReportDraft) -> URL? {
@@ -147,6 +158,7 @@ struct ReportPromptsModifier: ViewModifier {
     }
 }
 
+#if canImport(MessageUI)
 /// `MFMailComposeViewController` with the draft filled in; `onFinish` on any result, cancel included.
 struct ReportMailSheet: UIViewControllerRepresentable {
     let draft: ReportDraft
@@ -175,3 +187,4 @@ struct ReportMailSheet: UIViewControllerRepresentable {
         }
     }
 }
+#endif

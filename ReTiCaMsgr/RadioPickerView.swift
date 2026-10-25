@@ -48,7 +48,7 @@ struct RadioPickerView: View {
                 }
             }
             .navigationTitle("Choose Radio")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { store.send(.cancelTapped) }

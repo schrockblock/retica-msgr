@@ -14,6 +14,33 @@ import os
 import ComposableArchitecture
 import ReTiCaMsgrCore
 
+/// The three UIKit system colours the chat uses, with their nearest AppKit equivalents.
+private extension Color {
+    static var chatIncomingBubble: Color {
+        #if os(iOS)
+        Color(.systemGray5)
+        #else
+        Color(nsColor: .quaternarySystemFill)
+        #endif
+    }
+
+    static var chatReactionChip: Color {
+        #if os(iOS)
+        Color(.systemBackground)
+        #else
+        Color(nsColor: .windowBackgroundColor)
+        #endif
+    }
+
+    static var chatSeparator: Color {
+        #if os(iOS)
+        Color(.separator)
+        #else
+        Color(nsColor: .separatorColor)
+        #endif
+    }
+}
+
 struct ChatView: View {
     private static let log = Logger(subsystem: "com.reticamsgr", category: "attachments")
 
@@ -141,7 +168,7 @@ struct ChatView: View {
                             // A caption-less photo or file has no text to copy.
                             if !message.body.isEmpty {
                                 Button("Copy", systemImage: "doc.on.doc") {
-                                    UIPasteboard.general.string = message.body
+                                    Pasteboard.copy(message.body)
                                 }
                             }
                         } preview: {
@@ -318,7 +345,7 @@ struct ChatView: View {
                     .accessibilityHint("Shows the address and contact for this chat")
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .barTrailing) {
                 if isGroup {
                     Button { showingGroupInfo = true } label: { Image(systemName: "info.circle") }
                         .accessibilityLabel("Group info")
@@ -342,14 +369,14 @@ struct ChatView: View {
         .sheet(isPresented: $showingPeerInfo) {
             if let peer = store.openPeerHex { PeerInfoView(store: store, peerHex: peer) }
         }
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .sheet(item: $explaining) { ExplainerSheet(topic: $0) }
         .sheet(item: $pickerTarget) { target in
             EmojiPickerSheet { emoji in
                 store.send(.reactionSelected(messageHash: target.messageHash, emoji: emoji))
             }
         }
-        .fullScreenCover(item: $viewerTarget) { target in
+        .fullScreenCoverOrSheet(item: $viewerTarget) { target in
             ImageViewerSheet(attachment: target.attachment, url: target.url, shareURL: target.shareURL)
         }
         .quickLookPreview($quickLookURL)
@@ -570,7 +597,7 @@ struct BubbleText: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background {
-            if message.isOutgoing { Brand.gradient } else { Color(.systemGray5) }
+            if message.isOutgoing { Brand.gradient } else { Color.chatIncomingBubble }
         }
         .foregroundStyle(message.isOutgoing ? .white : .primary)
         .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -597,9 +624,9 @@ struct ReactionBadge: View {
         .font(.callout)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background(Capsule().fill(Color(.systemBackground)))
+        .background(Capsule().fill(Color.chatReactionChip))
         .overlay(
-            Capsule().stroke(items.contains(where: \.includesMe) ? Color.accentColor : Color(.separator),
+            Capsule().stroke(items.contains(where: \.includesMe) ? Color.accentColor : Color.chatSeparator,
                              lineWidth: 1)
         )
         .accessibilityElement(children: .combine)

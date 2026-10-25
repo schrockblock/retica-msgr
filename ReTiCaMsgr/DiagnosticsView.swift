@@ -25,7 +25,7 @@ struct DiagnosticsView: View {
                     Label("Share diagnostics", systemImage: "square.and.arrow.up")
                 }
                 Button {
-                    UIPasteboard.general.string = snapshot.text
+                    Pasteboard.copy(snapshot.text)
                 } label: {
                     Label("Copy to clipboard", systemImage: "doc.on.doc")
                 }
@@ -70,7 +70,7 @@ struct DiagnosticsView: View {
             }
         }
         .navigationTitle("Diagnostics")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
     }
 
     private func color(_ health: DiagnosticsSnapshot.Health) -> Color {

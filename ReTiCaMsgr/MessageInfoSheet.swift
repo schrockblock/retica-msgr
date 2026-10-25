@@ -45,13 +45,13 @@ struct MessageInfoSheet: View {
                             }
                         }
                     }
-                    .listStyle(.insetGrouped)
+                    .insetGroupedListStyle()
                 } else {
                     ContentUnavailableView("Message unavailable", systemImage: "questionmark.bubble")
                 }
             }
             .navigationTitle("Info")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -75,7 +75,7 @@ struct MessageInfoSheet: View {
 
     private func copy(_ value: String) {
         guard !value.isEmpty else { return }   // "—" rows have nothing to copy
-        UIPasteboard.general.string = value
+        Pasteboard.copy(value)
         copyGeneration += 1
         let generation = copyGeneration
         withAnimation { showCopied = true }

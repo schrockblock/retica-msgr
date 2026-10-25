@@ -82,10 +82,10 @@ struct AnnounceListView: View {
                         .padding(.bottom, 8)
                 }
             }
-            .listStyle(.insetGrouped)
+            .insetGroupedListStyle()
             .onAppear { frozenOrder = detectedAnnounces.map(\.id) }
             .navigationTitle("Announces")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
