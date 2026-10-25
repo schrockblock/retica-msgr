@@ -114,9 +114,16 @@ final class AppRuntime {
                 return identity.publicKey
             }
             // The package's liveValue only reports an issue: the app owns UIKit.
+            #if os(iOS)
             $0.pushPlatform = .uiKit
             // Likewise: background time for sends still in flight (spec 2026-10-21, A4).
             $0.backgroundTask = .uiKit
+            #elseif os(macOS)
+            $0.pushPlatform = .appKit
+            // A Mac app isn't suspended, so there is no background time to borrow; explicit for the
+            // same hosted-XCTest reason as `\.date` (its testValue is unimplemented).
+            $0.backgroundTask = .liveValue
+            #endif
             // Likewise: the "Message not sent" notification (brief 2026-10-21).
             $0.localNotifications = .userNotifications
             // Explicit for the same hosted-XCTest reason as `\.date` (its testValue is unimplemented):

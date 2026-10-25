@@ -3,7 +3,11 @@ import ReTiCaMsgrCore
 
 @main
 struct ReTiCaMsgrApp: App {
+    #if os(iOS)
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    #elseif os(macOS)
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    #endif
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -28,7 +32,10 @@ struct ReTiCaMsgrApp: App {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active: delegate.runtime.foregrounded()
+            // A Mac app is never suspended, so its sockets stay open: no `backgrounded()` there.
+            #if os(iOS)
             case .background: delegate.runtime.backgrounded()
+            #endif
             default: break
             }
         }

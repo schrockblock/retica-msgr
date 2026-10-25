@@ -1,15 +1,73 @@
 #if canImport(UIKit)
 import UIKit
 #endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import UserNotifications
 import ReTiCAPushCore
 import ReTiCaMsgrCore
 
 /// Owns the runtime so a background push can build the store without a scene, forwards the APNs
 /// token, and handles notification presentation and taps (spec 2026-10-01 §3.2).
-final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+final class AppDelegate: NSObject, UNUserNotificationCenterDelegate {
     let runtime = AppRuntime(environment: .forProcess())
 
+    // MARK: Presentation and taps
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        // A send that failed outside the open chat: the user is on another screen, so show it
+        // even while the app is active.
+        if SendFailedNotification.peerHex(from: notification.request.content.userInfo) != nil {
+            return [.banner, .list, .sound]
+        }
+        // Foreground: the message is about to appear in the UI, so no banner. Drain instead.
+        if isAppActive {
+            let packets = (try? PushPayload.decode(notification.request.content.userInfo)) ?? []
+            stash(packets)
+            runtime.drainPushInbox()
+            // The hub carries no packets for mail waiting at a propagation node: go and fetch it.
+            if PushPayload.isPropagated(notification.request.content.userInfo) {
+                runtime.propagatedPush()
+            }
+            return []
+        }
+        return [.banner, .list, .sound]
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse) async {
+        // A local "Message not sent": open that chat. Not a push, so no wake.
+        if let peerHex = SendFailedNotification.peerHex(from: response.notification.request.content.userInfo) {
+            runtime.openFailedSend(peerHex)
+            return
+        }
+        let packets = (try? PushPayload.decode(response.notification.request.content.userInfo)) ?? []
+        stash(packets)
+        // M2: a tap means the user is already looking at the app — nothing to hold for.
+        _ = await runtime.pushWake(hold: .zero)
+    }
+
+    private var isAppActive: Bool {
+        #if os(iOS)
+        UIApplication.shared.applicationState == .active
+        #else
+        NSApplication.shared.isActive
+        #endif
+    }
+
+    /// Append the decoded packets to the inbox. A no-op for packets the extension already wrote.
+    private func stash(_ packets: [Data]) {
+        let inbox = runtime.pushStorage.inbox
+        for raw in packets {
+            _ = try? inbox.append(raw)
+        }
+    }
+}
+
+#if os(iOS)
+extension AppDelegate: UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
@@ -38,48 +96,32 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         await MainActor.run { self.stash(packets) }
         return await runtime.pushWake() ? .newData : .noData
     }
+}
+#endif
 
-    // MARK: Presentation and taps
-
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        // A send that failed outside the open chat: the user is on another screen, so show it
-        // even while the app is active.
-        if SendFailedNotification.peerHex(from: notification.request.content.userInfo) != nil {
-            return [.banner, .list, .sound]
-        }
-        // Foreground: the message is about to appear in the UI, so no banner. Drain instead.
-        if UIApplication.shared.applicationState == .active {
-            let packets = (try? PushPayload.decode(notification.request.content.userInfo)) ?? []
-            stash(packets)
-            runtime.drainPushInbox()
-            // The hub carries no packets for mail waiting at a propagation node: go and fetch it.
-            if PushPayload.isPropagated(notification.request.content.userInfo) {
-                runtime.propagatedPush()
-            }
-            return []
-        }
-        return [.banner, .list, .sound]
+#if os(macOS)
+extension AppDelegate: NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
     }
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                didReceive response: UNNotificationResponse) async {
-        // A local "Message not sent": open that chat. Not a push, so no wake.
-        if let peerHex = SendFailedNotification.peerHex(from: response.notification.request.content.userInfo) {
-            runtime.openFailedSend(peerHex)
-            return
-        }
-        let packets = (try? PushPayload.decode(response.notification.request.content.userInfo)) ?? []
+    // MARK: Token
+
+    func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        runtime.pushDeviceToken(deviceToken)
+    }
+
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        runtime.pushDeviceTokenFailed(error.localizedDescription)
+    }
+
+    // MARK: Remote notification
+
+    // No completion handler on the Mac: stash what the payload carries, then wake the store.
+    func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
+        let packets = (try? PushPayload.decode(userInfo)) ?? []
         stash(packets)
-        // M2: a tap means the user is already looking at the app — nothing to hold for.
-        _ = await runtime.pushWake(hold: .zero)
-    }
-
-    /// Append the decoded packets to the inbox. A no-op for packets the extension already wrote.
-    private func stash(_ packets: [Data]) {
-        let inbox = runtime.pushStorage.inbox
-        for raw in packets {
-            _ = try? inbox.append(raw)
-        }
+        Task { _ = await runtime.pushWake() }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(iOS)
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -40,3 +41,4 @@ private enum LiveBackgroundTasks {
         UIApplication.shared.endBackgroundTask(id)
     }
 }
+#endif
