@@ -69,6 +69,7 @@ struct SettingsView: View {
                 contactsSection
                 networkSections
             }
+            .scrollingFormStyle()
             .navigationTitle("Settings")
             // The listen-port number pad has no return key, so every field gets a Done above the
             // keyboard, and scrolling the form drops it too.

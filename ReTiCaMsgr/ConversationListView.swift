@@ -228,6 +228,8 @@ struct ComposeSheet: View {
                 }
                 .disabled(!isValid)
             }
+            .scrollingFormStyle()
+            .macSheetFrame()
             .navigationTitle("New conversation")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

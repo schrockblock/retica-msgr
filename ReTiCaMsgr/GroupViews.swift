@@ -134,6 +134,8 @@ struct NewGroupView: View {
                 }
                 .disabled(!canCreate)
             }
+            .scrollingFormStyle()
+            .macSheetFrame()
             .navigationTitle("New group")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -167,6 +169,8 @@ struct AddGroupMembersView: View {
                 }
                 .disabled(!canAdd)
             }
+            .scrollingFormStyle()
+            .macSheetFrame()
             .navigationTitle("Add members")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

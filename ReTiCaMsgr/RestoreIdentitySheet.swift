@@ -43,6 +43,8 @@ struct RestoreIdentitySheet: View {
                     }
                 }
             }
+            .scrollingFormStyle()
+            .macSheetFrame()
             .navigationTitle("Restore identity")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

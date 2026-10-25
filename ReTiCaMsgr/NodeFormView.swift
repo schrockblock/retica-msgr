@@ -74,6 +74,8 @@ struct NodeFormView: View {
                     }
                 }
             }
+            .scrollingFormStyle()
+            .macSheetFrame()
             .navigationTitle(existing == nil ? "Add Node" : "Edit Node")
             .inlineNavigationTitle()
             .toolbar {

@@ -78,6 +78,17 @@ extension View {
         #endif
     }
 
+    /// A Mac `Form` in its automatic (columns) style does not scroll, so its window grows to the
+    /// whole form's height and the top rows end up under the toolbar. The grouped style scrolls,
+    /// and matches what iOS draws already. Nothing on iOS.
+    func scrollingFormStyle() -> some View {
+        #if os(iOS)
+        self
+        #else
+        formStyle(.grouped)
+        #endif
+    }
+
     func insetGroupedListStyle() -> some View {
         #if os(iOS)
         listStyle(.insetGrouped)
