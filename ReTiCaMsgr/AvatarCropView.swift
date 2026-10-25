@@ -4,7 +4,9 @@
 //
 
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Frames a picked photo for the profile picture: a square viewport with a circle guide, drag to
 /// move and pinch to zoom. "Choose" renders exactly the visible square to a JPEG; the core encoder

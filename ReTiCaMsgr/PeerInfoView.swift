@@ -4,7 +4,9 @@
 //
 
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 import ContactsUI
 import ComposableArchitecture
 import ReTiCaMsgrCore

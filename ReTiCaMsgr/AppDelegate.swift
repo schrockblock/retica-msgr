@@ -1,4 +1,6 @@
+#if canImport(UIKit)
 import UIKit
+#endif
 import UserNotifications
 import ReTiCAPushCore
 import ReTiCaMsgrCore

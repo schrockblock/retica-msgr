@@ -6,7 +6,9 @@
 //
 
 import CoreImage.CIFilterBuiltins
+#if canImport(UIKit)
 import UIKit
+#endif
 
 enum QRCodeImage {
     /// Renders `string` as a QR code image, scaled up so modules stay crisp on screen.

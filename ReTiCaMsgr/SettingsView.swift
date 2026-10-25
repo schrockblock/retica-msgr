@@ -6,7 +6,9 @@
 //
 
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 import PhotosUI
 import ComposableArchitecture
 import ReTiCaMsgrCore

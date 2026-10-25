@@ -1,6 +1,10 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(MessageUI)
 import MessageUI
+#endif
 import ComposableArchitecture
 import ReTiCaMsgrCore
 
