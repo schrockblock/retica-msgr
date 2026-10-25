@@ -5,6 +5,9 @@ import ReTiCaMsgrCore
 /// happening and why, the Reticulum term, and a page of the docs for more.
 struct ExplainerSheet: View {
     let topic: ExplainerTopic
+    #if os(macOS)
+    @Environment(\.dismiss) private var dismiss
+    #endif
 
     var body: some View {
         let explainer = ReticulumExplainer.explainer(for: topic)
@@ -25,6 +28,18 @@ struct ExplainerSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(24)
         }
+        #if os(macOS)
+        // A Mac sheet has no swipe-down: without a cancel button it cannot be closed.
+        .safeAreaInset(edge: .bottom) {
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+        }
+        .frame(minWidth: 420, minHeight: 320)
+        #endif
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }
