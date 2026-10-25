@@ -33,7 +33,11 @@ struct AddressView: View {
                     .textSelection(.enabled)
                     .multilineTextAlignment(.center)
                     .padding()
+                    #if os(iOS)
                     .background(Color(.systemGray6))
+                    #else
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    #endif
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .padding(.horizontal)
 
@@ -46,7 +50,7 @@ struct AddressView: View {
             }
             .padding(.top, 32)
             .navigationTitle("My Code")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }

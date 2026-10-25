@@ -4,7 +4,9 @@
 //
 
 import SwiftUI
+#if os(iOS)
 import VisionKit
+#endif
 import Vision
 import ReTiCaMsgrCore
 
@@ -21,7 +23,11 @@ struct QRScannerView: View {
     @State private var startFailed = false
 
     private var scanningAvailable: Bool {
+        #if os(iOS)
         DataScannerViewController.isSupported && DataScannerViewController.isAvailable
+        #else
+        false  // VisionKit's DataScanner is iOS-only.
+        #endif
     }
 
     var body: some View {
@@ -40,7 +46,7 @@ struct QRScannerView: View {
                 }
             }
             .navigationTitle("Scan QR Code")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -49,6 +55,7 @@ struct QRScannerView: View {
         }
     }
 
+    #if os(iOS)
     private var scannerContent: some View {
         ZStack(alignment: .bottom) {
             DataScannerRepresentable(
@@ -67,6 +74,10 @@ struct QRScannerView: View {
             }
         }
     }
+    #else
+    /// Never shown: `scanningAvailable` is false on the Mac.
+    private var scannerContent: some View { EmptyView() }
+    #endif
 
     private func unavailableContent(message: String) -> some View {
         VStack(spacing: 16) {
@@ -97,6 +108,7 @@ struct QRScannerView: View {
     }
 }
 
+#if os(iOS)
 /// Thin UIViewControllerRepresentable wrapper around VisionKit's live QR scanner.
 private struct DataScannerRepresentable: UIViewControllerRepresentable {
     let onPayload: (String) -> Bool
@@ -161,3 +173,4 @@ private struct DataScannerRepresentable: UIViewControllerRepresentable {
         }
     }
 }
+#endif

@@ -39,9 +39,13 @@ struct EmojiPickerSheet: View {
                     }
                 }
             }
+            #if os(iOS)
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search emoji")
+            #else
+            .searchable(text: $query, prompt: "Search emoji")
+            #endif
             .navigationTitle("React")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
