@@ -69,20 +69,20 @@ struct ConversationListView: View {
             .incomingDownloadBanner(store.incomingDownloadFraction)
             .navigationTitle("Chats")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .barLeading) {
                     Circle().fill(connectionColor).frame(width: 10, height: 10)
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .barTrailing) {
                     Button { showingAnnounces = true } label: {
                         Image(systemName: "antenna.radiowaves.left.and.right")
                     }
                     .accessibilityLabel("Announces")
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .barTrailing) {
                     Button { store.send(.syncTapped) } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Check for messages")
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .barTrailing) {
                     Menu {
                         Button { showingCompose = true } label: { Label("New conversation", systemImage: "bubble.left") }
                         Button { showingNewGroup = true } label: { Label("New group", systemImage: "person.3") }
@@ -206,7 +206,7 @@ struct ComposeSheet: View {
                 Section {
                     TextField("Their address (32 characters)", text: $address)
                         .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
+                        .autocapitalization(.never)
                         .font(.system(.body, design: .monospaced))
                     Button {
                         showingScanner = true

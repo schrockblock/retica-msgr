@@ -73,7 +73,7 @@ struct GroupMemberPicker: View {
         Section("By address") {
             TextField("32 hex characters", text: $address)
                 .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
+                .autocapitalization(.never)
                 .font(.system(.body, design: .monospaced))
             Button("Add address") {
                 selected.insert(address.lowercased())
@@ -285,7 +285,7 @@ struct GroupInfoView: View {
             // Contact row needs the same up-to-date access state.
             .onAppear { store.send(.contactLinkSheetAppeared) }
             .navigationTitle("Group info")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }

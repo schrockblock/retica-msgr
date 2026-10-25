@@ -49,7 +49,7 @@ struct PeerInfoView: View {
                 if peerHex != store.myAddressHex { SafetySection(store: store, peerHex: peerHex) }
             }
             .navigationTitle("Chat info")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
@@ -65,6 +65,7 @@ struct PeerInfoView: View {
 struct ContactLinkRow: View {
     let store: StoreOf<AppFeature>
     let peerHex: String
+    @Environment(\.openURL) private var openURL
     @State private var managingAccess = false
 
     private var link: ContactLink? { store.state.contactLinks[peerHex] }
@@ -150,7 +151,7 @@ struct ContactLinkRow: View {
                  : "Contacts access is off for ReTiCaMsgr. Allow it in Settings to link a contact.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Open Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                if let url = SystemSettings.url { openURL(url) }
             }
         }
         if store.state.contactsAuthorization == .limited {
@@ -199,6 +200,7 @@ private struct ManageAccessPickerModifier: ViewModifier {
 /// survives that sheet's dismissal. Attached once, at the root.
 struct LinkPromptsModifier: ViewModifier {
     @Bindable var store: StoreOf<AppFeature>
+    @Environment(\.openURL) private var openURL
 
     func body(content: Content) -> some View {
         content
@@ -207,6 +209,7 @@ struct LinkPromptsModifier: ViewModifier {
                 set: { if !$0 { store.send(.linkPickerDismissed) } }
             )) {
                 if let target = store.linkPickerTarget {
+                    #if os(iOS)
                     ContactPicker(
                         onPick: { identifier, name in
                             store.send(.contactPicked(peerHex: target.peerHex, identifier: identifier,
@@ -214,6 +217,22 @@ struct LinkPromptsModifier: ViewModifier {
                         },
                         onCancel: { store.send(.linkPickerDismissed) })
                     .ignoresSafeArea()
+                    #else
+                    // The Mac picker is a popover anchored to this view, so the sheet is just an
+                    // anchor and a Cancel.
+                    VStack {
+                        ContactPicker(
+                            onPick: { identifier, name in
+                                store.send(.contactPicked(peerHex: target.peerHex, identifier: identifier,
+                                                          name: name, source: target.source))
+                            },
+                            onCancel: { store.send(.linkPickerDismissed) })
+                        .frame(width: 1, height: 1)
+                        Button("Cancel") { store.send(.linkPickerDismissed) }
+                    }
+                    .padding()
+                    .frame(minWidth: 320, minHeight: 120)
+                    #endif
                 }
             }
             .alert(collisionTitle, isPresented: Binding(
@@ -230,7 +249,7 @@ struct LinkPromptsModifier: ViewModifier {
                 set: { if !$0 { store.send(.dismissContactsDenied) } }
             )) {
                 Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                    if let url = SystemSettings.url { openURL(url) }
                     store.send(.dismissContactsDenied)
                 }
                 Button("Cancel", role: .cancel) { store.send(.dismissContactsDenied) }
