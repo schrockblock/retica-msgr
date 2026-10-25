@@ -1,3 +1,4 @@
+#if os(iOS)
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -18,3 +19,4 @@ extension PushPlatform {
             await MainActor.run { UIApplication.shared.unregisterForRemoteNotifications() }
         })
 }
+#endif
