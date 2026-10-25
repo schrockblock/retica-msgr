@@ -77,12 +77,14 @@ struct SettingsView: View {
             .onChange(of: focusedField) { old, _ in
                 if old == .name { saveName() }
             }
+            #if os(iOS)
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
                     Button("Done") { focusedField = nil }
                 }
             }
+            #endif
             .sheet(isPresented: $showingAddress) {
                 AddressView(store: store)
             }
@@ -132,7 +134,7 @@ struct SettingsView: View {
                     TextField("Your name", text: $nameInput)
                         .font(.title3.weight(.semibold))
                         .autocorrectionDisabled()
-                        .textInputAutocapitalization(.words)
+                        .autocapitalization(PlatformAutocapitalization.words)
                         .submitLabel(.done)
                         .focused($focusedField, equals: .name)
                         // Saved on commit rather than per keystroke: each save re-announces on every
@@ -149,9 +151,11 @@ struct SettingsView: View {
             .padding(.vertical, 4)
             .confirmationDialog("Profile Photo", isPresented: $showingPhotoOptions, titleVisibility: .hidden) {
                 Button("Choose Photo") { showingPhotoLibrary = true }
+                #if os(iOS)
                 if CameraPicker.isAvailable {
                     Button("Take Photo") { showingCamera = true }
                 }
+                #endif
                 if !store.myPhotoVersion.isEmpty {
                     Button("Remove Photo", role: .destructive) { store.send(.removeProfilePhotoTapped) }
                 }
@@ -161,14 +165,14 @@ struct SettingsView: View {
                 guard let item else { return }
                 photoItem = nil
                 Task {
-                    if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
+                    if let data = try? await item.loadTransferable(type: Data.self), let image = PlatformImage(data: data) {
                         cropTarget = CropTarget(image: image)
                     } else {
                         store.send(.profilePhotoPicked(Data()))
                     }
                 }
             }
-            .fullScreenCover(item: $cropTarget) { target in
+            .fullScreenCoverOrSheet(item: $cropTarget) { target in
                 AvatarCropView(image: target.image,
                                onChoose: { jpeg in
                                    cropTarget = nil
@@ -176,6 +180,7 @@ struct SettingsView: View {
                                },
                                onCancel: { cropTarget = nil })
             }
+            #if os(iOS)
             .fullScreenCover(isPresented: $showingCamera) {
                 CameraPicker(onPicked: { jpeg in
                                  showingCamera = false
@@ -184,6 +189,7 @@ struct SettingsView: View {
                              onCancel: { showingCamera = false })
                     .ignoresSafeArea()
             }
+            #endif
             if let error = store.profilePhotoError {
                 Text(error)
                     .font(.caption)
@@ -261,7 +267,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                 Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                    if let url = SystemSettings.url { openURL(url) }
                 }
             } else if store.contactMirrorEnabled, store.contactsAuthorization == .limited {
                 Text("Only the contacts you selected are available, and their cards cannot be "
@@ -348,7 +354,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                 Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                    if let url = SystemSettings.url {
                         openURL(url)
                     }
                 }
@@ -388,7 +394,7 @@ struct SettingsView: View {
             // explicit contentShape is needed here.
             Toggle("Listen for direct connections", isOn: $store.listenEnabled)
             TextField("Listen port", value: $store.listenPort, format: .number)
-                .keyboardType(.numberPad)
+                .platformKeyboard(.numberPad)
                 .focused($focusedField, equals: .listenPort)
                 .disabled(!store.listenEnabled)
             Text("Lets other Reticulum nodes on your local Wi-Fi connect directly to this "
@@ -418,7 +424,7 @@ struct SettingsView: View {
             }
             TextField("Node LXMF address (hex)", text: $pnInput)
                 .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
+                .autocapitalization(.never)
                 .font(.system(.body, design: .monospaced))
                 .submitLabel(.done)
                 .focused($focusedField, equals: .propagationNode)
@@ -461,5 +467,5 @@ struct SettingsView: View {
 /// A picked library photo waiting in the crop screen.
 private struct CropTarget: Identifiable {
     let id = UUID()
-    let image: UIImage
+    let image: PlatformImage
 }

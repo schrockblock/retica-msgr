@@ -44,10 +44,10 @@ struct NodeFormView: View {
                         .autocorrectionDisabled()
                     TextField("Host", text: $host)
                         .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
+                        .autocapitalization(.never)
+                        .platformKeyboard(.url)
                     TextField("Port", text: $portText)
-                        .keyboardType(.numberPad)
+                        .platformKeyboard(.numberPad)
                     if validationError == .duplicateHostPort {
                         Text("A node with this host and port already exists.")
                             .font(.caption)
@@ -56,8 +56,8 @@ struct NodeFormView: View {
                 }
                 Section("Push") {
                     TextField("Push hub destination (32 hex)", text: $pushHex)
-                        .keyboardType(.asciiCapable)
-                        .textInputAutocapitalization(.never)
+                        .platformKeyboard(.asciiCapable)
+                        .autocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
                     Text("Your hub must support ReTiCA push and must have announced its registration "
@@ -75,7 +75,7 @@ struct NodeFormView: View {
                 }
             }
             .navigationTitle(existing == nil ? "Add Node" : "Edit Node")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
