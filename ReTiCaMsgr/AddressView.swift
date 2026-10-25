@@ -64,7 +64,7 @@ struct AddressView: View {
     @ViewBuilder
     private var qrCodeView: some View {
         if let image = QRCodeImage.generate(from: store.myAddressHex) {
-            Image(uiImage: image)
+            Image(platformImage: image)
                 .interpolation(.none)
                 .resizable()
                 .scaledToFit()

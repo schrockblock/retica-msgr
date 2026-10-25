@@ -187,11 +187,16 @@ private struct ManageAccessPickerModifier: ViewModifier {
     @Binding var isPresented: Bool
 
     func body(content: Content) -> some View {
+        #if os(iOS)
         if #available(iOS 18, *) {
             content.contactAccessPicker(isPresented: $isPresented) { _ in }
         } else {
             EmptyView()
         }
+        #else
+        // Limited contacts access is an iOS 18 concept; the picker does not exist on macOS.
+        EmptyView()
+        #endif
     }
 }
 
