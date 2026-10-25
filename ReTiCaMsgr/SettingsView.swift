@@ -110,6 +110,15 @@ struct SettingsView: View {
         }
     }
 
+    /// The grouped-row background, so the camera badge's ring blends into the row.
+    private var badgeRingColor: Color {
+        #if os(iOS)
+        Color(.secondarySystemGroupedBackground)
+        #else
+        Color(nsColor: .controlBackgroundColor)
+        #endif
+    }
+
     // MARK: - Messaging
 
     private var profileSection: some View {
@@ -123,7 +132,7 @@ struct SettingsView: View {
                                 .foregroundStyle(.white)
                                 .frame(width: 22, height: 22)
                                 .background(Circle().fill(Color.accentColor))
-                                .overlay(Circle().stroke(Color(.secondarySystemGroupedBackground), lineWidth: 2))
+                                .overlay(Circle().stroke(badgeRingColor, lineWidth: 2))
                                 .offset(x: 2, y: 2)
                         }
                         .contentShape(Circle())
