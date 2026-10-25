@@ -6,8 +6,10 @@
 //
 
 import CoreImage
-import Testing
+#if canImport(UIKit)
 import UIKit
+#endif
+import Testing
 @testable import ReTiCaMsgr
 
 struct QRCodeImageTests {
@@ -16,7 +18,7 @@ struct QRCodeImageTests {
         let address = "0123456789abcdef0123456789abcdef"
 
         let image = try #require(QRCodeImage.generate(from: address))
-        let ciImage = try #require(CIImage(image: image))
+        let ciImage = try #require(CIImage(cgImage: try #require(image.cgImage)))
 
         let detector = try #require(
             CIDetector(ofType: CIDetectorTypeQRCode, context: nil, options: nil)

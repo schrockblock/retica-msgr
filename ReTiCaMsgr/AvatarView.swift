@@ -14,13 +14,13 @@ import ReTiCaMsgrCore
 /// photo path carries its version, mine is keyed by my version, a contact thumbnail by its
 /// contact and byte count), so rows in a scrolling list never re-read or re-decode a JPEG.
 private enum AvatarImageCache {
-    nonisolated(unsafe) static let cache: NSCache<NSString, UIImage> = {
-        let cache = NSCache<NSString, UIImage>()
+    nonisolated(unsafe) static let cache: NSCache<NSString, PlatformImage> = {
+        let cache = NSCache<NSString, PlatformImage>()
         cache.countLimit = 300
         return cache
     }()
 
-    static func image(key: String, load: () -> UIImage?) -> UIImage? {
+    static func image(key: String, load: () -> PlatformImage?) -> PlatformImage? {
         if let hit = cache.object(forKey: key as NSString) { return hit }
         guard let image = load() else { return nil }
         cache.setObject(image, forKey: key as NSString)
@@ -70,14 +70,14 @@ struct AvatarView: View {
         switch source {
         case let .photo(path):
             let url = avatarStore.url(forRelativePath: path)
-            if let image = AvatarImageCache.image(key: "peer/\(path)", load: { UIImage(contentsOfFile: url.path) }) {
+            if let image = AvatarImageCache.image(key: "peer/\(path)", load: { PlatformImage(contentsOfFile: url.path) }) {
                 CircleImage(image: image, size: size)
             } else {
                 BrandAvatar(name: initialsName, size: size)
             }
         case let .contact(data):
             let key = "contact/\(link?.contactIdentifier ?? peerHex)/\(data.count)/\(data.hashValue)"
-            if let image = AvatarImageCache.image(key: key, load: { UIImage(data: data) }) {
+            if let image = AvatarImageCache.image(key: key, load: { PlatformImage(data: data) }) {
                 CircleImage(image: image, size: size)
             } else {
                 BrandAvatar(name: initialsName, size: size)
@@ -103,7 +103,7 @@ struct MyAvatarView: View {
         Group {
             if !version.isEmpty,
                let image = AvatarImageCache.image(key: "me/\(version)", load: {
-                   UIImage(contentsOfFile: avatarStore.myPhotoURL.path)
+                   PlatformImage(contentsOfFile: avatarStore.myPhotoURL.path)
                }) {
                 CircleImage(image: image, size: size)
             } else {
@@ -116,11 +116,11 @@ struct MyAvatarView: View {
 }
 
 private struct CircleImage: View {
-    let image: UIImage
+    let image: PlatformImage
     let size: CGFloat
 
     var body: some View {
-        Image(uiImage: image)
+        Image(platformImage: image)
             .resizable()
             .scaledToFill()
             .frame(width: size, height: size)

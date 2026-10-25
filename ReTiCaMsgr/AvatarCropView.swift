@@ -6,13 +6,15 @@
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
+#else
+import AppKit
 #endif
 
 /// Frames a picked photo for the profile picture: a square viewport with a circle guide, drag to
 /// move and pinch to zoom. "Choose" renders exactly the visible square to a JPEG; the core encoder
 /// then scales it to the 256 px avatar.
 struct AvatarCropView: View {
-    let image: UIImage
+    let image: PlatformImage
     let onChoose: (Data) -> Void
     let onCancel: () -> Void
 
@@ -51,9 +53,11 @@ struct AvatarCropView: View {
             }
             .background(Color.black.ignoresSafeArea())
             .navigationTitle("Move and Scale")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
+            #if os(iOS)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
+            #endif
         }
     }
 
@@ -93,7 +97,7 @@ struct AvatarCropView: View {
                 committedOffset = offset
             }
         return ZStack {
-            Image(uiImage: image)
+            Image(platformImage: image)
                 .resizable()
                 .frame(width: size.width * scale, height: size.height * scale)
                 .offset(offset)
@@ -127,20 +131,42 @@ struct AvatarCropView: View {
         let originY = (displayed.height * scale - side) / 2 - offset.height
         let crop = CGRect(x: originX / k, y: originY / k, width: cropSide, height: cropSide)
 
-        let outputSide: CGFloat = 512
+        return Self.renderSquareJPEG(image, crop: crop, outputSide: 512)
+    }
+
+    /// Draws `crop` (image points, origin top-left) into an opaque `outputSide` square and encodes
+    /// it as a JPEG.
+    static func renderSquareJPEG(_ image: PlatformImage, crop: CGRect, outputSide: CGFloat) -> Data? {
+        let ratio = outputSide / crop.width
+        #if canImport(UIKit)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: outputSide, height: outputSide), format: format)
-        let ratio = outputSide / crop.width
         let rendered = renderer.image { _ in
             image.draw(in: CGRect(x: -crop.minX * ratio, y: -crop.minY * ratio,
                                   width: image.size.width * ratio, height: image.size.height * ratio))
         }
         return rendered.jpegData(compressionQuality: 0.9)
+        #else
+        guard let cgImage = image.cgImage else { return nil }
+        let side = Int(outputSide)
+        guard let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        context.interpolationQuality = .high
+        // CGContext is y-up; flip the vertical placement so the crop's origin is top-left as on iOS.
+        // The rect spans the whole image, so any pixel density of `cgImage` maps onto it correctly.
+        let height = image.size.height * ratio
+        context.draw(cgImage, in: CGRect(x: -crop.minX * ratio, y: outputSide - height + crop.minY * ratio,
+                                         width: image.size.width * ratio, height: height))
+        guard let output = context.makeImage() else { return nil }
+        return NSImage(cgImage: output).jpegData(compressionQuality: 0.9)
+        #endif
     }
 }
 
+#if os(iOS)
 /// The system camera with its own square move-and-scale step (`allowsEditing`); hands back the
 /// edited image as a JPEG.
 struct CameraPicker: UIViewControllerRepresentable {
@@ -181,3 +207,4 @@ struct CameraPicker: UIViewControllerRepresentable {
         }
     }
 }
+#endif

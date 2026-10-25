@@ -12,7 +12,7 @@ import UIKit
 
 enum QRCodeImage {
     /// Renders `string` as a QR code image, scaled up so modules stay crisp on screen.
-    static func generate(from string: String, scale: CGFloat = 8) -> UIImage? {
+    static func generate(from string: String, scale: CGFloat = 8) -> PlatformImage? {
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(string.utf8)
 
@@ -21,6 +21,6 @@ enum QRCodeImage {
 
         let context = CIContext()
         guard let cgImage = context.createCGImage(output, from: output.extent) else { return nil }
-        return UIImage(cgImage: cgImage)
+        return PlatformImage(cgImage: cgImage)
     }
 }

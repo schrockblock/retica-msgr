@@ -49,13 +49,17 @@ struct ReactionPaletteMenu: View {
         if isEnabled {
             Text(emoji)
         } else {
-            Image(uiImage: dimmedEmoji(emoji))
+            Image(platformImage: dimmedEmoji(emoji))
         }
     }
 
-    private func dimmedEmoji(_ emoji: String) -> UIImage {
+    private func dimmedEmoji(_ emoji: String) -> PlatformImage {
         let renderer = ImageRenderer(content: Text(emoji).font(.footnote).opacity(0.35))
         renderer.scale = displayScale
+        #if canImport(UIKit)
         return (renderer.uiImage ?? UIImage()).withRenderingMode(.alwaysOriginal)
+        #else
+        return renderer.nsImage ?? NSImage()
+        #endif
     }
 }
