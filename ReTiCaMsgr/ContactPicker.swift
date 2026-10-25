@@ -86,6 +86,8 @@ struct ContactPicker: NSViewRepresentable {
             shown = true
             // Deferred so the window has finished laying the view out.
             DispatchQueue.main.async { [picker] in
+                // The sheet may have closed before the next turn of the run loop.
+                guard view.window != nil else { return }
                 picker.showRelative(to: view.bounds, of: view, preferredEdge: .maxY)
             }
         }

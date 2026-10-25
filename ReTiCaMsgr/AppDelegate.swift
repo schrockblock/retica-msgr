@@ -101,7 +101,8 @@ extension AppDelegate: UIApplicationDelegate {
 
 #if os(macOS)
 extension AppDelegate: NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    /// Before launch finishes, so a notification click that launched the app reaches the delegate.
+    func applicationWillFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
     }
 
