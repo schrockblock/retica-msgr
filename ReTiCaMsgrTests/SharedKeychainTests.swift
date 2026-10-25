@@ -17,6 +17,10 @@ private enum TestKeychain {
     }
 }
 
+// Fenced on macOS: it needs the shared keychain-access-groups entitlement on the hosted test
+// bundle, which only a provisioned (signed) Mac build carries. Unsigned macOS test runs fail
+// with a keychain entitlement error here, and automatic signing needs an Xcode account.
+#if os(iOS)
 @Test func sharedKeychainRoundTripsATestServiceInTheRealAccessGroup() {
     let production = KeychainOps.live.read(SharedIdentityLocation.shared)
     let location = TestKeychain.location()
@@ -30,3 +34,4 @@ private enum TestKeychain {
     #expect(store.restore(Identity().privateKey!) == .identityPresent(service: location.service))
     #expect(KeychainOps.live.read(SharedIdentityLocation.shared) == production)
 }
+#endif
