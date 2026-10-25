@@ -392,8 +392,10 @@ struct ImageViewerSheet: View {
                     ShareLink(item: shareURL, preview: SharePreview(attachment.name))
                 }
             }
+            #if os(iOS)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
+            #endif
         }
         .task(id: attachment.id) {
             let decoded = await ThumbnailCache.shared.image(for: url, key: attachment.id.uuidString, maxPixels: 2048)

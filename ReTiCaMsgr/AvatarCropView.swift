@@ -54,8 +54,10 @@ struct AvatarCropView: View {
             .background(Color.black.ignoresSafeArea())
             .navigationTitle("Move and Scale")
             .inlineNavigationTitle()
+            #if os(iOS)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
+            #endif
         }
     }
 
@@ -152,6 +154,7 @@ struct AvatarCropView: View {
         guard let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
                                       bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        context.interpolationQuality = .high
         // CGContext is y-up; flip the vertical placement so the crop's origin is top-left as on iOS.
         // The rect spans the whole image, so any pixel density of `cgImage` maps onto it correctly.
         let height = image.size.height * ratio
