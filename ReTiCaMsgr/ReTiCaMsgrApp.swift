@@ -20,6 +20,10 @@ struct ReTiCaMsgrApp: App {
             RootView(runtime: delegate.runtime)
                 .task { delegate.runtime.build() }
         }
+        #if os(macOS)
+        // One window: every window would share the one `StoreOf<AppFeature>`, so ⌘N opens none.
+        .commands { CommandGroup(replacing: .newItem) {} }
+        #endif
         // iOS suspends the app in the background and the TCP socket does not survive it. Nothing
         // else re-dials: `.task` runs once per view lifetime, and the interface's reconnect backoff
         // cannot run while the process is suspended. Without this the only way back was to kill the
@@ -33,8 +37,14 @@ struct ReTiCaMsgrApp: App {
             switch phase {
             case .active: delegate.runtime.foregrounded()
             // A Mac app is never suspended, so its sockets stay open: no `backgrounded()` there.
+            // It still has to say nobody is looking when hidden or behind another app (arrivals into
+            // the open chat are not viewed, "Message not sent" posts). `.foregrounded` on `.active`
+            // already sets the flag back and views the open chat, so `activityChanged(true)` is
+            // not sent as well.
             #if os(iOS)
             case .background: delegate.runtime.backgrounded()
+            #elseif os(macOS)
+            case .inactive, .background: delegate.runtime.activityChanged(isActive: false)
             #endif
             default: break
             }

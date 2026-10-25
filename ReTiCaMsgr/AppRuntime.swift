@@ -113,7 +113,7 @@ final class AppRuntime {
                 guard path == AppFeature.publicKeyRequestPath else { return nil }
                 return identity.publicKey
             }
-            // The package's liveValue only reports an issue: the app owns UIKit.
+            // The package's liveValue only reports an issue: the app owns UIKit (AppKit on macOS).
             #if os(iOS)
             $0.pushPlatform = .uiKit
             // Likewise: background time for sends still in flight (spec 2026-10-21, A4).
@@ -199,6 +199,12 @@ final class AppRuntime {
     /// hub sees a FIN and goes dormant instead of writing into a frozen socket.
     func backgrounded() {
         store?.send(.backgrounded)
+    }
+
+    /// The Mac app went inactive or came back without being suspended: only "is anyone looking"
+    /// changes, the sockets stay open (see `AppFeature.Action.activityChanged`).
+    func activityChanged(isActive: Bool) {
+        store?.send(.activityChanged(isActive: isActive))
     }
 
     /// A background push or a notification tap. Builds the store if the scene never rendered
