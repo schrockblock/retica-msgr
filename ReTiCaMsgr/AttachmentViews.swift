@@ -19,7 +19,7 @@ import ReTiCaMsgrCore
 @MainActor
 final class ThumbnailCache {
     static let shared = ThumbnailCache()
-    private let cache = NSCache<NSString, UIImage>()
+    private let cache = NSCache<NSString, PlatformImage>()
 
     /// Decoded bitmaps are width × height × 4 bytes: a viewer decode at 2048 px is up to 16 MB, so
     /// a count limit alone would let a few of them pin a lot of memory.
@@ -44,20 +44,20 @@ final class ThumbnailCache {
         }
     }
 
-    func image(for url: URL, key: String, maxPixels: Int) async -> UIImage? {
+    func image(for url: URL, key: String, maxPixels: Int) async -> PlatformImage? {
         await image(key: key, maxPixels: maxPixels) { CGImageSourceCreateWithURL(url as CFURL, nil) }
     }
 
-    func image(for data: Data, key: String, maxPixels: Int) async -> UIImage? {
+    func image(for data: Data, key: String, maxPixels: Int) async -> PlatformImage? {
         await image(key: key, maxPixels: maxPixels) { CGImageSourceCreateWithData(data as CFData, nil) }
     }
 
     /// The one decode path: cache lookup, then the source is opened and decoded off the main thread.
     private func image(key: String, maxPixels: Int,
-                       source: @escaping @Sendable () -> CGImageSource?) async -> UIImage? {
+                       source: @escaping @Sendable () -> CGImageSource?) async -> PlatformImage? {
         let cacheKey = "\(key)/\(maxPixels)" as NSString
         if let cached = cache.object(forKey: cacheKey) { return cached }
-        let decoded = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+        let decoded = await Task.detached(priority: .userInitiated) { () -> PlatformImage? in
             guard let src = source() else { return nil }
             return Self.decode(src, maxPixels: maxPixels)
         }.value
@@ -69,12 +69,12 @@ final class ThumbnailCache {
     }
 
     /// The decoded bitmap's size in bytes (4 per pixel).
-    private static func cost(of image: UIImage) -> Int {
+    private static func cost(of image: PlatformImage) -> Int {
         guard let cg = image.cgImage else { return 0 }
         return cg.width * cg.height * 4
     }
 
-    nonisolated private static func decode(_ source: CGImageSource, maxPixels: Int) -> UIImage? {
+    nonisolated private static func decode(_ source: CGImageSource, maxPixels: Int) -> PlatformImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -82,7 +82,7 @@ final class ThumbnailCache {
             kCGImageSourceShouldCache: false,
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        return UIImage(cgImage: cg)
+        return PlatformImage(cgImage: cg)
     }
 }
 
@@ -99,7 +99,7 @@ struct AttachmentThumbnail: View {
     /// Told whether the decode failed, so the bubble can stop offering a viewer for bytes that
     /// cannot be shown.
     var onFailedChange: ((Bool) -> Void)? = nil
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
     @State private var failed = false
 
     private var displaySize: CGSize {
@@ -111,7 +111,7 @@ struct AttachmentThumbnail: View {
     var body: some View {
         ZStack {
             if let image {
-                Image(uiImage: image)
+                Image(platformImage: image)
                     .resizable()
                     .scaledToFill()
             } else {
@@ -262,7 +262,7 @@ struct AttachmentComposerBar: View {
     let onRemove: () -> Void
     let onOriginalToggled: (Bool) -> Void
 
-    @State private var preview: UIImage?
+    @State private var preview: PlatformImage?
 
     /// The pending preview's cache key: name, size and preset identify one encode (a toggle
     /// changes the preset, a new pick the name or size). `Data.hashValue` would hash only the
@@ -320,7 +320,7 @@ struct AttachmentComposerBar: View {
         if preparing {
             ProgressView().frame(width: 48, height: 48)
         } else if let preview {
-            Image(uiImage: preview).resizable().scaledToFill()
+            Image(platformImage: preview).resizable().scaledToFill()
                 .frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 8))
         } else if pending != nil {
             Image(systemName: "doc.fill").font(.title).frame(width: 48, height: 48)
@@ -342,7 +342,7 @@ struct ImageViewerSheet: View {
     let url: URL
     let shareURL: URL
     @Environment(\.dismiss) private var dismiss
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
     /// The decode came back empty (the file is gone or unreadable): say so instead of spinning.
     @State private var decodeFailed = false
     @State private var zoom: CGFloat = 1
@@ -351,7 +351,7 @@ struct ImageViewerSheet: View {
 
     /// Whether the image, fitted to the viewport's width at zoom 1, is no taller than the viewport.
     /// A taller one scrolls vertically, so a downward drag there must pan, not dismiss.
-    static func fitsVertically(_ image: UIImage, in viewport: CGSize) -> Bool {
+    static func fitsVertically(_ image: PlatformImage, in viewport: CGSize) -> Bool {
         guard image.size.width > 0 else { return true }
         return viewport.width * image.size.height / image.size.width <= viewport.height
     }
@@ -363,7 +363,7 @@ struct ImageViewerSheet: View {
                 if let image {
                     GeometryReader { geo in
                         ScrollView([.horizontal, .vertical], showsIndicators: false) {
-                            Image(uiImage: image)
+                            Image(platformImage: image)
                                 .resizable()
                                 .scaledToFit()
                                 .frame(width: geo.size.width * zoom)
