@@ -413,6 +413,23 @@ private func failedGroupPost(_ db: any DatabaseWriter) async throws
     #expect(posted.value.map(\.id) == ["send-failed-\(peer)"])
 }
 
+/// macOS port F2: the Mac app is never backgrounded, so going inactive (hidden, or behind another
+/// app) is what says nobody is looking at the open chat.
+/// Mutation M1: `activityChanged(false)` leaves `isForeground` alone → nothing is posted.
+@MainActor @Test func failureWhileTheMacAppIsInactiveNotifies() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let original = outgoingRow(1, "hello", status: MessageStatus.sending)
+    try await insert(db, [original])
+    let posted = LockIsolated<[LocalNotificationClient.Posted]>([])
+    let store = makeStore(db, posted: posted) { s in
+        s.chatVisible = true
+        s.openPeerHex = peer
+    }
+    await store.send(.activityChanged(isActive: false))
+    await run(store, failed(original))
+    #expect(posted.value.map(\.id) == ["send-failed-\(peer)"])
+}
+
 /// The same peer's chat is open but not on screen (the Settings tab, or the list).
 /// Mutation: drop `&& state.chatVisible` → nothing is posted.
 @MainActor @Test func failureWithTheChatNotVisibleNotifies() async throws {

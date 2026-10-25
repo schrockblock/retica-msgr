@@ -499,6 +499,12 @@ public struct AppFeature {
         /// The app entered the background (UIApplication.didEnterBackgroundNotification). Used to
         /// flush the debounced learned-destination write before the process may be killed by the OS.
         case backgrounded
+        /// The app became active, or stopped being active, without being suspended: the Mac app
+        /// hidden or behind another app's window, and back. Only `isForeground` follows it (with
+        /// the open thread's first view on return). `.foregrounded` / `.backgrounded` exist for
+        /// iOS, where the background means suspension and so re-dials or closes the sockets; a Mac
+        /// app keeps running and must not close them, but still needs "nobody is looking".
+        case activityChanged(isActive: Bool)
         /// iOS answered the background-time request `.backgrounded` made for sends in flight: the
         /// task's id, or nil when none was granted. Internal.
         case backgroundTaskBegan(Int?)
@@ -1047,6 +1053,15 @@ public struct AppFeature {
                     // case the process is suspended and killed before that second passes.
                     .run { [drafts = state.$drafts] _ in try await drafts.save() }
                 )
+
+            case let .activityChanged(isActive):
+                // macOS port: no socket close, flush or re-dial here (see the action's doc). Going
+                // inactive only stops arrivals into the open thread counting as viewed (A5) and
+                // lets "Message not sent" post for it; coming back is the open thread's first view,
+                // as on `.foregrounded`.
+                let wasForeground = state.isForeground
+                state.isForeground = isActive
+                return isActive && !wasForeground ? viewOpenThreadEffect(state) : .none
 
             case let .backgroundTaskBegan(id):
                 // A grant replacing one still held gives the old one back. Only its `end`: the

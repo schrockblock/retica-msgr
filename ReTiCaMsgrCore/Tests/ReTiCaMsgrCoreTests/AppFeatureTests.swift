@@ -4197,6 +4197,68 @@ private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt:
     #expect(row.expiresAt == nil)
 }
 
+/// macOS port F2: the Mac app going inactive (hidden, or behind another app's window) only clears
+/// `isForeground`. Exhaustive, so `.backgrounded`'s bookkeeping (`suspendedSinceForeground`, the
+/// socket close's `hubSocketsClosed`) would fail the state assertion.
+/// Mutation M1: `activityChanged(false)` leaves `isForeground` alone → the state assertion fails.
+@MainActor @Test func activityChangedInactiveOnlyClearsForegroundFlag() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.chatVisible = true
+    }
+    store.exhaustivity = .on
+    await store.send(.activityChanged(isActive: false)) { $0.isForeground = false }
+    #expect(store.state.hubSocketsClosed == false)
+    #expect(store.state.suspendedSinceForeground == false)
+}
+
+/// macOS port F2: a message arriving into the open thread while the Mac app is inactive is not
+/// viewed (mirrors `expiryReceiveIntoOpenThreadWhileBackgroundedDoesNotStamp`).
+/// Mutation M1 → the row is stamped on insert.
+@MainActor @Test func expiryReceiveIntoOpenThreadWhileInactiveDoesNotStamp() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    try await db.write { try ConversationSetting.set(expiryHex(sender), seconds: 600, at: infoT0, $0) }
+    let store = makeStore(db, identity: me) { s in
+        s.openPeerHex = expiryHex(sender)
+        s.chatVisible = true
+    }
+    await store.send(.activityChanged(isActive: false)) { $0.isForeground = false }
+    let m = wireMessage(from: sender, to: me, at: 1699999999, content: "hi", fields: ExpiryWire.encode(seconds: 600))
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: true, method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.expirySeconds == 600)
+    #expect(row.expiresAt == nil)
+}
+
+/// macOS port F2: becoming active again is a view of the open thread's unstamped rows, as
+/// `.foregrounded` is, without its re-dial.
+/// Mutation M2: `activityChanged(true)` returns `.none` → nothing is stamped or reloaded.
+@MainActor @Test func activityChangedActiveStampsOpenThread() async throws {
+    let db = try! AppDatabase.makeInMemory()
+    try! await seed(db, [expiryTimerRow(1, peerA, seconds: 60, expiresAt: nil)])
+    let store = makeStore(db, identity: Identity()) { s in
+        s.openPeerHex = peerA
+        s.chatVisible = true
+        s.isForeground = false
+    }
+    await store.send(.activityChanged(isActive: true)) { $0.isForeground = true }
+    await store.receive { if case .threadLoaded = $0 { return true }; return false }
+    await store.receive { action in
+        if case let .expiryPurgeCompleted(purged, nextDue) = action { return purged == 0 && nextDue == infoT0.addingTimeInterval(60) }
+        return false
+    }
+    #expect(store.state.threadMessages.map(\.expiresAt) == [infoT0.addingTimeInterval(60)])
+    let row = try #require(try await db.read { try Message.all.fetchAll($0) }.first)
+    #expect(row.expiresAt == infoT0.addingTimeInterval(60))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
 /// Foreground with nothing due still reloads the thread after stamping, so the stamped rows
 /// reach the UI without waiting for a later purge or load.
 @MainActor @Test func expiryTimerForegroundReloadsThreadAfterStampingWhenNothingIsDue() async throws {
