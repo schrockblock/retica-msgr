@@ -9,18 +9,6 @@ import ReTiCATransport
 import ReTiCAPush
 @testable import ReTiCaMsgrCore
 
-// MARK: - Test support
-
-extension BadgeClient {
-    /// For TestStore tests that don't assert on the badge: the testValue is `unimplemented`.
-    static let ignored = BadgeClient(set: { _ in })
-
-    /// Appends every value set to `calls`.
-    static func recording(into calls: LockIsolated<[Int]>) -> BadgeClient {
-        BadgeClient(set: { n in calls.withValue { $0.append(n) } })
-    }
-}
-
 private let badgeT0 = Date(timeIntervalSince1970: 1700000000)
 private let peerA = String(repeating: "a", count: 32)
 private let peerB = String(repeating: "b", count: 32)
@@ -103,8 +91,21 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
     try await db.write { try ConversationRead.markRead(peerA, at: badgeT0, $0) }
     var outgoing = incoming(peerA, at: 3)
     outgoing.isOutgoing = true
-    try await insert(db, [incoming(peerA, at: -1), incoming(peerA, at: 1), incoming(peerA, at: 2), outgoing])
+    // The row at exactly readAt was read: only strictly later rows count.
+    try await insert(db, [incoming(peerA, at: -1), incoming(peerA, at: 0), incoming(peerA, at: 1),
+                          incoming(peerA, at: 2), outgoing])
     #expect(try await unread(db) == 2)
+}
+
+/// Review fix 1: arrival effects can mark out of order; an older mark must not undo a newer one.
+@Test func markReadNeverMovesBackwards() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await db.write {
+        try ConversationRead.markRead(peerA, at: badgeT0.addingTimeInterval(2), $0)
+        try ConversationRead.markRead(peerA, at: badgeT0.addingTimeInterval(1), $0)
+    }
+    try await insert(db, [incoming(peerA, at: 1.5)])
+    #expect(try await unread(db) == 0)
 }
 
 @Test func keyWithoutMarkerCountsAll() async throws {
@@ -121,6 +122,8 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
         incoming(peerA, at: 1, isTimerChange: true),
         incoming(peerA, at: 2, group: groupG, isGroupEvent: true),
         incoming(peerB, at: 3),
+        // A blocked member's group post: blocking goes by sender, not by conversation.
+        incoming(peerB, at: 5, group: groupG),
         incoming(peerA, at: 4),
     ])
     #expect(try await unread(db) == 1)

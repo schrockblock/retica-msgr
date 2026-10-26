@@ -16,11 +16,16 @@ public struct ConversationRead: Equatable, Sendable {
         self.readAt = readAt
     }
 
-    /// Upsert: the latest read wins, whatever was stored before.
+    /// Monotonic upsert: `readAt` only moves forward. Arrival effects run concurrently and can land
+    /// out of order (a photo whose file is written first, a slow arrival after the thread was marked
+    /// at a later `now`), and an older mark must not make newer, already-seen messages unread.
+    /// `delete` is the only reset. `max` on the stored text is safe: every `readAt` is written in
+    /// the same fixed-width date format.
     public static func markRead(_ key: String, at now: Date, _ db: GRDB.Database) throws {
-        let key = key.lowercased()
-        try delete(key, db)
-        try ConversationRead.insert { ConversationRead(key: key, readAt: now) }.execute(db)
+        try db.execute(sql: """
+            INSERT INTO conversationReads (key, readAt) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET readAt = max(readAt, excluded.readAt)
+            """, arguments: [key.lowercased(), now])
     }
 
     public static func delete(_ key: String, _ db: GRDB.Database) throws {
