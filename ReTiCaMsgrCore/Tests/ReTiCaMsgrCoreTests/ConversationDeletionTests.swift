@@ -144,9 +144,15 @@ private func deletionTestStore(_ db: any DatabaseWriter, files: AttachmentStore?
     let store = deletionTestStore(db) {
         $0.conversations = [Conversation(peerHex: deletePeerA, lastBody: "m2", lastTimestamp: deleteNow)]
     }
+    // Exhaustive for the receive window: a cancel for the settled row would be an unexpected
+    // received action and fail the test.
+    store.exhaustivity = .on
     await store.send(.deleteConversation(key: deletePeerA, isGroup: false))
     await store.receive(.node(.client(.cancelOutbound(messageHash: Data(hexString: hash)!))))
-    await store.skipReceivedActions(strict: false)
+    await store.receive(.node(.client(.router(.cancelOutbound(messageHash: Data(hexString: hash)!)))))
+    await store.receive(\.conversationsLoaded) { $0.conversations = [] }
+    await store.finish()
+    store.exhaustivity = .off
     #expect(store.state.conversations.first { $0.peerHex == deletePeerA } == nil)
     #expect(try await deleteCount(db, peer: deletePeerA) == 0)
 }
@@ -175,6 +181,7 @@ private func deletionTestStore(_ db: any DatabaseWriter, files: AttachmentStore?
     }
     let store = deletionTestStore(db)
     await store.send(.deleteConversation(key: deleteGroup, isGroup: true))
+    await store.finish()
     await store.skipReceivedActions(strict: false)
     #expect(try await db.read { try Message.all.fetchAll($0) }.map(\.body) == ["m3"])
     #expect(store.state.conversations.map(\.peerHex) == [deletePeerA])
@@ -186,6 +193,7 @@ private func deletionTestStore(_ db: any DatabaseWriter, files: AttachmentStore?
     try await db.write { d in try Message.insert { deleteMessage(1, deletePeerA) }.execute(d) }
     let store = deletionTestStore(db) { $0.openPeerHex = deletePeerA }
     await store.send(.deleteConversation(key: deletePeerA, isGroup: false))
+    await store.finish()
     await store.skipReceivedActions(strict: false)
     #expect(store.state.openPeerHex == nil)
 }
@@ -221,6 +229,7 @@ private func deletionTestStore(_ db: any DatabaseWriter, files: AttachmentStore?
         }
     }
     await store.send(.deleteConversation(key: deletePeerA, isGroup: false))
+    await store.finish()
     await store.skipReceivedActions(strict: false)
     #expect(store.state.drafts[deletePeerA] == nil)
     #expect(store.state.drafts[deletePeerB]?.text == "other")
