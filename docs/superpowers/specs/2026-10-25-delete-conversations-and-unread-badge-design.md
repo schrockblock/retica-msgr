@@ -119,6 +119,11 @@ A later message from that peer or group starts the row again, with only the new 
 - **Silent pushes:** silent (content-available, non-mutable) pushes never run the extension, so they never count.
 - **Cost:** a push carrying several messages counts once until the app recomputes. The user accepted approximate counts while the app is closed.
 
+**A2 (planning, 2026-10-25):** deleting a conversation **keeps** its `ConversationSetting` row, the disappearing-message timer.
+- **Why:** that timer is state shared with the peer (both ends agreed on it), not local history. Removing it on one side would silently turn expiry off here while the peer still runs it.
+- **What's still removed:** the draft (its entry in the on-disk drafts file), messages, attachments, reactions and the read marker.
+- **Cost if wrong:** a deleted chat that restarts keeps its old timer. The user can change it in the chat as usual.
+
 ## Non-goals
 
 - Deleting on the peer's side, or "delete for everyone".
