@@ -109,6 +109,16 @@ A later message from that peer or group starts the row again, with only the new 
    - **No extension:** the notification extension is iOS-only, and the Mac relies on the running app's recompute.
    - **After quitting:** the Dock badge keeps the last true count until the next launch recomputes it. That is correct at quit time and acceptable.
 
+## Amendments
+
+**A1 (planning, 2026-10-25):** this replaces the counter logic in settled detail 1.
+- **Why:** the logic would have lived in `ReTiCAPush` (a separate pod repository). That would need a cross-repo change and a new handler result type.
+- **Instead:** it lives in this repo's `ReTiCaMsgrPushService` target.
+  - When the extension's verdict is `.deliverOriginal`, it adds **1 per delivered push** to the app-group counter and puts the result on `content.badge`.
+  - A `.suppress` verdict adds nothing.
+- **Silent pushes:** silent (content-available, non-mutable) pushes never run the extension, so they never count.
+- **Cost:** a push carrying several messages counts once until the app recomputes. The user accepted approximate counts while the app is closed.
+
 ## Non-goals
 
 - Deleting on the peer's side, or "delete for everyone".
