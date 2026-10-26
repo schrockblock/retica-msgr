@@ -43,8 +43,19 @@ public enum MessagePurge {
         guard !due.isEmpty else {
             return Result(purged: 0, nextDue: try await nextDeadline(database, after: now))
         }
-        let ids = due.map(\.id)
-        let hashes = due.map(\.hash).filter { !$0.isEmpty }
+        let attachmentIds = try await removeMessages(database, attachmentStore: attachmentStore,
+                                                     ids: due.map(\.id), hashes: due.map(\.hash))
+        return Result(purged: due.count, nextDue: try await nextDeadline(database, after: now),
+                      purgedAttachmentIds: attachmentIds)
+    }
+
+    /// The on-disk and reaction consequences of deleting message rows, shared by the purge and by
+    /// "delete conversation": the export copies and the attachment file go first, then the
+    /// reactions and the rows (the attachment rows cascade). Returns the attachment ids, for the
+    /// image cache. Seen hashes are never touched.
+    static func removeMessages(_ database: any DatabaseWriter, attachmentStore: AttachmentStore,
+                               ids: [UUID], hashes: [String]) async throws -> [UUID] {
+        let hashes = hashes.filter { !$0.isEmpty }
         let attachments = try await database.read { db in
             try Attachment.where { $0.messageId.in(ids) }.fetchAll(db)
         }
@@ -64,8 +75,7 @@ public enum MessagePurge {
             }
             try Message.where { $0.id.in(ids) }.delete().execute(db)
         }
-        return Result(purged: due.count, nextDue: try await nextDeadline(database, after: now),
-                      purgedAttachmentIds: attachments.map(\.id))
+        return attachments.map(\.id)
     }
 
     /// The earliest `expiresAt` still ahead of `now`. Anything at or before `now` was just deleted

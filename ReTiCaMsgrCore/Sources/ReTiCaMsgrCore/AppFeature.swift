@@ -559,6 +559,9 @@ public struct AppFeature {
         /// waiting copies to the reachable members. Internal.
         case groupRosterChanged(groupHex: String)
         case closeConversation
+        /// Removes the conversation's messages from this device (spec 2026-10-25 §1). `key` is a
+        /// peer's address or a group id, the list row's key, and `isGroup` says which.
+        case deleteConversation(key: String, isGroup: Bool)
         case startConversation(String)
         /// ChatView's onAppear: the open thread is on screen again (back from another tab), so its
         /// unstamped rows are viewed now.
@@ -1323,6 +1326,25 @@ public struct AppFeature {
                 state.attachmentError = nil
                 state.attachmentOriginalRequested = nil
                 return .cancel(id: CancelID.attachmentPreparation)
+
+            case let .deleteConversation(key, isGroup):
+                // The draft goes with the conversation; the open thread, if it is this one, closes
+                // (which also empties the composer without saving it back).
+                state.$drafts.withLock { $0[key] = nil }
+                return .merge(
+                    state.openPeerHex == key ? .send(.closeConversation) : .none,
+                    .run { [database, attachmentStore, attachmentCacheEvictor] send in
+                        let result = try await ConversationDeletion.run(
+                            database, attachmentStore: attachmentStore, key: key, isGroup: isGroup)
+                        for hash in result.inFlightHashes {
+                            await send(.node(.client(.cancelOutbound(messageHash: hash))))
+                        }
+                        if !result.deletedAttachmentIds.isEmpty {
+                            await attachmentCacheEvictor.evict(result.deletedAttachmentIds)
+                        }
+                        try await reloadConversations(database, send)
+                    }
+                )
 
             case let .openGroupConversation(groupHex):
                 guard let data = Data(hexString: groupHex), data.count == GroupWire.idLength else { return .none }
