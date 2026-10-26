@@ -270,6 +270,10 @@ public struct AppFeature {
         @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
         @Shared(.appStorage("propagationNodeModeEnabled")) public var nodeModeEnabled: Bool = false
         @Shared(.appStorage("displayName")) public var displayName: String = ""
+        /// Unread incoming messages per conversation key (lowercased), for the chat list's row
+        /// indicators. Written by `refreshBadge` alongside the icon badge, so every trigger that
+        /// moves the badge moves these too. Keys with nothing unread are absent.
+        @Shared(.inMemory("unreadCounts")) public var unreadCounts: [String: Int] = [:]
         /// 16-char hex version of my profile photo; "" means none (spec 2026-10-19).
         @Shared(.appStorage("profilePhotoVersion")) public var myPhotoVersion: String = ""
         public var profilePhotoError: String? = nil

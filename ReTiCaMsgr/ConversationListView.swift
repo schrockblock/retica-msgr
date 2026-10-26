@@ -171,7 +171,9 @@ struct ConversationListView: View {
     }
 
     private func rowDetails(_ convo: Conversation) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        // Signal's unread treatment: an accent timestamp, a bold preview and a count pill.
+        let unread = store.unreadCounts[convo.peerHex.lowercased()] ?? 0
+        return VStack(alignment: .leading, spacing: 2) {
             HStack {
                 if let title = convo.title {
                     Text(title)
@@ -203,12 +205,25 @@ struct ConversationListView: View {
                 Spacer()
                 Text(convo.lastTimestamp, style: .relative)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(unread > 0 ? Color.accentColor : .secondary)
             }
-            Text(convo.preview)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            HStack {
+                Text(convo.preview)
+                    .font(.subheadline.weight(unread > 0 ? .semibold : .regular))
+                    .foregroundStyle(unread > 0 ? .primary : .secondary)
+                    .lineLimit(1)
+                if unread > 0 {
+                    Spacer()
+                    Text(unread > 99 ? "99+" : "\(unread)")
+                        .font(.caption2.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 20, minHeight: 20)
+                        .background(Capsule().fill(Color.accentColor))
+                        .accessibilityLabel("\(unread) unread")
+                }
+            }
         }
     }
 }

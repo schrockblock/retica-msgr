@@ -143,7 +143,44 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
     #expect(try await unread(db) == 0)
 }
 
+/// The chat list's per-row counts use the same rules as the badge, keyed by conversation.
+@Test func perConversationCountsFollowTheBadgeRules() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let blocked = String(repeating: "d", count: 32)
+    try await db.write {
+        try BlockedPeer.insertIfAbsent(BlockedPeer(peerHex: blocked, blockedAt: badgeT0), $0)
+        try ConversationRead.markRead(peerB, at: badgeT0, $0)
+    }
+    try await insert(db, [
+        incoming(peerA, at: 1), incoming(peerA, at: 2),
+        incoming(peerA, at: 3, isTimerChange: true),
+        incoming(peerB, at: -1), incoming(peerB, at: 1),
+        incoming(peerA, at: 4, group: groupG),
+        incoming(blocked, at: 5),
+    ])
+    let counts = try await db.read { try UnreadCount.perConversation($0) }
+    #expect(counts == [peerA: 2, peerB: 1, groupG: 1])
+    #expect(counts.values.reduce(0, +) == (try await unread(db)))
+}
+
 // MARK: - Mark-read in the reducer
+
+/// The list's counts follow the same refreshes as the badge: an unwatched arrival shows on its
+/// row, and opening the chat clears it.
+@MainActor @Test func unreadCountsFollowArrivalAndOpening() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = deliveryHex(sender)
+    let store = makeBadgeStore(db, identity: me, badge: .ignored) { _ in }
+    await store.send(.node(.client(.delegate(.messageReceived(message: wire(from: sender, to: me),
+                                                              signatureValidated: true, method: .opportunistic)))))
+    await settle(store)
+    #expect(store.state.unreadCounts == [senderHex: 1])
+    await store.send(.openConversation(senderHex))
+    await settle(store)
+    #expect(store.state.unreadCounts == [:])
+}
 
 /// Review Focus 3: a message arriving in the chat you're watching is read at once.
 @MainActor @Test func arrivalInWatchedThreadIsRead() async throws {

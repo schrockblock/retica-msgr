@@ -18,14 +18,33 @@ public enum UnreadCount {
               AND (r.readAt IS NULL OR m.timestamp > r.readAt)
             """) ?? 0
     }
+
+    /// The same count split by conversation key (lowercased), for the chat list. Keys with
+    /// nothing unread are absent; the values sum to `count`. The alias is not `key`: `GROUP BY key`
+    /// would resolve to `conversationReads.key`, NULL for every unmarked conversation, and merge them.
+    public static func perConversation(_ db: GRDB.Database) throws -> [String: Int] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT lower(COALESCE(m.groupHex, m.peerHex)) AS convoKey, COUNT(*) AS n FROM messages m
+            LEFT JOIN conversationReads r ON r.key = lower(COALESCE(m.groupHex, m.peerHex))
+            LEFT JOIN blockedPeers b ON b.peerHex = lower(m.peerHex)
+            WHERE m.isOutgoing = 0 AND m.isTimerChange = 0 AND m.isGroupEvent = 0
+              AND b.peerHex IS NULL
+              AND (r.readAt IS NULL OR m.timestamp > r.readAt)
+            GROUP BY convoKey
+            """)
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0["convoKey"] as String, $0["n"] as Int) })
+    }
 }
 
-/// Counts and sets the badge, and through the live client the extension's counter (drift
-/// correction). A failed read throws and leaves the badge at its last value.
+/// Counts unread per conversation, publishes those counts for the chat list, and sets the badge
+/// to their sum, and through the live client the extension's counter (drift correction). A failed
+/// read throws and leaves both at their last value.
 func refreshBadge(_ database: any DatabaseWriter) async throws {
     @Dependency(\.badge) var badge
-    let n = try await database.read { try UnreadCount.count($0) }
-    await badge.set(n)
+    @Shared(.inMemory("unreadCounts")) var unreadCounts: [String: Int] = [:]
+    let counts = try await database.read { try UnreadCount.perConversation($0) }
+    $unreadCounts.withLock { $0 = counts }
+    await badge.set(counts.values.reduce(0, +))
 }
 
 /// Marks `key` read at `now` and resets the badge to the new count.
