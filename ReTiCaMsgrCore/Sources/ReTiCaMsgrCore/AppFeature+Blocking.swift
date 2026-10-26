@@ -31,6 +31,8 @@ struct BlockingReducer: Reducer {
                     await send(.node(.client(.ignoreDestination(hash))))
                     try await database.write { try BlockedPeer.insertIfAbsent(row, $0) }
                     store.save(mirror)
+                    // Unread badge (spec 2026-10-25): their unread messages stop counting.
+                    try await refreshBadge(database)
                 }
 
             case let .unblockPeer(raw):
@@ -44,6 +46,7 @@ struct BlockingReducer: Reducer {
                     await send(.node(.client(.unignoreDestination(hash))))
                     try await database.write { try BlockedPeer.delete(peerHex: hex, $0) }
                     store.save(mirror)
+                    try await refreshBadge(database)
                 }
 
             case let .blockedPeersLoaded(rows):

@@ -23,6 +23,7 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
     let store = TestStore(initialState: initial) {
         AppFeature()
     } withDependencies: {
+        $0.badge = .ignored
         $0.defaultDatabase = db
         $0.attachmentStore = AttachmentStore.testValue
         $0.avatarStore = avatars

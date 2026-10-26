@@ -42,6 +42,7 @@ private func makeStore(_ db: any DatabaseWriter, sent: LockIsolated<[LXMessage]>
             }
         }
     } withDependencies: {
+        $0.badge = .ignored
         $0.defaultDatabase = db
         $0.attachmentStore = attachmentStore
         $0.date = .constant(launch)

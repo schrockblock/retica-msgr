@@ -38,12 +38,18 @@ final class NotificationService: UNNotificationServiceExtension {
         finish(.deliverOriginal)
     }
 
-    /// What goes back to the system for `verdict`: the original content, or empty content for
-    /// `.suppress` (no title, body, sound or badge, which is what the filtering entitlement
-    /// treats as "do not show").
+    /// What goes back to the system for `verdict`: the original content, badged with the app-group
+    /// counter plus this push (spec 2026-10-25, amendment A1), or empty content for `.suppress` (no
+    /// title, body, sound or badge, which is what the filtering entitlement treats as "do not
+    /// show"), which counts nothing.
     static func content(for verdict: PushVerdict, original: UNNotificationContent) -> UNNotificationContent {
         switch verdict {
-        case .deliverOriginal: return original
+        case .deliverOriginal:
+            guard let defaults = BadgeCounter.appGroupDefaults(),
+                  let badged = original.mutableCopy() as? UNMutableNotificationContent
+            else { return original }
+            badged.badge = NSNumber(value: BadgeCounter.increment(defaults))
+            return badged
         case .suppress: return UNNotificationContent()
         }
     }
