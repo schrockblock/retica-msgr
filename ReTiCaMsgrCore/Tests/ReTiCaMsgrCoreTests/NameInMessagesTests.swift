@@ -152,6 +152,7 @@ private func nameStore(_ db: any DatabaseWriter, identity: Identity = Identity()
                                  openChannel: { _ in }, send: { _, _ in }, closeChannel: { _ in }, stop: { })
         $0.pushPlatform = PushPlatform(requestAuthorization: { true }, registerForRemoteNotifications: {},
                                        unregisterForRemoteNotifications: {})
+        $0.badge = .ignored
     }
     store.exhaustivity = .off
     return store

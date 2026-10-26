@@ -194,3 +194,26 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
     #expect(calls.value == [0])
     #expect(try await unread(db) == 0)
 }
+
+/// Deleting an unread conversation drops its count from the badge and its read marker with it, so
+/// a later message from that peer starts a conversation that is unread throughout.
+@MainActor @Test func deleteRecomputesBadge() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = deliveryHex(sender)
+    try await db.write { try ConversationRead.markRead(senderHex, at: badgeT0.addingTimeInterval(-20), $0) }
+    try await insert(db, [incoming(senderHex, at: -10)])
+    #expect(try await unread(db) == 1)
+    let calls = LockIsolated<[Int]>([])
+    let store = makeBadgeStore(db, identity: me, badge: .recording(into: calls)) { _ in }
+    await store.send(.deleteConversation(key: senderHex, isGroup: false))
+    await settle(store)
+    #expect(calls.value == [0])
+    #expect(try await db.read { try ConversationRead.fetchCount($0) } == 0)
+    await store.send(.node(.client(.delegate(.messageReceived(message: wire(from: sender, to: me),
+                                                              signatureValidated: true, method: .opportunistic)))))
+    await settle(store)
+    #expect(calls.value == [0, 1])
+    #expect(try await unread(db) == 1)
+}

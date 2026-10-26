@@ -1381,6 +1381,10 @@ public struct AppFeature {
                         if !result.deletedAttachmentIds.isEmpty {
                             await attachmentCacheEvictor.evict(result.deletedAttachmentIds)
                         }
+                        // Unread badge: the read marker goes too, so a conversation that restarts
+                        // is unread throughout, and the deleted messages leave the count.
+                        try await database.write { try ConversationRead.delete(key, $0) }
+                        try await refreshBadge(database)
                         try await reloadConversations(database, send)
                     }
                 )

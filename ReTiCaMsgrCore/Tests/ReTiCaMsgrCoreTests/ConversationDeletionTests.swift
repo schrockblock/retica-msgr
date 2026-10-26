@@ -128,6 +128,7 @@ private func deletionTestStore(_ db: any DatabaseWriter, files: AttachmentStore?
         $0.date = .constant(deleteNow)
         $0.uuid = .incrementing
         $0.continuousClock = TestClock()
+        $0.badge = .ignored
     }
     store.exhaustivity = .off
     return store
