@@ -173,6 +173,29 @@ private func deletionTestStore(_ db: any DatabaseWriter, files: AttachmentStore?
     #expect(result.inFlightHashes == [Data(hexString: hash)!])
 }
 
+/// A group post's row hash is its post id; the router knows each member's copy by its
+/// `GroupDelivery` hash, and only the copies still sending are cancelled.
+@Test func deleteGroupCancelsMemberCopiesInFlight() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let postId = String(repeating: "70", count: 16)
+    let g1 = String(repeating: "71", count: 16)
+    let g2 = String(repeating: "72", count: 16)
+    let post = deleteMessage(1, deletePeerA, outgoing: true, status: MessageStatus.sending, hash: postId, group: deleteGroup)
+    try await db.write { d in
+        try Message.insert { post }.execute(d)
+        try GroupDelivery.insert {
+            GroupDelivery(messageId: post.id, memberHex: deletePeerA, messageHash: g1, status: MessageStatus.sending,
+                          storedAt: nil, deliveredAt: nil, failedAt: nil)
+        }.execute(d)
+        try GroupDelivery.insert {
+            GroupDelivery(messageId: post.id, memberHex: deletePeerB, messageHash: g2, status: MessageStatus.delivered,
+                          storedAt: nil, deliveredAt: deleteNow, failedAt: nil)
+        }.execute(d)
+    }
+    let result = try await ConversationDeletion.run(db, attachmentStore: deleteStore(), key: deleteGroup, isGroup: true)
+    #expect(result.inFlightHashes == [Data(hexString: g1)!])
+}
+
 @MainActor @Test func deleteGroupConversationRemovesItsPosts() async throws {
     let db = try AppDatabase.makeInMemory()
     try await db.write { d in

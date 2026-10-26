@@ -12,8 +12,8 @@ public enum ConversationDeletion {
         public var deleted: Int
         /// The attachment rows that went with the messages, for the app's image cache.
         public var deletedAttachmentIds: [UUID]
-        /// Hashes of the outgoing rows still `sending`, read before the delete, so the caller can
-        /// tell the node to stop working on them.
+        /// Hashes of the outgoing rows still `sending` (for a group, the member copies still
+        /// `sending`), read before the delete, so the caller can tell the node to stop working on them.
         public var inFlightHashes: [Data]
 
         public init(deleted: Int, deletedAttachmentIds: [UUID] = [], inFlightHashes: [Data] = []) {
@@ -40,7 +40,19 @@ public enum ConversationDeletion {
             return (id, row["messageHash"], outgoing && status == MessageStatus.sending)
         }
         guard !messages.isEmpty else { return Result(deleted: 0) }
-        let inFlight = messages.filter(\.inFlight).compactMap { Data(hexString: $0.hash) }.filter { !$0.isEmpty }
+        // A group post's `messageHash` is its post id; the router knows each member's copy by the
+        // hash on its `GroupDelivery`, so those are what get cancelled.
+        let inFlightHex: [String]
+        if isGroup {
+            let ids = messages.map(\.id)
+            inFlightHex = try await database.read { db in
+                try GroupDelivery.where { $0.messageId.in(ids) && $0.status.eq(MessageStatus.sending) }
+                    .fetchAll(db).compactMap(\.messageHash)
+            }
+        } else {
+            inFlightHex = messages.filter(\.inFlight).map(\.hash)
+        }
+        let inFlight = inFlightHex.compactMap { Data(hexString: $0) }.filter { !$0.isEmpty }
         let attachmentIds = try await MessagePurge.removeMessages(
             database, attachmentStore: attachmentStore, ids: messages.map(\.id), hashes: messages.map(\.hash))
         return Result(deleted: messages.count, deletedAttachmentIds: attachmentIds, inFlightHashes: inFlight)

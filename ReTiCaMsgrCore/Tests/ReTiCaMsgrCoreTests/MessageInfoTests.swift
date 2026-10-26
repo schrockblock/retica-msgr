@@ -173,6 +173,8 @@ private func missingRow(_ label: String) -> MessageInfo.Row {
         ("0x41", "0x41 comment"), ("0x42", "0x42 continuation"), ("0xfb", "0xFB custom type"),
         ("0xfc", "0xFC custom data"), ("0xfd", "0xFD custom meta"), ("0xfe", "0xFE non-specific"),
         ("0xff", "0xFF debug"),
+        // This app's own fields: profile photo and display name.
+        ("0xa0", "0xA0 profile photo"), ("0xa1", "0xA1 display name"),
     ]
     for (token, expected) in names {
         #expect(MessageInfo.fieldDisplay(token) == expected)
