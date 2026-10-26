@@ -61,10 +61,12 @@ struct ConversationListView: View {
                 }
                 .buttonStyle(.plain)
                 // Delete is a swipe on iOS and a right-click on the Mac, where a swipe needs a
-                // trackpad. Both only ask; the dialog below does the deleting.
+                // trackpad. Both only ask; the dialog below does the deleting. Amendment A3: no
+                // destructive role and no full swipe, which animate the row out before the dialog.
                 #if os(iOS)
-                .swipeActions(edge: .trailing) {
-                    Button("Delete", role: .destructive) { pendingDelete = convo }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button("Delete") { pendingDelete = convo }
+                        .tint(.red)
                 }
                 #endif
                 #if os(macOS)

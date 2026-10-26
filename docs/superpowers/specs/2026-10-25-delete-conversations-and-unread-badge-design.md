@@ -124,6 +124,11 @@ A later message from that peer or group starts the row again, with only the new 
 - **What's still removed:** the draft (its entry in the on-disk drafts file), messages, attachments, reactions and the read marker.
 - **Cost if wrong:** a deleted chat that restarts keeps its old timer. The user can change it in the chat as usual.
 
+**A3 (final review, 2026-10-26):** the iOS swipe's Delete button has **no destructive role** and the swipe **does not allow a full swipe**: `.swipeActions(edge: .trailing, allowsFullSwipe: false)` with a plain `Button("Delete")` tinted red.
+- **Why:** SwiftUI animates a destructive (or fully swiped) row out of the List before the data changes. With the confirmation in front of the delete, the row would vanish and then reappear on Cancel.
+- **What stays:** the button still looks red, and the confirmation dialog's own "Delete" button keeps `role: .destructive`.
+- **Cost if wrong:** none. A full swipe no longer jumps straight to the dialog; the user taps Delete instead.
+
 ## Non-goals
 
 - Deleting on the peer's side, or "delete for everyone".
