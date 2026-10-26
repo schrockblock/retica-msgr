@@ -115,7 +115,8 @@ private func deleteCount(_ db: any DatabaseWriter, peer: String) async throws ->
 }
 
 @MainActor
-private func deletionTestStore(_ db: any DatabaseWriter, configure: ((inout AppFeature.State) -> Void)? = nil)
+private func deletionTestStore(_ db: any DatabaseWriter, files: AttachmentStore? = nil,
+                               configure: ((inout AppFeature.State) -> Void)? = nil)
     -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: Identity())
     configure?(&initial)
@@ -123,7 +124,7 @@ private func deletionTestStore(_ db: any DatabaseWriter, configure: ((inout AppF
         AppFeature()
     } withDependencies: {
         $0.defaultDatabase = db
-        $0.attachmentStore = deleteStore()
+        $0.attachmentStore = files ?? deleteStore()
         $0.date = .constant(deleteNow)
         $0.uuid = .incrementing
         $0.continuousClock = TestClock()
@@ -135,15 +136,79 @@ private func deletionTestStore(_ db: any DatabaseWriter, configure: ((inout AppF
 @MainActor @Test func deleteCancelsInFlightSends() async throws {
     let db = try AppDatabase.makeInMemory()
     let hash = String(repeating: "87", count: 16)
+    let settled = String(repeating: "88", count: 16)
     try await db.write { d in
         try Message.insert { deleteMessage(1, deletePeerA, outgoing: true, status: MessageStatus.sending, hash: hash) }.execute(d)
+        try Message.insert { deleteMessage(2, deletePeerA, outgoing: true, status: MessageStatus.delivered, hash: settled) }.execute(d)
     }
-    let store = deletionTestStore(db)
-    await store.send(.deleteConversation(key: deletePeerA))
+    let store = deletionTestStore(db) {
+        $0.conversations = [Conversation(peerHex: deletePeerA, lastBody: "m2", lastTimestamp: deleteNow)]
+    }
+    await store.send(.deleteConversation(key: deletePeerA, isGroup: false))
     await store.receive(.node(.client(.cancelOutbound(messageHash: Data(hexString: hash)!))))
     await store.skipReceivedActions(strict: false)
     #expect(store.state.conversations.first { $0.peerHex == deletePeerA } == nil)
     #expect(try await deleteCount(db, peer: deletePeerA) == 0)
+}
+
+/// Only an outgoing row still `sending` is reported for cancelling, not a settled one or a received one.
+@Test func deleteReportsOnlySendingOutgoingHashes() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let hash = String(repeating: "87", count: 16)
+    try await db.write { d in
+        try Message.insert { deleteMessage(1, deletePeerA, outgoing: true, status: MessageStatus.sending, hash: hash) }.execute(d)
+        try Message.insert { deleteMessage(2, deletePeerA, outgoing: true, status: MessageStatus.delivered,
+                                           hash: String(repeating: "88", count: 16)) }.execute(d)
+        try Message.insert { deleteMessage(3, deletePeerA, outgoing: false, status: MessageStatus.sending,
+                                           hash: String(repeating: "89", count: 16)) }.execute(d)
+    }
+    let result = try await ConversationDeletion.run(db, attachmentStore: deleteStore(), key: deletePeerA, isGroup: false)
+    #expect(result.inFlightHashes == [Data(hexString: hash)!])
+}
+
+@MainActor @Test func deleteGroupConversationRemovesItsPosts() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await db.write { d in
+        try Message.insert { deleteMessage(1, deletePeerA, group: deleteGroup) }.execute(d)
+        try Message.insert { deleteMessage(2, deletePeerB, group: deleteGroup) }.execute(d)
+        try Message.insert { deleteMessage(3, deletePeerA) }.execute(d)
+    }
+    let store = deletionTestStore(db)
+    await store.send(.deleteConversation(key: deleteGroup, isGroup: true))
+    await store.skipReceivedActions(strict: false)
+    #expect(try await db.read { try Message.all.fetchAll($0) }.map(\.body) == ["m3"])
+    #expect(store.state.conversations.map(\.peerHex) == [deletePeerA])
+}
+
+/// Deleting the conversation that is on screen closes the thread.
+@MainActor @Test func deleteClosesTheOpenThread() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await db.write { d in try Message.insert { deleteMessage(1, deletePeerA) }.execute(d) }
+    let store = deletionTestStore(db) { $0.openPeerHex = deletePeerA }
+    await store.send(.deleteConversation(key: deletePeerA, isGroup: false))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.openPeerHex == nil)
+}
+
+/// The image cache drops the deleted attachments' decoded images.
+@MainActor @Test func deleteEvictsTheAttachmentCache() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let files = deleteStore()
+    let message = deleteMessage(1, deletePeerA)
+    let path = try files.store(Data([1]), messageHash: message.messageHash, outgoing: false, ext: "bin")
+    let attachment = Attachment(id: UUID(), messageId: message.id, kind: AttachmentKind.file, name: "a.bin",
+                                format: "bin", size: 1, width: nil, height: nil, path: path)
+    try await db.write { d in
+        try Message.insert { message }.execute(d)
+        try Attachment.insert { attachment }.execute(d)
+    }
+    let evicted = LockIsolated<[UUID]>([])
+    let store = deletionTestStore(db, files: files)
+    store.dependencies.attachmentCacheEvictor = AttachmentCacheEvictor { ids in evicted.withValue { $0.append(contentsOf: ids) } }
+    await store.send(.deleteConversation(key: deletePeerA, isGroup: false))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(evicted.value == [attachment.id])
 }
 
 @MainActor @Test func deleteClearsDraft() async throws {
@@ -155,7 +220,7 @@ private func deletionTestStore(_ db: any DatabaseWriter, configure: ((inout AppF
             $0[deletePeerB] = ConversationDraft(text: "other", updatedAt: deleteNow)
         }
     }
-    await store.send(.deleteConversation(key: deletePeerA))
+    await store.send(.deleteConversation(key: deletePeerA, isGroup: false))
     await store.skipReceivedActions(strict: false)
     #expect(store.state.drafts[deletePeerA] == nil)
     #expect(store.state.drafts[deletePeerB]?.text == "other")

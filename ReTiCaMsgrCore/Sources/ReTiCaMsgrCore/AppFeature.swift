@@ -560,8 +560,8 @@ public struct AppFeature {
         case groupRosterChanged(groupHex: String)
         case closeConversation
         /// Removes the conversation's messages from this device (spec 2026-10-25 §1). `key` is a
-        /// peer's address or a group id, the list row's key.
-        case deleteConversation(key: String)
+        /// peer's address or a group id, the list row's key, and `isGroup` says which.
+        case deleteConversation(key: String, isGroup: Bool)
         case startConversation(String)
         /// ChatView's onAppear: the open thread is on screen again (back from another tab), so its
         /// unstamped rows are viewed now.
@@ -1327,8 +1327,7 @@ public struct AppFeature {
                 state.attachmentOriginalRequested = nil
                 return .cancel(id: CancelID.attachmentPreparation)
 
-            case let .deleteConversation(key):
-                let isGroup = state.conversations.first { $0.peerHex == key }?.kind == .group
+            case let .deleteConversation(key, isGroup):
                 // The draft goes with the conversation; the open thread, if it is this one, closes
                 // (which also empties the composer without saving it back).
                 state.$drafts.withLock { $0[key] = nil }

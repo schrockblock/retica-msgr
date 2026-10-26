@@ -79,7 +79,7 @@ struct ConversationListView: View {
                 set: { if !$0 { pendingDelete = nil } }
             ), titleVisibility: .visible, presenting: pendingDelete) { convo in
                 Button("Delete", role: .destructive) {
-                    store.send(.deleteConversation(key: convo.peerHex))
+                    store.send(.deleteConversation(key: convo.peerHex, isGroup: convo.kind == .group))
                 }
             } message: { _ in
                 Text("Its messages are removed from this device. This can't be undone.")
