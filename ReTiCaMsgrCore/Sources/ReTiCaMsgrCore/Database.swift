@@ -256,6 +256,23 @@ public enum AppDatabase {
             }
             try db.create(index: "profilePhotoDeliveriesPendingHash", on: "profilePhotoDeliveries", columns: ["pendingHash"])
         }
+        m.registerMigration("addPeerNames") { db in
+            // The display name a peer's messages carry (spec 2026-10-25 name-in-messages): `""` is
+            // a cleared name, `nameSetAt` its sender timestamp capped at arrival (newer wins).
+            try db.alter(table: "peerProfiles") { t in
+                t.add(column: "name", .text)
+                t.add(column: "nameSetAt", .datetime)
+            }
+        }
+        m.registerMigration("createProfileNameDeliveries") { db in
+            try db.create(table: "profileNameDeliveries") { t in
+                t.primaryKey("peerHex", .text).notNull()
+                t.column("deliveredName", .text)
+                t.column("pendingName", .text)
+                t.column("pendingHash", .text)
+            }
+            try db.create(index: "profileNameDeliveriesPendingHash", on: "profileNameDeliveries", columns: ["pendingHash"])
+        }
         return m
     }
 

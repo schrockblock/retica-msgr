@@ -77,7 +77,8 @@ struct ProfilePhotoReducer: Reducer {
 /// - my version survives a backup restore in UserDefaults while `me.jpg` (excluded from backup)
 ///   does not, so a version with no file hashing to it is reset (peers then get a removal);
 /// - the router's pending deliveries are in memory only, so no outcome will ever settle a stored
-///   pending pair: every one is cleared and the next message carries the photo again;
+///   pending pair: every one is cleared and the next message carries the photo (and the display
+///   name, spec 2026-10-25) again;
 /// - a peer row whose photo file is gone loses its photo, so the avatar falls through.
 func reconcileProfilePhotosAtLaunch(_ database: any DatabaseWriter, _ avatarStore: AvatarStore,
                                     myVersion: String, now: Date,
@@ -88,6 +89,7 @@ func reconcileProfilePhotosAtLaunch(_ database: any DatabaseWriter, _ avatarStor
     }
     try await database.write { db in
         try ProfilePhotoDelivery.clearAllPending(db)
+        try ProfileNameDelivery.clearAllPending(db)
         try PeerProfile.clearMissingPhotos(fileExists: { avatarStore.hasFile($0) }, at: now, db)
     }
 }

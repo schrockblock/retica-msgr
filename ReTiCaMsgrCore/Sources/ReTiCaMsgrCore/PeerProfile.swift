@@ -17,10 +17,16 @@ public struct PeerProfile: Equatable, Sendable {
     public var iconFg: String?
     public var iconBg: String?
     public var updatedAt: Date
+    /// The display name the peer's messages carry (spec 2026-10-25); `""` = cleared, nil = none
+    /// heard. Independent of the photo and icon.
+    public var name: String?
+    /// When the sender set `name`: its timestamp, capped at arrival. Newer wins, like `photoSetAt`.
+    public var nameSetAt: Date?
 
     public init(
         peerHex: String, photoVersion: String? = nil, photoPath: String? = nil, photoSetAt: Date? = nil,
-        iconName: String? = nil, iconFg: String? = nil, iconBg: String? = nil, updatedAt: Date
+        iconName: String? = nil, iconFg: String? = nil, iconBg: String? = nil, updatedAt: Date,
+        name: String? = nil, nameSetAt: Date? = nil
     ) {
         self.peerHex = peerHex
         self.photoVersion = photoVersion
@@ -30,6 +36,8 @@ public struct PeerProfile: Equatable, Sendable {
         self.iconFg = iconFg
         self.iconBg = iconBg
         self.updatedAt = updatedAt
+        self.name = name
+        self.nameSetAt = nameSetAt
     }
 
     public static func fetch(_ peerHex: String, _ db: GRDB.Database) throws -> PeerProfile? {
@@ -95,6 +103,23 @@ public struct PeerProfile: Equatable, Sendable {
             try save(row, db)
         }
         return missing.count
+    }
+
+    /// Stores a message-carried name (`""` = cleared) when the sender set it strictly later than
+    /// the stored one, or nothing is stored yet, so a late older message never rolls it back. The
+    /// photo and icon stay. Returns whether it applied: even the same name moves `nameSetAt`, which
+    /// decides against the announce name, so the caller re-mirrors the row either way.
+    @discardableResult
+    public static func setName(
+        _ peerHex: String, name: String, setAt: Date, at: Date, _ db: GRDB.Database
+    ) throws -> Bool {
+        var row = try fetch(peerHex, db) ?? PeerProfile(peerHex: peerHex, updatedAt: at)
+        if let stored = row.nameSetAt, setAt <= stored { return false }
+        row.name = name
+        row.nameSetAt = setAt
+        row.updatedAt = at
+        try save(row, db)
+        return true
     }
 
     /// Stores the icon appearance (the photo stays).
