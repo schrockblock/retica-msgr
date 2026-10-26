@@ -256,6 +256,20 @@ public enum AppDatabase {
             }
             try db.create(index: "profilePhotoDeliveriesPendingHash", on: "profilePhotoDeliveries", columns: ["pendingHash"])
         }
+        m.registerMigration("createConversationReads") { db in
+            // Unread badge (spec 2026-10-25 Part 2): one read marker per conversation key
+            // (`groupHex ?? peerHex`, lowercased). Every existing conversation is marked read now,
+            // or the first launch after the update would badge the whole history.
+            // `Date()` is the wall clock: migrations can't see TCA dependencies.
+            try db.create(table: "conversationReads") { t in
+                t.primaryKey("key", .text).notNull()
+                t.column("readAt", .datetime).notNull()
+            }
+            try db.execute(sql: """
+                INSERT INTO conversationReads (key, readAt)
+                SELECT DISTINCT lower(COALESCE(groupHex, peerHex)), ? FROM messages
+                """, arguments: [Date()])
+        }
         return m
     }
 

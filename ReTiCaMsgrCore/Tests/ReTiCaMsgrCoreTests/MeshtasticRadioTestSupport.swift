@@ -116,6 +116,7 @@ func meshRadioStore(radio: UUID?, enabled: Bool = true, harness: MeshRadioHarnes
     let store = TestStore(initialState: initial) {
         AppFeature()
     } withDependencies: {
+        $0.badge = .ignored
         $0.defaultAppStorage = defaults
         $0.defaultDatabase = db
         $0.date = .constant(Date(timeIntervalSince1970: 1_700_000_000))

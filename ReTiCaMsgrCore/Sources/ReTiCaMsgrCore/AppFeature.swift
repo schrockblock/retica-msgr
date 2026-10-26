@@ -823,6 +823,8 @@ public struct AppFeature {
                     .send(.push(.appLaunched)),
                     .run { [database] send in try await reloadConversations(database, send) },
                     .run { [database] send in try await reloadContactLinks(database, send) },
+                    // Unread badge (spec 2026-10-25): the true count replaces the extension's.
+                    recomputeBadge(database),
                     // Final review 1 and 5: reconcile profile-photo state with what survived the
                     // last run (a kill, a backup restore) before state gets the rows.
                     .run { [database, avatarStore, myVersion = state.myPhotoVersion, now = date.now] send in
@@ -999,6 +1001,11 @@ public struct AppFeature {
                 guard state.push.enabled, let token = state.push.deviceToken,
                       let hub = Data(pushHex: state.push.hubHex), hub.count == 16 else { return .none }
                 return .send(.push(.deviceTokenReceived(token)))
+
+            case .push(.inboxDrained):
+                // Unread badge: the extension counted these pushes; the true count replaces it.
+                // Each injected message recomputes again once it is stored.
+                return recomputeBadge(database)
 
             case .push:
                 return .none
@@ -1296,6 +1303,7 @@ public struct AppFeature {
                     .run { [database, attachmentStore, attachmentCacheEvictor, now = date.now] send in
                         // First view (spec §3): stamp before the load so the rows arrive stamped.
                         _ = try await stampViewed(database, peerHex, now: now)
+                        try await markConversationRead(peerHex, at: now, database)
                         try await reloadThread(database, peerHex, send)
                         try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: now, send)
                     },
@@ -1364,7 +1372,10 @@ public struct AppFeature {
                 // No first-view stamp and no purge: timers are one-to-one only in v1.
                 return .merge(
                     .cancel(id: CancelID.attachmentPreparation),
-                    .run { [database] send in try await reloadThread(database, groupHex, send) },
+                    .run { [database, now = date.now] send in
+                        try await markConversationRead(groupHex, at: now, database)
+                        try await reloadThread(database, groupHex, send)
+                    },
                     withdrawSendFailedNotice(groupHex)
                 )
 
@@ -1554,6 +1565,7 @@ public struct AppFeature {
                     .run { [database, attachmentStore, attachmentCacheEvictor, now = date.now] send in
                         // First view (spec §3): stamp before the load so the rows arrive stamped.
                         _ = try await stampViewed(database, hex, now: now)
+                        try await markConversationRead(hex, at: now, database)
                         try await reloadThread(database, hex, send)
                         try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: now, send)
                     },
@@ -2071,6 +2083,8 @@ public struct AppFeature {
                 // Arriving into the open thread while the app is active and the chat is on screen
                 // (amendment A11) is "viewed" at once.
                 let viewedNow: Date? = (incomingPeer == openPeer && state.isForeground && state.chatVisible) ? date.now : nil
+                // Unread badge: the same condition reads the thread, a group's included.
+                let watching = state.isForeground && state.chatVisible
                 let peerName = state.peerDisplayName(incomingPeer)
                 let receivedBody = placeholderBody ?? String(decoding: m.content, as: UTF8.self)
                 let attachmentStore = self.attachmentStore
@@ -2209,6 +2223,14 @@ public struct AppFeature {
                     try await reloadConversations(database, send)
                     if let key = result.threadKey, key == openPeer {
                         try await reloadThread(database, key, send)
+                    }
+                    if let key = result.threadKey {
+                        // At the row's own arrival time, so `timestamp > readAt` leaves it read.
+                        if watching, key == openPeer {
+                            try await markConversationRead(key, at: row.timestamp, database)
+                        } else {
+                            try await refreshBadge(database)
+                        }
                     }
                     if result.expiresAt != nil {
                         try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: seenNow, send)
@@ -2870,13 +2892,20 @@ public struct AppFeature {
     /// The open thread is being looked at again (`.foregrounded`, `.chatAppeared`): stamp its
     /// unstamped rows (first view, spec §3) and reload it if any changed, but only while ChatView is
     /// on screen (amendment A11). Rows that fell due meanwhile are purged and the sleeper re-armed
-    /// either way.
+    /// either way. The badge is recomputed either way too.
     private func viewOpenThreadEffect(_ state: State) -> Effect<Action> {
         let openPeer = state.openPeerHex
         let chatVisible = state.chatVisible
         return .run { [database, attachmentStore, attachmentCacheEvictor, now = date.now] send in
             if let openPeer, chatVisible, try await stampViewed(database, openPeer, now: now) > 0 {
                 try await reloadThread(database, openPeer, send)
+            }
+            // Unread badge (spec 2026-10-25): the same "on screen" read marks the thread read, for
+            // groups and untimed threads too; with no chat on screen the count is still refreshed.
+            if let openPeer, chatVisible {
+                try await markConversationRead(openPeer, at: now, database)
+            } else {
+                try await refreshBadge(database)
             }
             try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: now, send)
         }
@@ -3296,6 +3325,12 @@ public struct AppFeature {
             case .plainMessage:
                 try await reloadConversations(database, send)
                 if incomingPeer == openPeer { try await reloadThread(database, incomingPeer, send) }
+                // Unread badge: read when it lands in the watched thread, as on the ordinary path.
+                if viewedNow != nil {
+                    try await markConversationRead(incomingPeer, at: now, database)
+                } else {
+                    try await refreshBadge(database)
+                }
                 if expiresAt != nil {
                     try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: now, send)
                 }
@@ -4136,6 +4171,8 @@ private func purgeAndReschedule(_ database: any DatabaseWriter, _ attachmentStor
                                 _ evictor: AttachmentCacheEvictor,
                                 now: Date, _ send: Send<AppFeature.Action>) async throws {
     let result = try await MessagePurge.run(database, attachmentStore: attachmentStore, now: now)
+    // Unread badge: a purged row may have been counted.
+    if result.purged > 0 { try await refreshBadge(database) }
     if !result.purgedAttachmentIds.isEmpty {
         await evictor.evict(result.purgedAttachmentIds)
     }

@@ -126,6 +126,8 @@ final class AppRuntime {
             #endif
             // Likewise: the "Message not sent" notification (brief 2026-10-21).
             $0.localNotifications = .userNotifications
+            // Likewise: the app-icon badge and the extension's counter (spec 2026-10-25 Part 2).
+            $0.badge = .userNotifications
             // Explicit for the same hosted-XCTest reason as `\.date` (its testValue is unimplemented):
             // the live radio scan over MeshtasticKit (spec 2026-10-16 §7 lane E).
             MeshtasticLiveWiring.installScanner(into: &$0)

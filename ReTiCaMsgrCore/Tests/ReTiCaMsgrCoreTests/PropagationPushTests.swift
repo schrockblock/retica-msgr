@@ -41,6 +41,7 @@ private func makeStore(_ db: any DatabaseWriter, backgroundTask: BackgroundTaskC
             }
         }
     } withDependencies: {
+        $0.badge = .ignored
         if let backgroundTask { $0.backgroundTask = backgroundTask }
         $0.defaultDatabase = db
         $0.attachmentStore = attachmentStore

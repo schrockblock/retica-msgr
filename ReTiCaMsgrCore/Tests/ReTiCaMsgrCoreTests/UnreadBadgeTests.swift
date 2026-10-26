@@ -1,0 +1,196 @@
+import Testing
+import Foundation
+import ComposableArchitecture
+import SQLiteData
+import ReTiCA
+import ReTiCAInterfaces
+import ReTiCANode
+import ReTiCATransport
+import ReTiCAPush
+@testable import ReTiCaMsgrCore
+
+private let badgeT0 = Date(timeIntervalSince1970: 1700000000)
+private let peerA = String(repeating: "a", count: 32)
+private let peerB = String(repeating: "b", count: 32)
+private let groupG = String(repeating: "c", count: 32)
+
+private func incoming(_ peer: String, at offset: TimeInterval, group: String? = nil,
+                      isTimerChange: Bool = false, isGroupEvent: Bool = false) -> Message {
+    Message(id: UUID(), peerHex: peer, isOutgoing: false, body: "hi",
+            timestamp: badgeT0.addingTimeInterval(offset), status: MessageStatus.received,
+            validated: true, messageHash: "", isTimerChange: isTimerChange, groupHex: group,
+            isGroupEvent: isGroupEvent)
+}
+
+private func insert(_ db: any DatabaseWriter, _ rows: [Message]) async throws {
+    try await db.write { d in
+        for r in rows { try Message.insert { r }.execute(d) }
+    }
+}
+
+private func unread(_ db: any DatabaseWriter) async throws -> Int {
+    try await db.read { try UnreadCount.count($0) }
+}
+
+private func deliveryHex(_ identity: Identity) -> String {
+    LXMessage.deliveryHash(identityHash: identity.hash).hexString
+}
+
+private func wire(from sender: Identity, to me: Identity, content: String = "hi") -> LXMessage {
+    let built = LXMessage.create(source: sender, destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+                                 timestamp: 1699999999, title: Data(), content: Data(content.utf8), fields: [])
+    return LXMessage.unpack(built.packed)!
+}
+
+@MainActor
+private func makeBadgeStore(_ db: any DatabaseWriter, identity: Identity, badge: BadgeClient,
+                            configure: (inout AppFeature.State) -> Void) -> TestStoreOf<AppFeature> {
+    var initial = AppFeature.State(identity: identity)
+    configure(&initial)
+    let store = TestStore(initialState: initial) {
+        AppFeature()
+    } withDependencies: {
+        $0.defaultDatabase = db
+        $0.attachmentStore = AttachmentStore.testValue
+        $0.date = .constant(badgeT0)
+        $0.transportDate = .constant(badgeT0)
+        $0.uuid = .incrementing
+        $0.continuousClock = TestClock()
+        $0.tcpConnection = TCPConnection(open: { _, _ in AsyncStream { _ in } }, send: { _ in }, close: { })
+        $0.tcpListener = TCPListener(listen: { _ in AsyncStream { _ in } }, send: { _, _ in }, close: { _ in }, stop: { })
+        $0.bleDriver = BLEDriver(start: { _ in AsyncStream { _ in } }, readIdentity: { _ in }, openChannel: { _ in },
+                                 send: { _, _ in }, closeChannel: { _ in }, stop: { })
+        $0.pushPlatform = PushPlatform(requestAuthorization: { true }, registerForRemoteNotifications: {},
+                                       unregisterForRemoteNotifications: {})
+        $0.badge = badge
+    }
+    store.exhaustivity = .off
+    return store
+}
+
+@MainActor
+private func settle(_ store: TestStoreOf<AppFeature>) async {
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+}
+
+// MARK: - The count
+
+/// Review Focus 2: the first launch after the update must not badge the existing history.
+@Test func migrationSeedsReadMarkersForExistingConversations() async throws {
+    let queue = try DatabaseQueue()
+    try AppDatabase.migrator().migrate(queue, upTo: "createProfilePhotoDeliveries")
+    try await insert(queue, [incoming(peerA, at: -10), incoming(peerA, at: -5), incoming(peerB, at: -1),
+                             incoming(peerB, at: -1, group: groupG)])
+    try AppDatabase.migrator().migrate(queue)
+    #expect(try await unread(queue) == 0)
+}
+
+@Test func countsIncomingAfterReadAt() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await db.write { try ConversationRead.markRead(peerA, at: badgeT0, $0) }
+    var outgoing = incoming(peerA, at: 3)
+    outgoing.isOutgoing = true
+    // The row at exactly readAt was read: only strictly later rows count.
+    try await insert(db, [incoming(peerA, at: -1), incoming(peerA, at: 0), incoming(peerA, at: 1),
+                          incoming(peerA, at: 2), outgoing])
+    #expect(try await unread(db) == 2)
+}
+
+/// Review fix 1: arrival effects can mark out of order; an older mark must not undo a newer one.
+@Test func markReadNeverMovesBackwards() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await db.write {
+        try ConversationRead.markRead(peerA, at: badgeT0.addingTimeInterval(2), $0)
+        try ConversationRead.markRead(peerA, at: badgeT0.addingTimeInterval(1), $0)
+    }
+    try await insert(db, [incoming(peerA, at: 1.5)])
+    #expect(try await unread(db) == 0)
+}
+
+@Test func keyWithoutMarkerCountsAll() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await db.write { try ConversationRead.markRead(peerA, at: badgeT0, $0) }
+    try await insert(db, [incoming(peerB, at: -30), incoming(peerB, at: -20), incoming(peerB, at: -10)])
+    #expect(try await unread(db) == 3)
+}
+
+@Test func excludesTimerChangesGroupEventsAndBlocked() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await db.write { try BlockedPeer.insertIfAbsent(BlockedPeer(peerHex: peerB, blockedAt: badgeT0), $0) }
+    try await insert(db, [
+        incoming(peerA, at: 1, isTimerChange: true),
+        incoming(peerA, at: 2, group: groupG, isGroupEvent: true),
+        incoming(peerB, at: 3),
+        // A blocked member's group post: blocking goes by sender, not by conversation.
+        incoming(peerB, at: 5, group: groupG),
+        incoming(peerA, at: 4),
+    ])
+    #expect(try await unread(db) == 1)
+}
+
+@Test func groupPostsCountUnderGroupKey() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await insert(db, [incoming(peerA, at: 1, group: groupG), incoming(peerB, at: 2, group: groupG)])
+    #expect(try await unread(db) == 2)
+    // The senders' own keys are not the conversation.
+    try await db.write {
+        try ConversationRead.markRead(peerA, at: badgeT0.addingTimeInterval(10), $0)
+        try ConversationRead.markRead(peerB, at: badgeT0.addingTimeInterval(10), $0)
+    }
+    #expect(try await unread(db) == 2)
+    try await db.write { try ConversationRead.markRead(groupG, at: badgeT0.addingTimeInterval(10), $0) }
+    #expect(try await unread(db) == 0)
+}
+
+// MARK: - Mark-read in the reducer
+
+/// Review Focus 3: a message arriving in the chat you're watching is read at once.
+@MainActor @Test func arrivalInWatchedThreadIsRead() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let calls = LockIsolated<[Int]>([])
+    let store = makeBadgeStore(db, identity: me, badge: .recording(into: calls)) {
+        $0.openPeerHex = deliveryHex(sender)
+        $0.chatVisible = true
+    }
+    #expect(store.state.isForeground)
+    await store.send(.node(.client(.delegate(.messageReceived(message: wire(from: sender, to: me),
+                                                              signatureValidated: true, method: .opportunistic)))))
+    await settle(store)
+    #expect(try await db.read { try Message.fetchCount($0) } == 1)
+    #expect(calls.value == [0])
+    #expect(try await unread(db) == 0)
+}
+
+/// Review Focus 3: on the Mac, an app that is open but not frontmost isn't reading the chat.
+@MainActor @Test func arrivalWhileInactiveIsUnread() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let calls = LockIsolated<[Int]>([])
+    let store = makeBadgeStore(db, identity: me, badge: .recording(into: calls)) {
+        $0.openPeerHex = deliveryHex(sender)
+        $0.chatVisible = true
+    }
+    await store.send(.activityChanged(isActive: false)) { $0.isForeground = false }
+    await settle(store)
+    await store.send(.node(.client(.delegate(.messageReceived(message: wire(from: sender, to: me),
+                                                              signatureValidated: true, method: .opportunistic)))))
+    await settle(store)
+    #expect(calls.value == [1])
+    #expect(try await unread(db) == 1)
+}
+
+@MainActor @Test func openingThreadMarksRead() async throws {
+    let db = try AppDatabase.makeInMemory()
+    try await insert(db, [incoming(peerA, at: -20), incoming(peerA, at: -10)])
+    #expect(try await unread(db) == 2)
+    let calls = LockIsolated<[Int]>([])
+    let store = makeBadgeStore(db, identity: Identity(), badge: .recording(into: calls)) { _ in }
+    await store.send(.openConversation(peerA))
+    await settle(store)
+    #expect(calls.value == [0])
+    #expect(try await unread(db) == 0)
+}

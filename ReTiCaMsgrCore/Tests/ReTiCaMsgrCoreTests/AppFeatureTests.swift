@@ -24,6 +24,7 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
     let store = TestStore(initialState: initial) {
         AppFeature()
     } withDependencies: {
+        $0.badge = .ignored
         $0.defaultDatabase = db
         $0.attachmentStore = attachmentStore ?? AttachmentStore.testValue
         $0.date = .constant(Date(timeIntervalSince1970: 1700000000))
@@ -1497,6 +1498,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store1 = TestStore(initialState: initial1) {
         AppFeature()
     } withDependencies: {
+        $0.badge = .ignored
         $0.defaultDatabase = db
         $0.date = .constant(Date(timeIntervalSince1970: 1700000000))
         $0.transportDate = .constant(Date(timeIntervalSince1970: 1700000000))
@@ -1615,6 +1617,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store = TestStore(initialState: initial) {
         AppFeature()
     } withDependencies: {
+        $0.badge = .ignored
         $0.defaultDatabase = db
         $0.date = .constant(Date(timeIntervalSince1970: 1700000000))
         $0.transportDate = .constant(Date(timeIntervalSince1970: 1700000000))
@@ -1688,6 +1691,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let store = TestStore(initialState: initial) {
         AppFeature()
     } withDependencies: {
+        $0.badge = .ignored
         $0.defaultDatabase = db
         $0.date = .constant(Date(timeIntervalSince1970: 1700000000))
         $0.transportDate = .constant(Date(timeIntervalSince1970: 1700000000))
@@ -6836,6 +6840,7 @@ private func countingStore(_ db: any DatabaseWriter, listens: LockIsolated<Int>,
     let store = TestStore(initialState: initial) {
         AppFeature()
     } withDependencies: {
+        $0.badge = .ignored
         $0.defaultDatabase = db
         $0.attachmentStore = AttachmentStore.testValue
         $0.date = .constant(Date(timeIntervalSince1970: 1700000000))
