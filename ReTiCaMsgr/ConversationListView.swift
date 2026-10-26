@@ -32,6 +32,8 @@ struct ConversationListView: View {
     /// Picked in the announces sheet; started from its `onDismiss`, once the sheet is gone, so
     /// the chat push never races the sheet's dismissal (same reason as `scanOutcome`).
     @State private var announcePick: String?
+    /// The row whose swipe or context menu asked to delete; the confirmation dialog acts on it.
+    @State private var pendingDelete: Conversation?
 
     var connectionColor: Color {
         switch store.connection {
@@ -58,8 +60,30 @@ struct ConversationListView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                // Delete is a swipe on iOS and a right-click on the Mac, where a swipe needs a
+                // trackpad. Both only ask; the dialog below does the deleting.
+                #if os(iOS)
+                .swipeActions(edge: .trailing) {
+                    Button("Delete", role: .destructive) { pendingDelete = convo }
+                }
+                #endif
+                #if os(macOS)
+                .contextMenu {
+                    Button("Delete Conversation", role: .destructive) { pendingDelete = convo }
+                }
+                #endif
             }
             .listStyle(.plain)
+            .confirmationDialog("Delete this conversation?", isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ), titleVisibility: .visible, presenting: pendingDelete) { convo in
+                Button("Delete", role: .destructive) {
+                    store.send(.deleteConversation(key: convo.peerHex))
+                }
+            } message: { _ in
+                Text("Its messages are removed from this device. This can't be undone.")
+            }
             .overlay {
                 if store.conversationRows.isEmpty {
                     ChatsWelcomeView { showingCompose = true }
