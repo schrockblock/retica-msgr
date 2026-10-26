@@ -428,14 +428,45 @@ public struct AppFeature {
         /// Announces list shows), trimmed. nil when no conversation is open, there is no link and
         /// no announce was heard, or the name is blank, so labels fall back to "Them" rather than "".
         public var openPeerDisplayName: String? {
-            openPeerHex.flatMap(peerDisplayName)
+            openPeerHex.flatMap { peerDisplayName($0) }
         }
 
         /// What we call `hex`: the linked contact's name when a link exists (spec 2026-10-11 §4),
-        /// else the display name from its LXMF delivery announce, trimmed; nil when neither, so
-        /// labels fall back to "Them".
-        public func peerDisplayName(_ hex: String) -> String? {
-            contactName(hex) ?? peerAnnounceName(hex)
+        /// else the newer of the name its messages carry and its announce name (spec 2026-10-25,
+        /// `peerHeardName`); nil when none, so labels fall back to "Them".
+        /// `incoming` is a name riding on a message being received right now, not yet stored: it
+        /// counts as if `PeerProfile.setName` had applied it, so that message's own lines use it.
+        public func peerDisplayName(_ hex: String, incoming: (name: String, setAt: Date)? = nil) -> String? {
+            contactName(hex) ?? peerHeardName(hex, incoming: incoming)
+        }
+
+        /// The newer of `hex`'s message-carried name (`PeerProfile.name`, by `nameSetAt`) and its
+        /// announce name (by `learnedPeers[...].learnedAt`), trimmed. nil when neither was heard
+        /// or the newer one is blank: a newer cleared name hides an older announce name.
+        public func peerHeardName(_ hex: String, incoming: (name: String, setAt: Date)? = nil) -> String? {
+            let profile = peerProfiles[hex]
+            var carried = profile.flatMap { row in row.name.flatMap { name in row.nameSetAt.map { (name, $0) } } }
+            // The `setName` rule: only a strictly newer name replaces the stored one.
+            if let incoming, carried.map({ incoming.setAt > $0.1 }) ?? true {
+                carried = (incoming.name, incoming.setAt)
+            }
+            let learned = Data(hexString: hex).flatMap { node.client.learnedPeers[$0] }
+            let announced = learned.flatMap { peer in peer.displayName.map { ($0, peer.learnedAt) } }
+            let winner: String?
+            switch (carried, announced) {
+            case let (carried?, announced?): winner = announced.1 > carried.1 ? announced.0 : carried.0
+            case let (carried?, nil): winner = carried.0
+            case let (nil, announced?): winner = announced.0
+            case (nil, nil): winner = nil
+            }
+            guard let name = winner?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
+            else { return nil }
+            return name
+        }
+
+        /// My display name as it rides on messages (`NameWire`): trimmed, `""` when unset.
+        public var myWireName: String {
+            displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         /// The linked contact's cached name, or nil when the peer is not linked or the cached
@@ -1427,6 +1458,7 @@ public struct AppFeature {
                 // Spec §3: members with no path get a request now; their copies wait.
                 let pathRequests = others.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
                 let myVersion = state.myPhotoVersion
+                let myWireName = state.myWireName
                 let imageAllowed = state.profilePhotoMayRide
                 let avatarStore = self.avatarStore
                 state.pendingHandOvers += 1
@@ -1441,7 +1473,7 @@ public struct AppFeature {
                         }
                         _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
                                                                  myName: myName, fallbackToPropagation: fallbackToPropagation,
-                                                                 now: now, myVersion: myVersion,
+                                                                 now: now, myVersion: myVersion, myWireName: myWireName,
                                                                  myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                                  imageAllowed: imageAllowed, send)
                     }
@@ -1621,6 +1653,7 @@ public struct AppFeature {
                 // My profile photo (spec 2026-10-19): the plan is built in the effect from the
                 // peer's delivery row; the image rides only off the slow radio path.
                 let myVersion = state.myPhotoVersion
+                let myWireName = state.myWireName
                 let imageAllowed = state.profilePhotoMayRide
                 let avatarStore = self.avatarStore
                 state.draft = ""
@@ -1643,10 +1676,11 @@ public struct AppFeature {
                                 expiry = try await resolveExpiry(knownExpiry, peerHex: peerHex, database)
                                 let plan = try await profilePhotoPlan(database, avatarStore, peerHex: peerHex,
                                                                       myVersion: myVersion, imageAllowed: imageAllowed)
+                                let namePlan = try await profileNamePlan(database, peerHex: peerHex, myWireName: myWireName)
                                 let (built, row) = Self.outgoing(
                                     identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
                                     fields: Self.outgoingFields(attachment: nil, replyTo: replyTo, replyQuote: replyQuote,
-                                                                expirySeconds: expiry, photo: plan),
+                                                                expirySeconds: expiry, photo: plan, name: namePlan.fields),
                                     replyToHash: replyToHash, replyQuote: replyQuote,
                                     expirySeconds: expiry,
                                     expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
@@ -1654,6 +1688,9 @@ public struct AppFeature {
                                     try Message.insert { row }.execute(db)
                                     if let version = plan.pendingVersion {
                                         try ProfilePhotoDelivery.markPending(peerHex, version: version, hash: row.messageHash, db)
+                                    }
+                                    if let name = namePlan.pendingName {
+                                        try ProfileNameDelivery.markPending(peerHex, name: name, hash: row.messageHash, db)
                                     }
                                 }
                                 msg = built
@@ -1682,10 +1719,12 @@ public struct AppFeature {
                         // the reservation through `attachmentSendFailed` instead.
                         let expiry: Int?
                         let plan: ProfilePhotoOutbox.Plan
+                        let namePlan: (fields: [MsgPackValue.IntPair], pendingName: String?)
                         do {
                             expiry = try await resolveExpiry(knownExpiry, peerHex: peerHex, database)
                             plan = try await profilePhotoPlan(database, avatarStore, peerHex: peerHex,
                                                               myVersion: myVersion, imageAllowed: imageAllowed)
+                            namePlan = try await profileNamePlan(database, peerHex: peerHex, myWireName: myWireName)
                         } catch {
                             await send(.handOverEnded)
                             throw error
@@ -1694,7 +1733,8 @@ public struct AppFeature {
                             identity: identity, peer: peer, peerHex: peerHex, text: text, now: now,
                             fields: Self.outgoingFields(
                                 attachment: (kind: pending.kind, name: pending.name, data: pending.data),
-                                replyTo: replyTo, replyQuote: replyQuote, expirySeconds: expiry, photo: plan),
+                                replyTo: replyTo, replyQuote: replyQuote, expirySeconds: expiry, photo: plan,
+                                name: namePlan.fields),
                             replyToHash: replyToHash, replyQuote: replyQuote,
                             expirySeconds: expiry,
                             expiresAt: expiry.map { now.addingTimeInterval(TimeInterval($0)) })
@@ -1718,6 +1758,9 @@ public struct AppFeature {
                                 try Attachment.insert { attachment }.execute(db)
                                 if let version = plan.pendingVersion {
                                     try ProfilePhotoDelivery.markPending(peerHex, version: version, hash: messageHash, db)
+                                }
+                                if let name = namePlan.pendingName {
+                                    try ProfileNameDelivery.markPending(peerHex, name: name, hash: messageHash, db)
                                 }
                             }
                         } catch {
@@ -2022,6 +2065,8 @@ public struct AppFeature {
                 // below, before the message write; never on a reaction (handled above).
                 let profile = validated ? ProfileWire.decode(m.fields) : nil
                 let icon = validated ? IconAppearanceWire.decode(m.fields) : nil
+                // Display name (0xA1, spec 2026-10-25): validated senders only, like the photo.
+                let carriedName = validated ? NameWire.decode(m.fields) : nil
                 let avatarStore = self.avatarStore
                 // Standard LXMF reply fields (0x30 / 0x31). Only an ordinary message gets here: a
                 // reaction that also carries reply fields was handled above, reply fields ignored.
@@ -2064,11 +2109,14 @@ public struct AppFeature {
                 let hasDisplay = !m.content.isEmpty || !m.title.isEmpty || decodedAttachment != nil
                     || isTimerChange || reply != nil
                 let noDisplayFields: Set<Int> = [0x02, 0x03, IconAppearanceWire.fieldIconAppearance, 0x09, 0x0A,
-                                                 ProfileWire.fieldProfilePhoto, ExpiryWire.fieldCustomMeta]
+                                                 ProfileWire.fieldProfilePhoto, NameWire.fieldDisplayName,
+                                                 ExpiryWire.fieldCustomMeta]
                 if !hasDisplay && m.fields.allSatisfy({ noDisplayFields.contains($0.key) }) {
                     return .run { [database] send in
                         await applyPeerProfile(profile, icon, peerHex: incomingPeer, sentAt: senderTime,
                                                at: seenNow, database, avatarStore, send)
+                        await applyPeerName(carriedName, peerHex: incomingPeer, sentAt: senderTime,
+                                            at: seenNow, database, send)
                         try await database.write { try recordSeenHash(seenHashHex, at: seenNow, $0) }
                         try await reloadConversations(database, send)
                     }
@@ -2085,7 +2133,10 @@ public struct AppFeature {
                 let viewedNow: Date? = (incomingPeer == openPeer && state.isForeground && state.chatVisible) ? date.now : nil
                 // Unread badge: the same condition reads the thread, a group's included.
                 let watching = state.isForeground && state.chatVisible
-                let peerName = state.peerDisplayName(incomingPeer)
+                // The name this message carries is applied in the effect below; its own timer
+                // line already uses it, by the same newer-wins rule.
+                let peerName = state.peerDisplayName(
+                    incomingPeer, incoming: carriedName.map { ($0, min(senderTime ?? seenNow, seenNow)) })
                 let receivedBody = placeholderBody ?? String(decoding: m.content, as: UTF8.self)
                 let attachmentStore = self.attachmentStore
                 let attachmentCacheEvictor = self.attachmentCacheEvictor
@@ -2125,6 +2176,8 @@ public struct AppFeature {
                     // Never throws: a failed photo or icon leaves the message to be stored below.
                     await applyPeerProfile(profile, icon, peerHex: incomingPeer, sentAt: senderTime,
                                            at: seenNow, database, avatarStore, send)
+                    await applyPeerName(carriedName, peerHex: incomingPeer, sentAt: senderTime,
+                                        at: seenNow, database, send)
                     var pendingAttachmentRow: Attachment? = nil
                     if let decoded = decodedAttachment {
                         // An image ImageIO cannot read is kept as a file so it can still be shared.
@@ -2505,8 +2558,9 @@ public struct AppFeature {
                             .execute(db)
                         // A group copy carries its own hash in its delivery row (spec §3).
                         try GroupDelivery.applyOutcome(hash: hex, .stored, at: milestoneAt ?? .distantPast, db)
-                        // A propagation node holding it counts as delivered for my photo (spec 2026-10-19).
+                        // A propagation node holding it counts as delivered for my photo and name (specs 2026-10-19, 2026-10-25).
                         try ProfilePhotoDelivery.applyOutcome(hash: hex, confirmed: true, db)
+                        try ProfileNameDelivery.applyOutcome(hash: hex, confirmed: true, db)
                     }
                     try await reloadConversations(database, send)
                     if let openPeer {
@@ -2547,6 +2601,7 @@ public struct AppFeature {
                             .execute(db)
                         try GroupDelivery.applyOutcome(hash: hex, .delivered, at: milestoneAt ?? .distantPast, db)
                         try ProfilePhotoDelivery.applyOutcome(hash: hex, confirmed: true, db)
+                        try ProfileNameDelivery.applyOutcome(hash: hex, confirmed: true, db)
                     }
                     try await reloadConversations(database, send)
                     if let openPeer {
@@ -2699,6 +2754,7 @@ public struct AppFeature {
                 let now = date.now
                 let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
                 let myVersion = state.myPhotoVersion
+                let myWireName = state.myWireName
                 let imageAllowed = state.profilePhotoMayRide
                 let avatarStore = self.avatarStore
                 let attachmentStore = self.attachmentStore
@@ -2709,7 +2765,7 @@ public struct AppFeature {
                     try await handingOver(send) {
                         guard let rebuilt = try await rebuildForRetry(
                             database, attachmentStore, id: id, identity: identity, now: now,
-                            myVersion: myVersion, myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
+                            myVersion: myVersion, myWireName: myWireName, myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                             imageAllowed: imageAllowed)
                         else { return }
                         rehashed[rebuilt.oldHash] = rebuilt.newHash
@@ -2957,8 +3013,9 @@ public struct AppFeature {
                     .execute(db)
                 try GroupDelivery.applyOutcome(hash: hex, status == MessageStatus.cancelled ? .cancelled : .failed,
                                                at: milestoneAt ?? .distantPast, db)
-                // The photo it carried did not arrive: the next message attaches it again.
+                // The photo and name it carried did not arrive: the next message attaches them again.
                 try ProfilePhotoDelivery.applyOutcome(hash: hex, confirmed: false, db)
+                try ProfileNameDelivery.applyOutcome(hash: hex, confirmed: false, db)
                 return failedChat
             }
             if let failedChat, failedChat.lowercased() != watchedChat {
@@ -3004,12 +3061,14 @@ public struct AppFeature {
 
     /// The fields of an outgoing one-to-one message, in wire order: the attachment (0x05 file or
     /// 0x06 image) first, then the reply (0x30 with the original's hash, 0x31 with the quote, which
-    /// is left out when nil or empty), the disappearing-messages timer, and my profile photo last.
+    /// is left out when nil or empty), the disappearing-messages timer, my profile photo, and my
+    /// display name (`name`, the `ProfileNameOutbox` plan's fields) last.
     /// `sendTapped` and the launch resend both build their fields here, so a resent orphan
     /// carries what its first send did.
     static func outgoingFields(attachment: (kind: String, name: String, data: Data)?,
                                replyTo: Data?, replyQuote: String?, expirySeconds: Int?,
-                               photo: ProfilePhotoOutbox.Plan) -> [MsgPackValue.IntPair] {
+                               photo: ProfilePhotoOutbox.Plan,
+                               name: [MsgPackValue.IntPair] = []) -> [MsgPackValue.IntPair] {
         var fields: [MsgPackValue.IntPair] = []
         if let attachment {
             fields += attachment.kind == AttachmentKind.image
@@ -3020,7 +3079,7 @@ public struct AppFeature {
             fields += ReplyWire.encode(replyTo: replyTo, quote: replyQuote ?? "")
         }
         if let expirySeconds { fields += ExpiryWire.encode(seconds: expirySeconds) }
-        return fields + photo.fields
+        return fields + photo.fields + name
     }
 
     /// The outgoing LXMessage and its `sending` row. Outgoing Info metadata: `wireSize` is the
@@ -3121,6 +3180,7 @@ public struct AppFeature {
         let inFlight = Set(state.inFlightSends.map(\.hexString))
         let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
         let myVersion = state.myPhotoVersion
+        let myWireName = state.myWireName
         let imageAllowed = state.profilePhotoMayRide
         let avatarStore = self.avatarStore
         let attachmentStore = self.attachmentStore
@@ -3132,7 +3192,7 @@ public struct AppFeature {
                 do {
                     rebuilt = try await rebuildOrphans(
                         database, attachmentStore, identity: identity, launchedAt: launchedAt, now: now,
-                        inFlight: inFlight, myVersion: myVersion,
+                        inFlight: inFlight, myVersion: myVersion, myWireName: myWireName,
                         myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(), imageAllowed: imageAllowed)
                 } catch {
                     await send(.orphanResendFailed)
@@ -3163,12 +3223,13 @@ public struct AppFeature {
         let openPeer = state.openPeerHex
         let now = date.now
         let myVersion = state.myPhotoVersion
+        let myWireName = state.myWireName
         let imageAllowed = state.profilePhotoMayRide
         let avatarStore = self.avatarStore
         return .run { [database] send in
             let sent = try await dispatchWaitingGroupCopies(database, members: members, identity: identity,
                                                             myName: myName, fallbackToPropagation: fallbackToPropagation,
-                                                            now: now, groupHex: groupHex, myVersion: myVersion,
+                                                            now: now, groupHex: groupHex, myVersion: myVersion, myWireName: myWireName,
                                                             myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                             imageAllowed: imageAllowed, send)
             guard sent > 0 else { return }
@@ -3242,6 +3303,7 @@ public struct AppFeature {
         let fallbackToPropagation = !state.effectivePropagationNodeHex.isEmpty
         let pathRequests = members.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
         let myVersion = state.myPhotoVersion
+        let myWireName = state.myWireName
         let imageAllowed = state.profilePhotoMayRide
         let avatarStore = self.avatarStore
         state.pendingHandOvers += 1
@@ -3250,7 +3312,7 @@ public struct AppFeature {
                 try await database.write(write)
                 _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
                                                          myName: myName, fallbackToPropagation: fallbackToPropagation,
-                                                         now: now, groupHex: dispatchGroupHex, myVersion: myVersion,
+                                                         now: now, groupHex: dispatchGroupHex, myVersion: myVersion, myWireName: myWireName,
                                                          myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                          imageAllowed: imageAllowed, send)
             }
@@ -3360,6 +3422,7 @@ public struct AppFeature {
         let pathRequests = recipients.subtracting(reachable).map { state.pathRequestIfUnreachable($0) }
         // The roster/leave copy carries no photo, but a waiting post for the same member may go too.
         let myVersion = state.myPhotoVersion
+        let myWireName = state.myWireName
         let imageAllowed = state.profilePhotoMayRide
         let avatarStore = self.avatarStore
         state.pendingHandOvers += 1
@@ -3376,7 +3439,7 @@ public struct AppFeature {
                 }
                 _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
                                                          myName: myName, fallbackToPropagation: fallbackToPropagation,
-                                                         now: now, myVersion: myVersion,
+                                                         now: now, myVersion: myVersion, myWireName: myWireName,
                                                          myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                          imageAllowed: imageAllowed, send)
             }
@@ -3726,7 +3789,7 @@ private func reloadThread(_ database: any DatabaseWriter, _ key: String, _ send:
 private func dispatchWaitingGroupCopies(_ database: any DatabaseWriter, members: Set<String>,
                                         identity: Identity, myName: String, fallbackToPropagation: Bool,
                                         now: Date, groupHex onlyGroupHex: String? = nil,
-                                        myVersion: String, myPhoto: Data?, imageAllowed: Bool,
+                                        myVersion: String, myWireName: String, myPhoto: Data?, imageAllowed: Bool,
                                         _ send: Send<AppFeature.Action>) async throws -> Int {
     guard !members.isEmpty else { return 0 }
     let memberList = Array(members)
@@ -3749,18 +3812,24 @@ private func dispatchWaitingGroupCopies(_ database: any DatabaseWriter, members:
             if delivery.status == MessageStatus.failed, row.groupControl == nil { continue }
             let roster = try GroupMember.members(of: groupHex, db)
             var plan = ProfilePhotoOutbox.Plan()
+            var namePlan: (fields: [MsgPackValue.IntPair], pendingName: String?) = ([], nil)
             if row.groupControl == nil {
                 plan = ProfilePhotoOutbox.plan(myVersion: myVersion, myPhoto: myPhoto,
                                                delivery: try ProfilePhotoDelivery.fetch(delivery.memberHex, db),
                                                imageAllowed: imageAllowed)
+                namePlan = ProfileNameOutbox.plan(myName: myWireName,
+                                                  delivery: try ProfileNameDelivery.fetch(delivery.memberHex, db))
             }
             guard let copy = AppFeature.groupCopy(of: row, to: member, group: group, members: roster,
                                                   identity: identity, myName: myName,
                                                   timestamp: now.timeIntervalSince1970,
-                                                  profileFields: plan.fields)
+                                                  profileFields: plan.fields + namePlan.fields)
             else { continue }
             if let version = plan.pendingVersion {
                 try ProfilePhotoDelivery.markPending(delivery.memberHex, version: version, hash: copy.hash.hexString, db)
+            }
+            if let name = namePlan.pendingName {
+                try ProfileNameDelivery.markPending(delivery.memberHex, name: name, hash: copy.hash.hexString, db)
             }
             let hashHex: String? = copy.hash.hexString
             try GroupDelivery
@@ -3819,7 +3888,7 @@ private func stampViewed(_ database: any DatabaseWriter, _ peerHex: String, now:
 /// rehashed rows (old → new hex).
 private func rebuildOrphans(_ database: any DatabaseWriter, _ attachmentStore: AttachmentStore,
                             identity: Identity, launchedAt: Date, now: Date, inFlight: Set<String>,
-                            myVersion: String, myPhoto: Data?, imageAllowed: Bool)
+                            myVersion: String, myWireName: String, myPhoto: Data?, imageAllowed: Bool)
     async throws -> (messages: [LXMessage], rehashed: [String: String]) {
     let (listed, attachments) = try await database.read { db in
         let orphans = try Message
@@ -3862,7 +3931,7 @@ private func rebuildOrphans(_ database: any DatabaseWriter, _ attachmentStore: A
             guard let rebuilt = try rebuildOutgoingRow(
                 orphan, stored: attachmentBytes[orphan.id], bytesMissing: bytesMissing.contains(orphan.id),
                 identity: identity, now: now.addingTimeInterval(Double(index) / 1000), failedNow: now,
-                myVersion: myVersion, myPhoto: myPhoto, imageAllowed: imageAllowed, db)
+                myVersion: myVersion, myWireName: myWireName, myPhoto: myPhoto, imageAllowed: imageAllowed, db)
             else { continue }
             rehashed[orphan.messageHash] = rebuilt.newHash
             messages.append(rebuilt.message)
@@ -3900,7 +3969,10 @@ private func resetGroupCopy(_ copy: GroupDelivery, _ db: GRDB.Database) throws {
             $0.messageHash = noHash
         }
         .execute(db)
-    if let hash = copy.messageHash { try ProfilePhotoDelivery.applyOutcome(hash: hash, confirmed: false, db) }
+    if let hash = copy.messageHash {
+        try ProfilePhotoDelivery.applyOutcome(hash: hash, confirmed: false, db)
+        try ProfileNameDelivery.applyOutcome(hash: hash, confirmed: false, db)
+    }
 }
 
 /// Rebuilds one outgoing one-to-one row like a first send (`AppFeature.outgoingFields`) with a
@@ -3912,11 +3984,12 @@ private func resetGroupCopy(_ copy: GroupDelivery, _ db: GRDB.Database) throws {
 /// launch resend and Retry.
 private func rebuildOutgoingRow(_ row: Message, stored: (attachment: Attachment, data: Data)?, bytesMissing: Bool,
                                 identity: Identity, now: Date, failedNow: Date,
-                                myVersion: String, myPhoto: Data?, imageAllowed: Bool,
+                                myVersion: String, myWireName: String, myPhoto: Data?, imageAllowed: Bool,
                                 _ db: GRDB.Database) throws -> (message: LXMessage, newHash: String)? {
     let oldHash = row.messageHash
-    // The photo pending on the old hash will never be settled by the node.
+    // The photo and name pending on the old hash will never be settled by the node.
     try ProfilePhotoDelivery.applyOutcome(hash: oldHash, confirmed: false, db)
+    try ProfileNameDelivery.applyOutcome(hash: oldHash, confirmed: false, db)
     let blocked = try BlockedPeer.fetch(peerHex: row.peerHex.lowercased(), db) != nil
     guard !blocked, !bytesMissing, let peer = Data(hexString: row.peerHex) else {
         let failedAt: Date? = row.failedAt ?? failedNow
@@ -3931,12 +4004,13 @@ private func rebuildOutgoingRow(_ row: Message, stored: (attachment: Attachment,
     let plan = ProfilePhotoOutbox.plan(myVersion: myVersion, myPhoto: myPhoto,
                                        delivery: try ProfilePhotoDelivery.fetch(row.peerHex, db),
                                        imageAllowed: imageAllowed)
+    let namePlan = ProfileNameOutbox.plan(myName: myWireName, delivery: try ProfileNameDelivery.fetch(row.peerHex, db))
     let (message, rebuilt) = AppFeature.outgoing(
         identity: identity, peer: peer, peerHex: row.peerHex, text: row.body, now: now,
         fields: AppFeature.outgoingFields(
             attachment: stored.map { (kind: $0.attachment.kind, name: $0.attachment.name, data: $0.data) },
             replyTo: row.replyToHash.flatMap { Data(hexString: $0) },
-            replyQuote: row.replyQuote, expirySeconds: row.expirySeconds, photo: plan),
+            replyQuote: row.replyQuote, expirySeconds: row.expirySeconds, photo: plan, name: namePlan.fields),
         replyToHash: row.replyToHash, replyQuote: row.replyQuote)
     let newHash = rebuilt.messageHash
     try Message.where { $0.id.eq(row.id) }
@@ -3955,6 +4029,9 @@ private func rebuildOutgoingRow(_ row: Message, stored: (attachment: Attachment,
     if let version = plan.pendingVersion {
         try ProfilePhotoDelivery.markPending(row.peerHex, version: version, hash: newHash, db)
     }
+    if let name = namePlan.pendingName {
+        try ProfileNameDelivery.markPending(row.peerHex, name: name, hash: newHash, db)
+    }
     return (message, newHash)
 }
 
@@ -3964,7 +4041,7 @@ private func rebuildOutgoingRow(_ row: Message, stored: (attachment: Attachment,
 /// blocked peer or missing attachment bytes leave it failed. Returns the message to hand over and
 /// the old and new hash, or nil when nothing is to be sent.
 private func rebuildForRetry(_ database: any DatabaseWriter, _ attachmentStore: AttachmentStore, id: UUID,
-                             identity: Identity, now: Date, myVersion: String, myPhoto: Data?, imageAllowed: Bool)
+                             identity: Identity, now: Date, myVersion: String, myWireName: String, myPhoto: Data?, imageAllowed: Bool)
     async throws -> (message: LXMessage, oldHash: String, newHash: String)? {
     let (listed, attachments) = try await database.read { db in
         (try Message.where { $0.id.eq(id) }.fetchOne(db),
@@ -3981,7 +4058,7 @@ private func rebuildForRetry(_ database: any DatabaseWriter, _ attachmentStore: 
         guard let rebuilt = try rebuildOutgoingRow(
             row, stored: attachmentBytes[id], bytesMissing: bytesMissing.contains(id),
             identity: identity, now: now, failedNow: now,
-            myVersion: myVersion, myPhoto: myPhoto, imageAllowed: imageAllowed, db)
+            myVersion: myVersion, myWireName: myWireName, myPhoto: myPhoto, imageAllowed: imageAllowed, db)
         else { return nil }
         let noFailure: Date? = nil
         let noReason: String? = nil
@@ -4053,6 +4130,14 @@ private func profilePhotoPlan(_ database: any DatabaseWriter, _ avatarStore: Ava
     let delivery = try await database.read { try ProfilePhotoDelivery.fetch(peerHex, $0) }
     return ProfilePhotoOutbox.plan(myVersion: myVersion, myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                    delivery: delivery, imageAllowed: imageAllowed)
+}
+
+/// The display-name plan for one outgoing one-to-one message (spec 2026-10-25): the peer's name
+/// delivery row decides whether my name rides.
+private func profileNamePlan(_ database: any DatabaseWriter, peerHex: String,
+                             myWireName: String) async throws -> (fields: [MsgPackValue.IntPair], pendingName: String?) {
+    let delivery = try await database.read { try ProfileNameDelivery.fetch(peerHex, $0) }
+    return ProfileNameOutbox.plan(myName: myWireName, delivery: delivery)
 }
 
 /// Applies a received profile photo and/or LXMF icon to the sender's `PeerProfile` (spec
@@ -4152,6 +4237,26 @@ private func applyPeerProfile(_ profile: ProfileWire.Decoded?, _ icon: IconAppea
         }
     } catch {
         AppFeature.inbound.error("peer profile update failed for \(tag, privacy: .public): \(String(describing: error), privacy: .public)")
+    }
+}
+
+/// Applies a received display name (`""` = cleared) to the sender's `PeerProfile` (spec
+/// 2026-10-25 "Receiving"). The caller has already dropped it for an unvalidated sender. Its time
+/// is the sender's timestamp capped at arrival, the photo rule, and only a strictly newer one
+/// applies (`PeerProfile.setName`), so a late older message never rolls the name back. Never
+/// throws: a failure is logged and the message it rode on is still stored.
+private func applyPeerName(_ name: String?, peerHex: String, sentAt senderTime: Date?, at now: Date,
+                           _ database: any DatabaseWriter, _ send: Send<AppFeature.Action>) async {
+    guard let name else { return }
+    let setAt = min(senderTime ?? now, now)
+    do {
+        let row = try await database.write { db -> PeerProfile? in
+            guard try PeerProfile.setName(peerHex, name: name, setAt: setAt, at: now, db) else { return nil }
+            return try PeerProfile.fetch(peerHex, db)
+        }
+        if let row { await send(.peerProfileUpdated(peerHex: peerHex, row)) }
+    } catch {
+        AppFeature.inbound.error("peer name update failed for \(String(peerHex.prefix(8)), privacy: .public): \(String(describing: error), privacy: .public)")
     }
 }
 
