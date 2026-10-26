@@ -2282,9 +2282,9 @@ public struct AppFeature {
                         try await reloadThread(database, key, send)
                     }
                     if let key = result.threadKey {
-                        // At the row's own arrival time, so `timestamp > readAt` leaves it read.
+                        // At the row's own stored timestamp, so `timestamp > readAt` leaves it read.
                         if watching, key == openPeer {
-                            try await markConversationRead(key, at: row.timestamp, database)
+                            try await markConversationRead(key, uptoMessage: row.id, database)
                         } else {
                             try await refreshBadge(database)
                         }
@@ -3393,7 +3393,7 @@ public struct AppFeature {
                 if incomingPeer == openPeer { try await reloadThread(database, incomingPeer, send) }
                 // Unread badge: read when it lands in the watched thread, as on the ordinary path.
                 if viewedNow != nil {
-                    try await markConversationRead(incomingPeer, at: now, database)
+                    try await markConversationRead(incomingPeer, uptoMessage: plain.id, database)
                 } else {
                     try await refreshBadge(database)
                 }

@@ -43,7 +43,7 @@ private func wire(from sender: Identity, to me: Identity, content: String = "hi"
 }
 
 @MainActor
-private func makeBadgeStore(_ db: any DatabaseWriter, identity: Identity, badge: BadgeClient,
+private func makeBadgeStore(_ db: any DatabaseWriter, identity: Identity, badge: BadgeClient, now: Date = badgeT0,
                             configure: (inout AppFeature.State) -> Void) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity)
     configure(&initial)
@@ -52,7 +52,7 @@ private func makeBadgeStore(_ db: any DatabaseWriter, identity: Identity, badge:
     } withDependencies: {
         $0.defaultDatabase = db
         $0.attachmentStore = AttachmentStore.testValue
-        $0.date = .constant(badgeT0)
+        $0.date = .constant(now)
         $0.transportDate = .constant(badgeT0)
         $0.uuid = .incrementing
         $0.continuousClock = TestClock()
@@ -162,6 +162,55 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
     #expect(try await db.read { try Message.fetchCount($0) } == 1)
     #expect(calls.value == [0])
     #expect(try await unread(db) == 0)
+}
+
+/// Final review F4: `readAt` and `messages.timestamp` must be written by one encoder. At half a
+/// millisecond GRDB's formatter rounds up (".001") while StructuredQueries, which writes the
+/// message rows, truncates (".000"). A `readAt` from GRDB would then sit 1 ms ahead of the row it
+/// marked and swallow the next message to land in that millisecond. Copying the stored row's text
+/// keeps them equal: the watched arrival is read and the later one still counts.
+@MainActor @Test func markReadAtArrivalUsesStoredTimestamp() async throws {
+    let boundary = Date(timeIntervalSince1970: 1_761_400_000.0005)
+    let later = Date(timeIntervalSince1970: 1_761_400_000.0012)
+    // The premise: the two encoders disagree at `boundary`, and agree at `later`.
+    let scratch = try DatabaseQueue()
+    func encoded(_ date: Date) throws -> (grdb: String?, queries: String?) {
+        try scratch.read { db in
+            (try String.fetchOne(db, sql: "SELECT ?", arguments: [date]),
+             try #sql("SELECT \(date)", as: String.self).fetchOne(db))
+        }
+    }
+    let atBoundary = try encoded(boundary)
+    #expect(atBoundary.grdb == "2025-10-25 13:46:40.001")
+    #expect(atBoundary.queries == "2025-10-25 13:46:40.000")
+    let atLater = try encoded(later)
+    #expect(atLater.grdb == atLater.queries)
+
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let store = makeBadgeStore(db, identity: me, badge: .ignored, now: boundary) {
+        $0.openPeerHex = deliveryHex(sender)
+        $0.chatVisible = true
+    }
+    await store.send(.node(.client(.delegate(.messageReceived(message: wire(from: sender, to: me),
+                                                              signatureValidated: true, method: .opportunistic)))))
+    await settle(store)
+    #expect(try await db.read { try Message.fetchCount($0) } == 1)
+    #expect(try await unread(db) == 0)
+    let readAt = try await db.read { try String.fetchOne($0, sql: "SELECT readAt FROM conversationReads") }
+    let stamp = try await db.read { try String.fetchOne($0, sql: "SELECT timestamp FROM messages") }
+    #expect(readAt == stamp)
+
+    // The user steps away; the next message lands 0.7 ms later, in the following millisecond.
+    await store.send(.activityChanged(isActive: false)) { $0.isForeground = false }
+    await settle(store)
+    store.dependencies.date = .constant(later)
+    await store.send(.node(.client(.delegate(.messageReceived(message: wire(from: sender, to: me, content: "later"),
+                                                              signatureValidated: true, method: .opportunistic)))))
+    await settle(store)
+    #expect(try await db.read { try Message.fetchCount($0) } == 2)
+    #expect(try await unread(db) == 1)
 }
 
 /// Review Focus 3: on the Mac, an app that is open but not frontmost isn't reading the chat.

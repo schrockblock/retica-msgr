@@ -223,6 +223,31 @@ private func carriesName(_ m: LXMessage?) -> Bool {
     #expect(row?.nameSetAt == Date(timeIntervalSince1970: 1699999900))
 }
 
+/// Only a validated sender may set a name: an unsigned message could be forged to rename a contact.
+@MainActor @Test func unvalidatedMessageCannotSetName() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let built = LXMessage.create(source: Identity(), destinationHash: LXMessage.deliveryHash(identityHash: me.hash),
+                                 timestamp: 1699999900, title: Data(), content: Data("hi".utf8),
+                                 fields: NameWire.encode("Fake"))
+    let m = try #require(LXMessage.unpack(built.packed))
+    let hex = m.sourceHash.hexString
+    let store = nameStore(db, identity: me, clock: ImmediateClock()) { s in
+        s.node.client.learnedPeers[m.sourceHash] = LXMFNode.LearnedPeer(
+            displayName: "Real", stampCost: nil, supportsCompression: false, learnedAt: nameT1)
+    }
+    #expect(store.state.peerDisplayName(hex) == "Real")
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: false,
+                                                              method: .opportunistic)))))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    // The message itself is stored: only its name is ignored.
+    #expect(try await db.read { try Message.fetchCount($0) } == 1)
+    #expect(store.state.peerProfiles[hex]?.name == nil)
+    #expect(try await db.read { try PeerProfile.fetch(hex, $0) }?.name == nil)
+    #expect(store.state.peerDisplayName(hex) == "Real")
+}
+
 /// The first message from a peer carries its name and a timer change: the timer line it writes
 /// already names the sender, rather than "Them".
 @MainActor @Test func timerLineUsesTheNameItsMessageCarries() async throws {

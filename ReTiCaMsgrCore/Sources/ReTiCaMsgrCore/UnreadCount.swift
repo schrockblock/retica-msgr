@@ -34,6 +34,13 @@ func markConversationRead(_ key: String, at now: Date, _ database: any DatabaseW
     try await refreshBadge(database)
 }
 
+/// Marks `key` read up to the message `id` that just arrived in the watched thread, at that row's
+/// own stored timestamp, and resets the badge.
+func markConversationRead(_ key: String, uptoMessage id: UUID, _ database: any DatabaseWriter) async throws {
+    try await database.write { try ConversationRead.markRead(key, uptoMessage: id, $0) }
+    try await refreshBadge(database)
+}
+
 extension AppFeature {
     /// Recomputes the badge from the database (launch, a drained push inbox, a block or unblock).
     func recomputeBadge(_ database: any DatabaseWriter) -> Effect<Action> {
