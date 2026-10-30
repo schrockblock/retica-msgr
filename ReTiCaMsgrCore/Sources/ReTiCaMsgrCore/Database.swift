@@ -287,6 +287,17 @@ public enum AppDatabase {
             }
             try db.create(index: "profileNameDeliveriesPendingHash", on: "profileNameDeliveries", columns: ["pendingHash"])
         }
+        m.registerMigration("addUnverifiedPacked") { db in
+            // Message forgery fixes (spec 2026-10-28): the packed LXMF bytes of an incoming row
+            // stored with `validated = false`, so its signature can be checked once the sender's
+            // identity is known. NULL for every other row and for rows from before this migration.
+            try db.alter(table: "messages") { t in
+                t.add(column: "unverifiedPacked", .blob)
+            }
+            // The re-check looks for pending senders on every learned path; partial, so the index
+            // holds only the rows still waiting.
+            try db.execute(sql: "CREATE INDEX messages_unverifiedPacked ON messages(peerHex) WHERE unverifiedPacked IS NOT NULL")
+        }
         return m
     }
 

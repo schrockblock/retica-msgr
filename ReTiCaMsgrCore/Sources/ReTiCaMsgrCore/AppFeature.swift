@@ -730,6 +730,9 @@ public struct AppFeature {
         /// Not part of the public-facing action surface; callers should send `.backgrounded` for
         /// an explicit flush.
         case _flushLearnedDestinations
+        /// Internal: the launch pass found stored unverified rows from these senders (hex). Each
+        /// whose identity is now in `endpoint.learned` is re-checked (spec 2026-10-28).
+        case _recheckUnverified([String])
         /// "Choose radio…" in Settings (spec 2026-10-16 §7): opens the radio picker and pauses a
         /// running BLE interface. Handled in `MeshtasticSettingsReducer`.
         case chooseRadioTapped
@@ -950,6 +953,10 @@ public struct AppFeature {
                             destinations[pair.hash] = pair.destination
                         }
                         await send(.rehydrateLearnedDestinations(destinations))
+                        // Spec 2026-10-28 settled detail 4: once at launch, with the learned table
+                        // just restored, re-check every sender with stored unverified bytes.
+                        let pending = try await UnverifiedRecheck.pendingPeers(database)
+                        if !pending.isEmpty { await send(._recheckUnverified(pending)) }
                     },
                     .run { [database, attachmentStore, attachmentCacheEvictor, now = date.now] send in
                         // Nothing ran while suspended or dead: purge what fell due and arm the sleeper.
@@ -1958,7 +1965,11 @@ public struct AppFeature {
                 }
                 state.reachablePeers.insert(h.hexString)
                 // Spec §3 "Deferred copies": this member may have group copies waiting for a path.
-                let groupDispatch = groupDispatchEffect(state, members: [h.hexString])
+                // Merged with the re-check of this sender's unverified rows (spec 2026-10-28): the
+                // announce that taught us the path also gave us the identity to check them against.
+                let groupDispatch = Effect<Action>.merge(
+                    groupDispatchEffect(state, members: [h.hexString]),
+                    recheckUnverified(state, peers: [h.hexString]))
 
                 // Arm (or restart) the debounce timer for the learned-destination table. ALL
                 // pathLearned events touch Transport.State.learned (that is what pathLearned means),
@@ -2152,6 +2163,16 @@ public struct AppFeature {
                 // download gives none at all), so a sender whose delivery announce we never heard
                 // would stay un-repliable. Ask for its path; the response unlocks Send via pathLearned.
                 let pathRequest = state.pathRequestIfUnreachable(incomingPeer)
+                // Spec 2026-10-28: an unverified row keeps its packed bytes, up to the size limit,
+                // so the signature can be checked once the sender's identity is known. If the
+                // transport already holds that identity (the router lacked it), check right away.
+                let unverifiedPacked: Data? = {
+                    guard !validated else { return nil }
+                    let packed = m.packed
+                    return packed.count <= UnverifiedRecheck.maxStoredBytes ? packed : nil
+                }()
+                let recheckNow: Effect<Action> = unverifiedPacked == nil
+                    ? .none : recheckUnverified(state, peers: [incomingPeer])
                 let row = Message(
                     id: UUID(),
                     peerHex: incomingPeer,
@@ -2178,7 +2199,8 @@ public struct AppFeature {
                     expiresAt: incomingSeconds.flatMap { seconds in
                         viewedNow.map { $0.addingTimeInterval(TimeInterval(seconds)) }
                     },
-                    isTimerChange: isTimerChange
+                    isTimerChange: isTimerChange,
+                    unverifiedPacked: unverifiedPacked
                 )
                 let storeMessage: Effect<Action> = .run { [database] send in
                     // Never throws: a failed photo or icon leaves the message to be stored below.
@@ -2297,7 +2319,7 @@ public struct AppFeature {
                         try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: seenNow, send)
                     }
                 }
-                return .merge(pathRequest, storeMessage)
+                return .merge(pathRequest, .concatenate(storeMessage, recheckNow))
 
             case let .node(.client(.delegate(.deliveryFailed(hash)))):
                 return markUndeliverable(&state, hash, status: MessageStatus.failed, reason: nil)
@@ -2685,6 +2707,9 @@ public struct AppFeature {
                     groupDispatch
                 )
 
+            case let ._recheckUnverified(peers):
+                return recheckUnverified(state, peers: peers)
+
             case let .node(.client(.router(.messagesDownloaded(transientIds)))):
                 // Persist the newly-downloaded transient IDs so a cold start doesn't re-request
                 // them on the next sync. An empty batch requires no write.
@@ -2951,6 +2976,42 @@ public struct AppFeature {
         MeshtasticSettingsReducer()
         MeshtasticRadioReducer()
         BLESlotReducer()
+    }
+
+    /// Re-checks the stored unverified rows of each sender in `peers` whose identity is in
+    /// `endpoint.learned` (spec 2026-10-28), the same table `announceRowTapped` reads: that entry
+    /// came from a signed announce, so the key is authenticated. A sender with nothing stored costs
+    /// one indexed read. When rows changed, the list and the open thread reload, removed
+    /// attachments leave the image cache, and the badge is recomputed.
+    private func recheckUnverified(_ state: State, peers: [String]) -> Effect<Action> {
+        let checks: [(hex: String, identity: Identity)] = peers.compactMap { hex in
+            guard let hash = Data(hexString: hex),
+                  let identity = state.node.client.endpoint.learned[hash]?.identity else { return nil }
+            return (hex, identity)
+        }
+        guard !checks.isEmpty else { return .none }
+        // Our lxmf.delivery hash is deterministic from our identity, so the check does not wait for
+        // `registerDelivery` (which runs at `interfaceConnected`, after the launch pass).
+        let deliveryHash: Data? = LXMessage.deliveryHash(identityHash: state.identity.hash)
+        let openPeer = state.openPeerHex
+        return .run { [database, attachmentStore, attachmentCacheEvictor] send in
+            let pending = Set(try await UnverifiedRecheck.pendingPeers(database))
+            var changed = false
+            var removed: [UUID] = []
+            for check in checks where pending.contains(check.hex) {
+                // Every stored row is either verified or removed, so a pending sender always changes.
+                let result = try await UnverifiedRecheck.run(database, attachmentStore: attachmentStore,
+                                                            sourceHex: check.hex, identity: check.identity,
+                                                            deliveryHash: deliveryHash)
+                changed = true
+                removed += result.removed
+            }
+            guard changed else { return }
+            if !removed.isEmpty { await attachmentCacheEvictor.evict(removed) }
+            try await reloadConversations(database, send)
+            if let openPeer { try await reloadThread(database, openPeer, send) }
+            try await refreshBadge(database)
+        }
     }
 
     /// The open thread is being looked at again (`.foregrounded`, `.chatAppeared`): stamp its
