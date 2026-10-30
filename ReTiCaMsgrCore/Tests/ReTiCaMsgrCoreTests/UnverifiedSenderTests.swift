@@ -327,3 +327,38 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     #expect(row.unverifiedPacked == nil)
     await store.skipReceivedActions(strict: false)
 }
+
+/// Review Focus 1, end to end through the real `LXMFNode`: Bob is known, and over his link to us
+/// he hands over a message he validly signed to Carol. ReTiCA's destination check drops it, so no
+/// row is stored. His own message to us on the same link, sent next, is the control: it lands.
+@MainActor @Test func forgedMessageForAnotherRecipientNeverStored() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let bob = Identity()
+    let carol = Identity()
+    let bobHash = LXMessage.deliveryHash(identityHash: bob.hash)
+    let myHash = LXMessage.deliveryHash(identityHash: me.hash)
+    let linkID = Data(repeating: 0xB0, count: 16)
+    let store = makeUnverifiedStore(db, identity: me, badge: .ignored) {
+        $0.node.client.endpoint.transport.learned[bobHash] = learned(bob)
+        $0.node.client.linkDestinations[linkID] = myHash   // Bob's link terminates on our delivery destination
+    }
+    await store.send(.node(.client(.router(.learnedIdentity(destinationHash: bobHash, identity: bob)))))
+    #expect(store.state.node.client.router.knownIdentities[bobHash] != nil, "precondition: Bob is known")
+
+    let forCarol = LXMessage.create(source: bob, destinationHash: LXMessage.deliveryHash(identityHash: carol.hash),
+                                    timestamp: 1699999999, title: Data(), content: Data("for carol".utf8))
+    await store.send(.node(.client(.endpoint(.delegate(.linkDataReceived(
+        linkID: linkID, data: forCarol.packed, packetHash: Data(repeating: 0xC1, count: 32)))))))
+    await settle(store)
+    #expect(try await db.read { try Message.fetchCount($0) } == 0)
+
+    let forMe = LXMessage.create(source: bob, destinationHash: myHash,
+                                 timestamp: 1699999999, title: Data(), content: Data("for me".utf8))
+    await store.send(.node(.client(.endpoint(.delegate(.linkDataReceived(
+        linkID: linkID, data: forMe.packed, packetHash: Data(repeating: 0xC2, count: 32)))))))
+    await settle(store)
+    let row = try await onlyRow(db)
+    #expect(row.body == "for me")
+    #expect(row.validated == true)
+}
