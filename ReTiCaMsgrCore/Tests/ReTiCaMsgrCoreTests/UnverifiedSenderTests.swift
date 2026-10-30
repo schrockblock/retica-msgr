@@ -294,3 +294,36 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     #expect(row.unverifiedPacked == nil)
     #expect(calls.value.last == 1)
 }
+
+/// Settled detail 4, the launch pass: the sender's identity is rehydrated from the learned table
+/// before `registerDelivery` has run (that waits for `interfaceConnected`), so the check must use
+/// the delivery hash derived from our identity, not the registered one.
+@MainActor @Test func launchRecheckValidatesBeforeRegistration() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHash = LXMessage.deliveryHash(identityHash: sender.hash)
+    let senderHex = senderHash.hexString
+    try await insert(db, [storedRow(senderHex, validated: false, packed: wireMessage(from: sender, to: me).packed)])
+    let destinationRow = try #require(LearnedDestinationRow(hash: senderHash, destination: learned(sender)))
+    try await db.write { try LearnedDestinationRow.insert { destinationRow }.execute($0) }
+    let store = makeUnverifiedStore(db, identity: me, badge: .ignored) {
+        $0.node.client.deliveryDestinationHash = nil
+    }
+    await store.send(.onLaunch)
+    await store.receive { action in
+        if case let ._recheckUnverified(peers) = action { return peers == [senderHex] }
+        return false
+    }
+    #expect(store.state.node.client.deliveryDestinationHash == nil, "precondition: not registered yet")
+    // The launch's other effects (the node start, the sleepers) never finish here, so wait on the row.
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    var row = try await onlyRow(db)
+    while !row.validated, ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(20))
+        row = try await onlyRow(db)
+    }
+    #expect(row.validated == true)
+    #expect(row.unverifiedPacked == nil)
+    await store.skipReceivedActions(strict: false)
+}

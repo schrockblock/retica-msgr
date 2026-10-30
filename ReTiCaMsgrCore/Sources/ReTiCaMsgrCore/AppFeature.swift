@@ -2989,8 +2989,10 @@ public struct AppFeature {
                   let identity = state.node.client.endpoint.learned[hash]?.identity else { return nil }
             return (hex, identity)
         }
-        // Not registered yet: nothing can be checked against our address, so wait for a later pass.
-        guard !checks.isEmpty, let deliveryHash = state.node.client.deliveryDestinationHash else { return .none }
+        guard !checks.isEmpty else { return .none }
+        // Our lxmf.delivery hash is deterministic from our identity, so the check does not wait for
+        // `registerDelivery` (which runs at `interfaceConnected`, after the launch pass).
+        let deliveryHash: Data? = LXMessage.deliveryHash(identityHash: state.identity.hash)
         let openPeer = state.openPeerHex
         return .run { [database, attachmentStore, attachmentCacheEvictor] send in
             let pending = Set(try await UnverifiedRecheck.pendingPeers(database))
