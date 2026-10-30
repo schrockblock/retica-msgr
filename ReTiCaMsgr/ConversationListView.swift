@@ -208,6 +208,18 @@ struct ConversationListView: View {
                     .foregroundStyle(unread > 0 ? Color.accentColor : .secondary)
             }
             HStack {
+                // A draft replaces the preview, so the marker only goes with a received message.
+                if convo.lastIsUnverified, convo.draft == nil {
+                    Image(systemName: "exclamationmark.shield")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                        .accessibilityHidden(true)
+                    Text("Unverified sender · ")
+                        .font(.subheadline.weight(unread > 0 ? .semibold : .regular))
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
                 Text(convo.preview)
                     .font(.subheadline.weight(unread > 0 ? .semibold : .regular))
                     .foregroundStyle(unread > 0 ? .primary : .secondary)

@@ -16,10 +16,15 @@ public struct Conversation: Identifiable, Equatable, Sendable {
     public var lastTimestamp: Date
     /// Unsent composer text, set by `applyingDrafts`; nil when there is none.
     public var draft: String?
+    /// The newest message is incoming and its signature did not validate, so the row says so
+    /// rather than previewing it as if it were genuine.
+    public var lastIsUnverified: Bool
     public var id: String { peerHex }
 
     public init(peerHex: String, kind: Kind = .peer, title: String? = nil, groupState: String? = nil,
-                lastBody: String, lastTimestamp: Date, draft: String? = nil) {
+                lastBody: String, lastTimestamp: Date, draft: String? = nil,
+                lastIsUnverified: Bool = false) {
+        self.lastIsUnverified = lastIsUnverified
         self.peerHex = peerHex
         self.kind = kind
         self.title = title
@@ -58,7 +63,8 @@ public extension Conversation {
                     title: m.groupHex == nil ? nil : (group?.name ?? unknownGroupTitle),
                     groupState: group?.state,
                     lastBody: AttachmentPlaceholder.preview(body: m.body, attachment: attachments[m.id]),
-                    lastTimestamp: m.timestamp)
+                    lastTimestamp: m.timestamp,
+                    lastIsUnverified: !m.isOutgoing && !m.validated)
             }
             .sorted { $0.lastTimestamp > $1.lastTimestamp }
     }

@@ -523,6 +523,15 @@ struct MessageBubble: View {
                             .padding(-4)
                             .opacity(isHighlighted ? 1 : 0)
                     )
+                // The signature did not validate, so the sender may be forged. System lines
+                // (timer changes, group events) are not bubbles and are left alone.
+                if !message.isOutgoing, !message.validated,
+                   !message.isTimerChange, !message.isGroupEvent {
+                    Label("Unverified sender", systemImage: "exclamationmark.shield")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 4)
+                }
                 if !reactions.isEmpty {
                     ReactionBadge(items: reactions)
                         .padding(.top, -10)
