@@ -298,6 +298,28 @@ public enum AppDatabase {
             // holds only the rows still waiting.
             try db.execute(sql: "CREATE INDEX messages_unverifiedPacked ON messages(peerHex) WHERE unverifiedPacked IS NOT NULL")
         }
+        m.registerMigration("moveUnverifiedPackedToSideTable") { db in
+            // Final review F1: every list and thread reload fetches whole `messages` rows, so the
+            // bytes (up to 256 KB each, from any unknown sender) move to their own table and the
+            // column goes. The id is TEXT, as `messages.id` is; the copy keeps its exact text.
+            try db.create(table: "unverifiedPackets") { t in
+                t.primaryKey("messageId", .text).notNull().references("messages", onDelete: .cascade)
+                t.column("bytes", .blob).notNull()
+            }
+            try db.execute(sql: """
+                INSERT INTO unverifiedPackets (messageId, bytes)
+                SELECT id, unverifiedPacked FROM messages WHERE unverifiedPacked IS NOT NULL
+                """)
+            // SQLite refuses to drop an indexed column, so the old partial index goes first.
+            try db.execute(sql: "DROP INDEX messages_unverifiedPacked")
+            try db.alter(table: "messages") { t in
+                t.drop(column: "unverifiedPacked")
+            }
+            // The re-check's per-sender lookup: one peer's unvalidated rows, then their side rows by
+            // primary key. Plain, not partial: the query builder writes `NOT validated`, which
+            // SQLite cannot match to a `WHERE validated = 0` index.
+            try db.create(index: "messages_peerHex", on: "messages", columns: ["peerHex"])
+        }
         return m
     }
 

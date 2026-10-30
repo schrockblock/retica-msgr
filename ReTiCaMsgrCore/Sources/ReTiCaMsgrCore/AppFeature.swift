@@ -2163,8 +2163,9 @@ public struct AppFeature {
                 // download gives none at all), so a sender whose delivery announce we never heard
                 // would stay un-repliable. Ask for its path; the response unlocks Send via pathLearned.
                 let pathRequest = state.pathRequestIfUnreachable(incomingPeer)
-                // Spec 2026-10-28: an unverified row keeps its packed bytes, up to the size limit,
-                // so the signature can be checked once the sender's identity is known. If the
+                // Spec 2026-10-28: an unverified row keeps its packed bytes (in `unverifiedPackets`),
+                // up to the size limit and `UnverifiedRecheck.maxStoredMessages` rows in total, so
+                // the signature can be checked once the sender's identity is known. If the
                 // transport already holds that identity (the router lacked it), check right away.
                 let unverifiedPacked: Data? = {
                     guard !validated else { return nil }
@@ -2199,8 +2200,7 @@ public struct AppFeature {
                     expiresAt: incomingSeconds.flatMap { seconds in
                         viewedNow.map { $0.addingTimeInterval(TimeInterval(seconds)) }
                     },
-                    isTimerChange: isTimerChange,
-                    unverifiedPacked: unverifiedPacked
+                    isTimerChange: isTimerChange
                 )
                 let storeMessage: Effect<Action> = .run { [database] send in
                     // Never throws: a failed photo or icon leaves the message to be stored below.
@@ -2294,6 +2294,9 @@ public struct AppFeature {
                         try Message.insert { stored }.execute(db)
                         if let attachmentRow {
                             try Attachment.insert { attachmentRow }.execute(db)
+                        }
+                        if let unverifiedPacked {
+                            try UnverifiedRecheck.storeBytes(unverifiedPacked, messageId: stored.id, db)
                         }
                         // Persist the seen hash so a cold start doesn't re-deliver this message.
                         // Upsert: replace any existing row for the same hash (a duplicate from a
@@ -2702,8 +2705,19 @@ public struct AppFeature {
                     seedReachablePeers(&state, from: destinations)
                     groupDispatch = groupDispatchEffect(state, members: state.reachablePeers)
                 }
+                // Final review F2: the router's `knownIdentities` is fed only by a live
+                // `.pathLearned`, so after a cold start the first message from each contact arrived
+                // unvalidated and lost its validated-only fields. Feed it the rehydrated
+                // lxmf.delivery identities too (the same destination check LXMFNode's pathLearned
+                // arm uses), after the transport has them.
+                let identities: [Effect<Action>] = destinations
+                    .filter { $0.key == LXMessage.deliveryHash(identityHash: $0.value.identity.hash) }
+                    .map { .send(.node(.client(.router(.learnedIdentity(destinationHash: $0.key,
+                                                                        identity: $0.value.identity))))) }
                 return .merge(
-                    .send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations(destinations)))))),
+                    .concatenate(
+                        [.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations(destinations))))))]
+                            + identities),
                     groupDispatch
                 )
 

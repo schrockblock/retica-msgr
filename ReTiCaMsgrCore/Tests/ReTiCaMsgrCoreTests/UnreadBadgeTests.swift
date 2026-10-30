@@ -80,8 +80,8 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
 @Test func migrationSeedsReadMarkersForExistingConversations() async throws {
     let queue = try DatabaseQueue()
     try AppDatabase.migrator().migrate(queue, upTo: "createProfilePhotoDeliveries")
-    // Raw SQL: `Message.insert` names every current column, and `unverifiedPacked` (added by a
-    // later migration) does not exist yet at this schema version.
+    // Raw SQL: `Message.insert` names every current column, so it would break whenever a later
+    // migration changes `messages` (as `addUnverifiedPacked` did).
     try await queue.write { db in
         for row in [incoming(peerA, at: -10), incoming(peerA, at: -5), incoming(peerB, at: -1),
                     incoming(peerB, at: -1, group: groupG)] {

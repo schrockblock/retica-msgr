@@ -36,17 +36,40 @@ private func forgedBytes(from sender: Identity, to me: Identity) -> Data {
     return bytes
 }
 
-private func storedRow(_ peerHex: String, validated: Bool, packed: Data?, hash: String = "",
-                       at offset: TimeInterval = -10) -> Message {
-    Message(id: UUID(), peerHex: peerHex, isOutgoing: false, body: "hi",
-            timestamp: unverifiedT0.addingTimeInterval(offset), status: MessageStatus.received,
-            validated: validated, messageHash: hash, unverifiedPacked: packed)
+/// A message row and the bytes kept for it in `unverifiedPackets` (nil: none).
+private struct StoredRow {
+    var message: Message
+    var packed: Data?
+    var id: UUID { message.id }
 }
 
-private func insert(_ db: any DatabaseWriter, _ rows: [Message]) async throws {
+private func storedRow(_ peerHex: String, validated: Bool, packed: Data?, hash: String = "",
+                       at offset: TimeInterval = -10) -> StoredRow {
+    StoredRow(message: Message(id: UUID(), peerHex: peerHex, isOutgoing: false, body: "hi",
+                               timestamp: unverifiedT0.addingTimeInterval(offset), status: MessageStatus.received,
+                               validated: validated, messageHash: hash),
+              packed: packed)
+}
+
+private func insert(_ db: any DatabaseWriter, _ rows: [StoredRow]) async throws {
     try await db.write { d in
-        for r in rows { try Message.insert { r }.execute(d) }
+        for r in rows {
+            let message = r.message
+            try Message.insert { message }.execute(d)
+            if let packed = r.packed {
+                try UnverifiedPacket.insert { UnverifiedPacket(messageId: message.id, bytes: packed) }.execute(d)
+            }
+        }
     }
+}
+
+/// The bytes kept for message `id` in the side table, nil when none.
+private func storedBytes(_ db: any DatabaseWriter, _ id: UUID) async throws -> Data? {
+    try await db.read { try UnverifiedPacket.where { $0.messageId.eq(id) }.fetchOne($0)?.bytes }
+}
+
+private func packetCount(_ db: any DatabaseWriter) async throws -> Int {
+    try await db.read { try UnverifiedPacket.fetchCount($0) }
 }
 
 private func unreadCount(_ db: any DatabaseWriter) async throws -> Int {
@@ -111,7 +134,7 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     await settle(store)
     let row = try await onlyRow(db)
     #expect(row.validated == false)
-    #expect(row.unverifiedPacked == m.packed)
+    #expect(try await storedBytes(db, row.id) == m.packed)
 }
 
 /// Unverified rows never reach the badge or the per-row counts; a validated row beside them does.
@@ -144,7 +167,7 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     #expect(result.removed.isEmpty)
     let row = try await onlyRow(db)
     #expect(row.validated == true)
-    #expect(row.unverifiedPacked == nil)
+    #expect(try await packetCount(db) == 0)
     #expect(try await unreadCount(db) == 1)
 }
 
@@ -171,6 +194,7 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     #expect(result.removed == [attachment.id])
     #expect(try await db.read { try Message.fetchCount($0) } == 0)
     #expect(try await db.read { try Attachment.fetchCount($0) } == 0)
+    #expect(try await packetCount(db) == 0, "the side row cascades with its message")
     #expect(!files.exists(path))
 }
 
@@ -197,7 +221,7 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     await settle(store)
     let row = try await onlyRow(db)
     #expect(row.validated == true)
-    #expect(row.unverifiedPacked == nil)
+    #expect(try await storedBytes(db, row.id) == nil)
     #expect(calls.value == [0, 1])
 }
 
@@ -213,7 +237,7 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     await settle(store)
     let row = try await onlyRow(db)
     #expect(row.validated == false)
-    #expect(row.unverifiedPacked == nil)
+    #expect(try await storedBytes(db, row.id) == nil)
 }
 
 /// Review Focus 5: a row stored before this change (unverified, no bytes) is left alone by the
@@ -229,7 +253,7 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
                                                  deliveryHash: LXMessage.deliveryHash(identityHash: Identity().hash))
     #expect(result.verified == 0)
     #expect(result.removed.isEmpty)
-    #expect(try await onlyRow(db) == legacy)
+    #expect(try await onlyRow(db) == legacy.message)
     #expect(try await unreadCount(db) == 0)
 }
 
@@ -270,9 +294,10 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     await settle(store)
     let rows = try await db.read { try Message.all.fetchAll($0) }
     let byHash = Dictionary(uniqueKeysWithValues: rows.map { ($0.messageHash, $0) })
-    #expect(byHash[atLimit.hash.hexString]?.unverifiedPacked == atLimit.packed)
+    let at = try #require(byHash[atLimit.hash.hexString])
+    #expect(try await storedBytes(db, at.id) == atLimit.packed)
     let over = try #require(byHash[overLimit.hash.hexString])
-    #expect(over.unverifiedPacked == nil)
+    #expect(try await storedBytes(db, over.id) == nil)
 }
 
 /// Settled detail 4: the transport already holds the sender's identity, but the router reported the
@@ -291,7 +316,7 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     await settle(store)
     let row = try await onlyRow(db)
     #expect(row.validated == true)
-    #expect(row.unverifiedPacked == nil)
+    #expect(try await storedBytes(db, row.id) == nil)
     #expect(calls.value.last == 1)
 }
 
@@ -324,7 +349,7 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
         row = try await onlyRow(db)
     }
     #expect(row.validated == true)
-    #expect(row.unverifiedPacked == nil)
+    #expect(try await storedBytes(db, row.id) == nil)
     await store.skipReceivedActions(strict: false)
 }
 
@@ -361,4 +386,106 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     let row = try await onlyRow(db)
     #expect(row.body == "for me")
     #expect(row.validated == true)
+}
+
+// MARK: - Final review fixes
+
+/// F1: the table every list and thread reload reads (`Message.fetchAll`) carries no bytes. The
+/// unverified message's packed bytes are in `unverifiedPackets` instead.
+@MainActor @Test func listReloadDoesNotLoadUnverifiedBytes() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let m = wireMessage(from: Identity(), to: me)
+    let store = makeUnverifiedStore(db, identity: me, badge: .ignored)
+    await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: false,
+                                                              method: .opportunistic)))))
+    await settle(store)
+    let columns = try await db.read { try $0.columns(in: "messages") }
+    #expect(!columns.contains { $0.name == "unverifiedPacked" })
+    #expect(!columns.contains { $0.type.uppercased() == "BLOB" }, "no column a reload could pull bytes from")
+    let row = try await onlyRow(db)
+    #expect(Mirror(reflecting: row).children.allSatisfy {
+        type(of: $0.value) != Data.self && type(of: $0.value) != Optional<Data>.self
+    }, "a fetched Message holds no bytes")
+    #expect(try await storedBytes(db, row.id) == m.packed)
+}
+
+/// F1: at most `maxStoredMessages` (100) unverified messages keep their bytes. The 101st is stored,
+/// unverified, with no bytes, so it keeps its marker and is never re-checked.
+@MainActor @Test func unverifiedStoreCapsAt100() async throws {
+    #expect(UnverifiedRecheck.maxStoredMessages == 100)
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let store = makeUnverifiedStore(db, identity: me, badge: .ignored)
+    var last: LXMessage?
+    for i in 0...UnverifiedRecheck.maxStoredMessages {
+        let m = wireMessage(from: Identity(), to: me, content: Data("spam \(i)".utf8))
+        await store.send(.node(.client(.delegate(.messageReceived(message: m, signatureValidated: false,
+                                                                  method: .opportunistic)))))
+        await settle(store)
+        last = m
+    }
+    #expect(try await db.read { try Message.fetchCount($0) } == 101)
+    #expect(try await packetCount(db) == 100)
+    let hashHex = try #require(last).hash.hexString
+    let over = try #require(try await db.read { try Message.where { $0.messageHash.eq(hashHex) }.fetchOne($0) })
+    #expect(over.validated == false)
+    #expect(try await storedBytes(db, over.id) == nil)
+}
+
+/// F1 migration: a row stored with `unverifiedPacked` before `moveUnverifiedPackedToSideTable` has
+/// its bytes in the side table afterwards, and the re-check still verifies it.
+@Test func migrationMovesUnverifiedBytesToSideTable() async throws {
+    let queue = try DatabaseQueue()
+    try AppDatabase.migrator().migrate(queue, upTo: "addUnverifiedPacked")
+    let me = Identity()
+    let sender = Identity()
+    let senderHex = LXMessage.deliveryHash(identityHash: sender.hash).hexString
+    let m = wireMessage(from: sender, to: me)
+    let id = UUID()
+    // Raw SQL: at this schema version `messages` still has the column `Message` no longer names.
+    try await queue.write { db in
+        try db.execute(sql: """
+            INSERT INTO messages (id, peerHex, isOutgoing, body, timestamp, status, validated,
+                                  messageHash, isTimerChange, isGroupEvent, unverifiedPacked)
+            VALUES (?, ?, 0, 'hi', ?, ?, 0, ?, 0, 0, ?)
+            """, arguments: [id.uuidString.lowercased(), senderHex, unverifiedT0, MessageStatus.received,
+                             m.hash.hexString, m.packed])
+    }
+    try AppDatabase.migrator().migrate(queue)
+    #expect(try await storedBytes(queue, id) == m.packed)
+    let result = try await UnverifiedRecheck.run(queue, attachmentStore: unverifiedFiles(),
+                                                 sourceHex: senderHex, identity: sender,
+                                                 deliveryHash: LXMessage.deliveryHash(identityHash: me.hash))
+    #expect(result.verified == 1)
+    #expect(try await onlyRow(queue).validated == true)
+    #expect(try await packetCount(queue) == 0)
+}
+
+/// F2: Bob is only in the learned table restored at launch (no live announce). The router is fed
+/// his identity with it, so his first message is validated on arrival and its name field applies.
+/// Without the feed it is stored unverified and the store-time re-check validates the row, but the
+/// withheld name is never applied: the name is what tells the two apart.
+@MainActor @Test func rehydratedContactIsValidatedOnFirstMessage() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let bob = Identity()
+    let bobHash = LXMessage.deliveryHash(identityHash: bob.hash)
+    let myHash = LXMessage.deliveryHash(identityHash: me.hash)
+    let linkID = Data(repeating: 0xB1, count: 16)
+    let store = makeUnverifiedStore(db, identity: me, badge: .ignored) {
+        $0.node.client.linkDestinations[linkID] = myHash   // Bob's link terminates on our delivery destination
+    }
+    await store.send(.rehydrateLearnedDestinations([bobHash: learned(bob)]))
+    await settle(store)
+
+    let first = LXMessage.create(source: bob, destinationHash: myHash, timestamp: 1699999999, title: Data(),
+                                 content: Data("hello".utf8), fields: NameWire.encode("Bob"))
+    await store.send(.node(.client(.endpoint(.delegate(.linkDataReceived(
+        linkID: linkID, data: first.packed, packetHash: Data(repeating: 0xC3, count: 32)))))))
+    await settle(store)
+    let row = try await onlyRow(db)
+    #expect(row.body == "hello")
+    #expect(row.validated == true)
+    #expect(try await db.read { try PeerProfile.fetch(bobHash.hexString, $0) }?.name == "Bob")
 }

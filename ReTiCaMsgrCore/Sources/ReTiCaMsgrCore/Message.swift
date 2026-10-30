@@ -71,10 +71,8 @@ public struct Message: Identifiable, Equatable, Sendable {
     /// Outgoing event lines that carry a message to the members: `GroupControl.roster` or
     /// `GroupControl.leave`. A deferred copy is rebuilt from this (amendment A3). nil on posts.
     public var groupControl: String?
-    /// Incoming only: the packed LXMF bytes of a row stored with `validated == false`, kept so
-    /// `UnverifiedRecheck` can check the signature once the sender's identity is known. nil once
-    /// verified, for oversized messages, and for rows stored before `addUnverifiedPacked`.
-    public var unverifiedPacked: Data?
+    // The packed bytes of an unverified row live in `UnverifiedPacket`, never here: every list and
+    // thread reload fetches whole rows (final review F1).
 
     public init(
         id: UUID,
@@ -106,8 +104,7 @@ public struct Message: Identifiable, Equatable, Sendable {
         groupHex: String? = nil,
         groupPostId: String? = nil,
         isGroupEvent: Bool = false,
-        groupControl: String? = nil,
-        unverifiedPacked: Data? = nil
+        groupControl: String? = nil
     ) {
         self.id = id
         self.peerHex = peerHex
@@ -139,7 +136,6 @@ public struct Message: Identifiable, Equatable, Sendable {
         self.groupPostId = groupPostId
         self.isGroupEvent = isGroupEvent
         self.groupControl = groupControl
-        self.unverifiedPacked = unverifiedPacked
     }
 }
 
