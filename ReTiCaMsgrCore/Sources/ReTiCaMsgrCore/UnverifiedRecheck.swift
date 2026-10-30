@@ -9,7 +9,8 @@ import SQLiteData
 /// with `validated = false` and its packed bytes; once that identity is learned (an announce or a
 /// path response), each such row is checked against it:
 /// - a good signature makes the row validated and drops the bytes;
-/// - a bad one, or bytes that no longer unpack, mean a forgery, so the row goes with its
+/// - a bad one, bytes addressed to someone else, or bytes that no longer unpack mean a forgery,
+///   so the row goes with its
 ///   attachment and reactions.
 ///
 /// Withheld fields (name, photo, expiry, group control, reactions) are not applied after the fact.
@@ -20,8 +21,14 @@ public enum UnverifiedRecheck {
 
     static let log = Logger(subsystem: "com.reticamsgr", category: "inbound")
 
+    /// `deliveryHash` is our own lxmf.delivery hash. A genuinely signed message addressed to someone
+    /// else is not ours to accept (security review Finding 2), so it is removed like a forgery; this
+    /// does not rely on the router having dropped it first. nil (not registered yet) leaves every
+    /// row alone for a later pass.
     public static func run(_ database: any DatabaseWriter, attachmentStore: AttachmentStore,
-                           sourceHex: String, identity: Identity) async throws -> (verified: Int, removed: [UUID]) {
+                           sourceHex: String, identity: Identity,
+                           deliveryHash: Data?) async throws -> (verified: Int, removed: [UUID]) {
+        guard let deliveryHash else { return (0, []) }
         let rows = try await database.read { db in
             try Message.where { $0.peerHex.eq(sourceHex) && !$0.validated && $0.unverifiedPacked.isNot(nil) }
                 .fetchAll(db)
@@ -32,8 +39,10 @@ public enum UnverifiedRecheck {
         for row in rows {
             guard let bytes = row.unverifiedPacked else { continue }
             // The bytes must also claim this sender: `peerHex` is the stored `sourceHash`, so a
-            // mismatch means the row and its bytes disagree, and it is treated as forged.
+            // mismatch means the row and its bytes disagree, and it is treated as forged. They
+            // must be addressed to us, too.
             if let message = LXMessage.unpack(bytes), message.sourceHash.hexString == sourceHex,
+               message.destinationHash == deliveryHash,
                message.validateSignature(source: identity) {
                 verifiedIds.append(row.id)
             } else {

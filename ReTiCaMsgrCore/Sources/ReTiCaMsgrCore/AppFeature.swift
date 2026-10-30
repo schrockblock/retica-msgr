@@ -2989,7 +2989,8 @@ public struct AppFeature {
                   let identity = state.node.client.endpoint.learned[hash]?.identity else { return nil }
             return (hex, identity)
         }
-        guard !checks.isEmpty else { return .none }
+        // Not registered yet: nothing can be checked against our address, so wait for a later pass.
+        guard !checks.isEmpty, let deliveryHash = state.node.client.deliveryDestinationHash else { return .none }
         let openPeer = state.openPeerHex
         return .run { [database, attachmentStore, attachmentCacheEvictor] send in
             let pending = Set(try await UnverifiedRecheck.pendingPeers(database))
@@ -2998,7 +2999,8 @@ public struct AppFeature {
             for check in checks where pending.contains(check.hex) {
                 // Every stored row is either verified or removed, so a pending sender always changes.
                 let result = try await UnverifiedRecheck.run(database, attachmentStore: attachmentStore,
-                                                            sourceHex: check.hex, identity: check.identity)
+                                                            sourceHex: check.hex, identity: check.identity,
+                                                            deliveryHash: deliveryHash)
                 changed = true
                 removed += result.removed
             }

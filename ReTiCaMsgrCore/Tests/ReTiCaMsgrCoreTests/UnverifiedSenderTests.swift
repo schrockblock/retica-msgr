@@ -61,8 +61,13 @@ private func learned(_ identity: Identity) -> LearnedDestination {
 
 @MainActor
 private func makeUnverifiedStore(_ db: any DatabaseWriter, identity: Identity, badge: BadgeClient,
-                                 clock: TestClock<Duration> = TestClock()) -> TestStoreOf<AppFeature> {
-    let store = TestStore(initialState: AppFeature.State(identity: identity)) {
+                                 clock: TestClock<Duration> = TestClock(),
+                                 configure: (inout AppFeature.State) -> Void = { _ in }) -> TestStoreOf<AppFeature> {
+    // Registered, as at runtime: the re-check compares each message's destination with this.
+    var initial = AppFeature.State(identity: identity)
+    initial.node.client.deliveryDestinationHash = LXMessage.deliveryHash(identityHash: identity.hash)
+    configure(&initial)
+    let store = TestStore(initialState: initial) {
         AppFeature()
     } withDependencies: {
         $0.defaultDatabase = db
@@ -133,7 +138,8 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     try await insert(db, [storedRow(senderHex, validated: false, packed: wireMessage(from: sender, to: me).packed)])
     #expect(try await unreadCount(db) == 0, "precondition: unverified, so not counted yet")
     let result = try await UnverifiedRecheck.run(db, attachmentStore: unverifiedFiles(),
-                                                 sourceHex: senderHex, identity: sender)
+                                                 sourceHex: senderHex, identity: sender,
+                                                 deliveryHash: LXMessage.deliveryHash(identityHash: me.hash))
     #expect(result.verified == 1)
     #expect(result.removed.isEmpty)
     let row = try await onlyRow(db)
@@ -159,7 +165,8 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     try await db.write { try Attachment.insert { attachment }.execute($0) }
     #expect(files.exists(path))
 
-    let result = try await UnverifiedRecheck.run(db, attachmentStore: files, sourceHex: senderHex, identity: sender)
+    let result = try await UnverifiedRecheck.run(db, attachmentStore: files, sourceHex: senderHex, identity: sender,
+                                                 deliveryHash: LXMessage.deliveryHash(identityHash: me.hash))
     #expect(result.verified == 0)
     #expect(result.removed == [attachment.id])
     #expect(try await db.read { try Message.fetchCount($0) } == 0)
@@ -218,9 +225,72 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     let legacy = storedRow(senderHex, validated: false, packed: nil)
     try await insert(db, [legacy])
     let result = try await UnverifiedRecheck.run(db, attachmentStore: unverifiedFiles(),
-                                                 sourceHex: senderHex, identity: sender)
+                                                 sourceHex: senderHex, identity: sender,
+                                                 deliveryHash: LXMessage.deliveryHash(identityHash: Identity().hash))
     #expect(result.verified == 0)
     #expect(result.removed.isEmpty)
     #expect(try await onlyRow(db) == legacy)
     #expect(try await unreadCount(db) == 0)
+}
+
+/// Review fix 1 (Finding 2 at the re-check): Bob's genuine signed message to Carol, stored
+/// unverified under Bob on Alice's device, is not ours. A valid signature must not promote it.
+@Test func recheckDoesNotValidateMessageForAnotherRecipient() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let alice = Identity()
+    let bob = Identity()
+    let carol = Identity()
+    let bobHex = LXMessage.deliveryHash(identityHash: bob.hash).hexString
+    let toCarol = wireMessage(from: bob, to: carol)
+    #expect(toCarol.validateSignature(source: bob), "precondition: the signature itself is genuine")
+    try await insert(db, [storedRow(bobHex, validated: false, packed: toCarol.packed)])
+    let result = try await UnverifiedRecheck.run(db, attachmentStore: unverifiedFiles(),
+                                                 sourceHex: bobHex, identity: bob,
+                                                 deliveryHash: LXMessage.deliveryHash(identityHash: alice.hash))
+    #expect(result.verified == 0)
+    #expect(try await db.read { try Message.fetchCount($0) } == 0)
+}
+
+/// The size limit is inclusive: exactly 262_144 packed bytes are kept, one more is not.
+/// Content n gives 114 + n packed bytes (96-byte header, payload with a bin32 body).
+@MainActor @Test func unverifiedSizeLimitBoundary() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let atLimit = wireMessage(from: sender, to: me, content: Data(repeating: 0x61, count: 262_030))
+    let overLimit = wireMessage(from: sender, to: me, content: Data(repeating: 0x62, count: 262_031))
+    #expect(atLimit.packed.count == UnverifiedRecheck.maxStoredBytes)
+    #expect(overLimit.packed.count == UnverifiedRecheck.maxStoredBytes + 1)
+    let store = makeUnverifiedStore(db, identity: me, badge: .ignored)
+    await store.send(.node(.client(.delegate(.messageReceived(message: atLimit, signatureValidated: false,
+                                                              method: .direct)))))
+    await settle(store)
+    await store.send(.node(.client(.delegate(.messageReceived(message: overLimit, signatureValidated: false,
+                                                              method: .direct)))))
+    await settle(store)
+    let rows = try await db.read { try Message.all.fetchAll($0) }
+    let byHash = Dictionary(uniqueKeysWithValues: rows.map { ($0.messageHash, $0) })
+    #expect(byHash[atLimit.hash.hexString]?.unverifiedPacked == atLimit.packed)
+    let over = try #require(byHash[overLimit.hash.hexString])
+    #expect(over.unverifiedPacked == nil)
+}
+
+/// Settled detail 4: the transport already holds the sender's identity, but the router reported the
+/// message unvalidated. The row is checked right after storing and ends validated.
+@MainActor @Test func storeTimeRecheckValidatesKnownSender() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let sender = Identity()
+    let senderHash = LXMessage.deliveryHash(identityHash: sender.hash)
+    let calls = LockIsolated<[Int]>([])
+    let store = makeUnverifiedStore(db, identity: me, badge: .recording(into: calls)) {
+        $0.node.client.endpoint.transport.learned[senderHash] = learned(sender)
+    }
+    await store.send(.node(.client(.delegate(.messageReceived(message: wireMessage(from: sender, to: me),
+                                                              signatureValidated: false, method: .opportunistic)))))
+    await settle(store)
+    let row = try await onlyRow(db)
+    #expect(row.validated == true)
+    #expect(row.unverifiedPacked == nil)
+    #expect(calls.value.last == 1)
 }
