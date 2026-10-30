@@ -7,6 +7,8 @@ import SQLiteData
 /// their conversation was last read. Timer-change and group-event lines never count, and neither
 /// does anything from a blocked sender, so blocking someone drops their unread messages at once.
 /// Group posts count under the group's key. For incoming rows `timestamp` is arrival time.
+/// Unverified rows (`validated = 0`) never count (spec 2026-10-28): a forged sender must not
+/// raise the badge. They start counting if the re-check verifies them.
 public enum UnreadCount {
     public static func count(_ db: GRDB.Database) throws -> Int {
         try Int.fetchOne(db, sql: """
@@ -14,6 +16,7 @@ public enum UnreadCount {
             LEFT JOIN conversationReads r ON r.key = lower(COALESCE(m.groupHex, m.peerHex))
             LEFT JOIN blockedPeers b ON b.peerHex = lower(m.peerHex)
             WHERE m.isOutgoing = 0 AND m.isTimerChange = 0 AND m.isGroupEvent = 0
+              AND m.validated = 1
               AND b.peerHex IS NULL
               AND (r.readAt IS NULL OR m.timestamp > r.readAt)
             """) ?? 0
@@ -28,6 +31,7 @@ public enum UnreadCount {
             LEFT JOIN conversationReads r ON r.key = lower(COALESCE(m.groupHex, m.peerHex))
             LEFT JOIN blockedPeers b ON b.peerHex = lower(m.peerHex)
             WHERE m.isOutgoing = 0 AND m.isTimerChange = 0 AND m.isGroupEvent = 0
+              AND m.validated = 1
               AND b.peerHex IS NULL
               AND (r.readAt IS NULL OR m.timestamp > r.readAt)
             GROUP BY convoKey
