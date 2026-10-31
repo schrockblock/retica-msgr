@@ -6,6 +6,7 @@ import AppKit
 #endif
 #if os(macOS)
 import ServiceManagement
+import ComposableArchitecture
 #endif
 import UserNotifications
 import ReTiCAPushCore
@@ -110,6 +111,14 @@ extension AppDelegate: UIApplicationDelegate {
 extension AppDelegate: NSApplicationDelegate {
     /// Before launch finishes, so a notification click that launched the app reaches the delegate.
     func applicationWillFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        // ReTiCA and MeshtasticKit build for macOS 13, so their `@ObservableState` accessors compile
+        // against the pre-Observation overload, which runs Perception's debug check ("accessed from a
+        // view but is not being tracked") on every read from a view. On this macOS 26 app that is a
+        // false alarm: the same read also registers with native Observation, which SwiftUI tracks.
+        // Xcode stops on each one, which looks like a crash. iOS 17+ never runs the check.
+        isPerceptionCheckingEnabled = false
+        #endif
         UNUserNotificationCenter.current().delegate = self
         launchedAsLoginItem = LaunchAtLogin.launchEventIsLoginItem()
     }

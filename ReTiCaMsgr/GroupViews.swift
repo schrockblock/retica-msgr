@@ -21,7 +21,7 @@ private struct AnnouncedPeer: Identifiable {
 }
 
 private func announcedPeers(_ store: StoreOf<AppFeature>, excluding: Set<String>) -> [AnnouncedPeer] {
-    learnedPeers(store)
+    store.state.node.client.learnedPeers
         .map { hash, peer in AnnouncedPeer(hex: groupHex(hash), name: peer.displayName) }
         .filter { !excluding.contains($0.hex) }
         .sorted { ($0.name ?? "~") < ($1.name ?? "~") }
