@@ -35,7 +35,8 @@ enum LaunchAtLogin {
     }
 }
 
-/// The menu bar icon: a speech bubble, with a red dot while anything is unread.
+/// The menu bar icon: the app icon's speech bubble with its star cut out, with a red dot while
+/// anything is unread.
 enum MenuBarIcon {
     static func hasUnread(_ counts: [String: Int]) -> Bool {
         counts.values.contains { $0 > 0 }
@@ -43,7 +44,7 @@ enum MenuBarIcon {
 
     static func image(hasUnread: Bool) -> NSImage {
         let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
-        let glyph = NSImage(systemSymbolName: "bubble.left.fill", accessibilityDescription: "ReTiCaMsgr")!
+        let glyph = NSImage(systemSymbolName: "star.bubble.fill", accessibilityDescription: "ReTiCaMsgr")!
             .withSymbolConfiguration(config)!
         guard hasUnread else {
             // A template follows the menu bar's light or dark look by itself.
