@@ -66,6 +66,9 @@ struct SettingsView: View {
                 profileSection
                 privacySection
                 notificationsSection
+                #if os(macOS)
+                LaunchAtLoginSection()
+                #endif
                 contactsSection
                 networkSections
             }

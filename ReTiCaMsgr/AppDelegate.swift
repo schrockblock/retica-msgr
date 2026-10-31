@@ -4,6 +4,9 @@ import UIKit
 #if canImport(AppKit)
 import AppKit
 #endif
+#if os(macOS)
+import ServiceManagement
+#endif
 import UserNotifications
 import ReTiCAPushCore
 import ReTiCaMsgrCore
@@ -12,6 +15,10 @@ import ReTiCaMsgrCore
 /// token, and handles notification presentation and taps (spec 2026-10-01 §3.2).
 final class AppDelegate: NSObject, UNUserNotificationCenterDelegate {
     let runtime = AppRuntime(environment: .forProcess())
+    #if os(macOS)
+    /// Set when the system opened the app at login; the main window closes itself once and clears it.
+    var launchedAsLoginItem = false
+    #endif
 
     // MARK: Presentation and taps
 
@@ -104,6 +111,21 @@ extension AppDelegate: NSApplicationDelegate {
     /// Before launch finishes, so a notification click that launched the app reaches the delegate.
     func applicationWillFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
+        launchedAsLoginItem = LaunchAtLogin.launchEventIsLoginItem()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Connect now, window or not: a login launch starts in the menu bar only.
+        runtime.build()
+        // Hosted tests run inside this app; they must never add it to the login items.
+        if !AppRuntime.Environment.isTestHost {
+            LaunchAtLogin.registerOnFirstRun(defaults: .standard, service: SMAppService.mainApp)
+        }
+    }
+
+    /// Closing the window leaves the app in the menu bar, not quit.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     // MARK: Token

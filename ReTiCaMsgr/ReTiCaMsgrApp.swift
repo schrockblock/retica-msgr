@@ -16,14 +16,11 @@ struct ReTiCaMsgrApp: App {
     }
 
     var body: some Scene {
+        #if os(iOS)
         WindowGroup {
             RootView(runtime: delegate.runtime)
                 .task { delegate.runtime.build() }
         }
-        #if os(macOS)
-        // One window: every window would share the one `StoreOf<AppFeature>`, so ⌘N opens none.
-        .commands { CommandGroup(replacing: .newItem) {} }
-        #endif
         // iOS suspends the app in the background and the TCP socket does not survive it. Nothing
         // else re-dials: `.task` runs once per view lifetime, and the interface's reconnect backoff
         // cannot run while the process is suspended. Without this the only way back was to kill the
@@ -36,18 +33,29 @@ struct ReTiCaMsgrApp: App {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active: delegate.runtime.foregrounded()
-            // A Mac app is never suspended, so its sockets stay open: no `backgrounded()` there.
-            // It still has to say nobody is looking when hidden or behind another app (arrivals into
-            // the open chat are not viewed, "Message not sent" posts). `.foregrounded` on `.active`
-            // already sets the flag back and views the open chat, so `activityChanged(true)` is
-            // not sent as well.
-            #if os(iOS)
             case .background: delegate.runtime.backgrounded()
-            #elseif os(macOS)
-            case .inactive, .background: delegate.runtime.activityChanged(isActive: false)
-            #endif
             default: break
             }
         }
+        #elseif os(macOS)
+        // One window: every window would share the one `StoreOf<AppFeature>`, and `Window` is single
+        // by nature; ⌘N opens none. The store is built at launch by the app delegate as well as
+        // here: a login launch closes this window straight away and must stay connected regardless.
+        // The window's own scene phase drives foreground and activity (`MainWindowLifecycle`): the
+        // app-wide one would also turn active when only the menu bar menu opens.
+        Window("ReTiCaMsgr", id: mainWindowID) {
+            RootView(runtime: delegate.runtime)
+                .task { delegate.runtime.build() }
+                .modifier(MainWindowLifecycle(delegate: delegate))
+        }
+        .commands { CommandGroup(replacing: .newItem) {} }
+
+        // The app lives here while its window is closed (brief 2026-10-31).
+        MenuBarExtra {
+            MenuBarMenu()
+        } label: {
+            MenuBarLabel()
+        }
+        #endif
     }
 }
