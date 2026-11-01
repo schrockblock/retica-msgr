@@ -2709,15 +2709,19 @@ public struct AppFeature {
                 // `.pathLearned`, so after a cold start the first message from each contact arrived
                 // unvalidated and lost its validated-only fields. Feed it the rehydrated
                 // lxmf.delivery identities too (the same destination check LXMFNode's pathLearned
-                // arm uses), after the transport has them.
-                let identities: [Effect<Action>] = destinations
-                    .filter { $0.key == LXMessage.deliveryHash(identityHash: $0.value.identity.hash) }
-                    .map { .send(.node(.client(.router(.learnedIdentity(destinationHash: $0.key,
-                                                                        identity: $0.value.identity))))) }
+                // arm uses).
+                //
+                // Written here in one pass, not as one `.learnedIdentity` send per identity (all that
+                // action does is this write): thousands of chained sends nested deep enough to
+                // overflow the main thread's stack at launch (2026-11-01, a 24,603-row table). The
+                // identity a delivery hash names is fixed, so landing before the transport's copy
+                // changes nothing.
+                for (hash, learned) in destinations
+                where hash == LXMessage.deliveryHash(identityHash: learned.identity.hash) {
+                    state.node.client.router.knownIdentities[hash] = learned.identity
+                }
                 return .merge(
-                    .concatenate(
-                        [.send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations(destinations))))))]
-                            + identities),
+                    .send(.node(.client(.endpoint(.transport(.rehydrateLearnedDestinations(destinations)))))),
                     groupDispatch
                 )
 
