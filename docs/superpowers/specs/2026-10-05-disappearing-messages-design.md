@@ -1,6 +1,6 @@
 # Disappearing messages — design
 
-**Date:** 2026-10-05. **Scope:** ReTiCaMsgr app only (Core package plus app UI); no ReTiCA
+**Date:** 2026-10-05. **Scope:** ReTiCAMsgr app only (Core package plus app UI); no ReTiCA
 changes. **Follows:** the decision record `docs/superpowers/2026-10-02-groups-vs-disappearing-messages.md`,
 which chose this feature over group chats and listed five open questions. All five are answered
 below.
@@ -9,7 +9,7 @@ below.
 
 Give a conversation a shared timer, in the style of Signal and WhatsApp, after which each message
 is deleted from this device: the row, its attachment file and export copies, and its reactions.
-The timer is carried on the wire in a custom LXMF field so two ReTiCaMsgr peers behave the same
+The timer is carried on the wire in a custom LXMF field so two ReTiCAMsgr peers behave the same
 way; other LXMF clients ignore it and keep the message, and the UI says so.
 
 ## Decisions taken while brainstorming
@@ -61,7 +61,7 @@ Every outgoing message in a conversation with an active timer carries field 0xFD
   Disappearing messages turned off
   ```
 
-  Sideband, NomadNet and Retichat show that sentence; ReTiCaMsgr renders it as a system line.
+  Sideband, NomadNet and Retichat show that sentence; ReTiCAMsgr renders it as a system line.
 - **Reactions** are content-less messages that are never stored, so they carry no field.
 
 ### `ExpiryWire` (Core, pure)
@@ -181,7 +181,7 @@ themselves; an Info sheet open on a purged row already shows "Message unavailabl
 ## 4. UI
 
 - **Toolbar menu.** ChatView's navigation bar gets a `Menu` with a timer glyph listing the
-  `ExpiryPreset` cases with a checkmark on the current value, and a footer line "Only ReTiCaMsgr
+  `ExpiryPreset` cases with a checkmark on the current value, and a footer line "Only ReTiCAMsgr
   peers honour this. Other apps keep messages." Disabled while the peer is unreachable.
 - **Title indicator.** With a timer active, a small timer glyph and the duration label sit next to
   the peer name.

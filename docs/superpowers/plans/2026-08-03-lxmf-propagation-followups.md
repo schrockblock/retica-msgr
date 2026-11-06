@@ -10,16 +10,16 @@
 
 ## Global Constraints
 
-- **Two repos.** Tasks 1–5 = **ReTiCA pods repo** `/Users/ell/development/ios/pods/ReTiCA` (`git -C /Users/ell/development/ios/pods/ReTiCA`). Task 6 = **app repo** `/Users/ell/development/ios/apps/ReTiCaMsgr` (`git -C /Users/ell/development/ios/apps/ReTiCaMsgr`). Both commit directly to `main`.
+- **Two repos.** Tasks 1–5 = **ReTiCA pods repo** `/Users/ell/development/ios/pods/ReTiCA` (`git -C /Users/ell/development/ios/pods/ReTiCA`). Task 6 = **app repo** `/Users/ell/development/ios/apps/ReTiCAMsgr` (`git -C /Users/ell/development/ios/apps/ReTiCAMsgr`). Both commit directly to `main`.
 - **Commit message trailers, verbatim, at COLUMN 0 (no leading whitespace):**
   ```
   Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_01AtkFmSeVgRBk3zwfDCqUwy
   ```
-  Commit with `git commit -F <file>` (NEVER `-m` — trailers contain `;`); write the message to a file under `/tmp/ReTiCaMsgr/` via an editor tool. After each commit verify: `git -C <repo> log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'` must print the URL; if empty, `git commit --amend -F <file>`.
+  Commit with `git commit -F <file>` (NEVER `-m` — trailers contain `;`); write the message to a file under `/tmp/ReTiCAMsgr/` via an editor tool. After each commit verify: `git -C <repo> log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'` must print the URL; if empty, `git commit --amend -F <file>`.
 - **No compound shell commands:** one command per invocation; no `&&`/`||`/`;`/pipes/`xargs`/inline interpreter scripts. A single `>` redirect IS allowed. Edit files with editor tools, never `echo`/heredoc.
 - **Three-step mutation verification for every new/changed test.** Where two tests assert opposite branches, use separate mutation passes (revert between).
-- **Test commands:** ReTiCA — `swift test --package-path /Users/ell/development/ios/pods/ReTiCA` (large; first build slow; `--filter <name>` for one test). App — `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`.
+- **Test commands:** ReTiCA — `swift test --package-path /Users/ell/development/ios/pods/ReTiCA` (large; first build slow; `--filter <name>` for one test). App — `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`.
 - **`.off` TestStore harness (verified this session):** default new TCA tests to `store.exhaustivity = .off`; assert an action did NOT fire by asserting resulting state, using `await store.finish()` + `await store.skipReceivedActions(strict: false)` before the assertion. `TestStore.state` is get-only — arrange initial state at construction.
 - **GOTCHA:** after a change to msgpack usage or LinkSession wire code, if a later unrelated test flakes with signal-11/10, run `swift package clean` once.
 - **Reference wire format — link data-packet PROOF** (from RNS `Link.prove_packet`/`Packet.validate_link_proof`): a `.proof` packet, `destinationType = .link`, `context = .none`, `contextFlag = false`, `destinationHash = linkID`, **payload = `packetHash(32) ‖ ed25519_signature(64)` = 96 bytes, NOT encrypted**. `packetHash` is the full 32-byte SHA-256 (`Packet.packetHash`) of the DATA packet being proved. The signature is the link peer's Ed25519 signature over that 32-byte hash. The sender matches an inbound proof by `proof.payload.prefix(32) == sentPacket.packetHash` and validates `peerIdentity.validate(signature: proof.payload.suffix(64), message: packetHash)` where, for an initiator, `peerIdentity == state.destinationIdentity` (its Ed25519 half).
@@ -363,7 +363,7 @@ Subject: `refactor: shared LXMFPropagation.strippedCore for the 3 stamp-strip si
 
 ## Task 6: App test tightenings
 
-**Repo:** app. **Files:** Modify `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`.
+**Repo:** app. **Files:** Modify `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`.
 
 - [ ] **Step 1: Add the two assertions**
 
@@ -378,7 +378,7 @@ await store.receive { if case .conversationsLoaded = $0 { return true }; return 
 
 - [ ] **Step 2: Run to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore` → all pass (these actions are already dispatched by the reducer; the assertions just lock them in).
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore` → all pass (these actions are already dispatched by the reducer; the assertions just lock them in).
 
 - [ ] **Step 3: Mutation-verify**
 

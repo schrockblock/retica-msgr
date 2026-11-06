@@ -12,20 +12,20 @@
 
 ## Global Constraints
 
-- **Where:** all work happens ONLY in the app worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-disappearing` on branch `feat/disappearing-messages`, cut from app `main` in Task 0. `APP` below means that path; `CORE` means `APP/ReTiCaMsgrCore`. Never build, test or run git against the main checkout `/Users/ell/development/ios/apps/ReTiCaMsgr` after Task 0's `worktree add`, and never touch `/Users/ell/development/ios/pods/ReTiCA` (read-only path dependency; `CORE/Package.swift`'s `../../../pods/ReTiCA` resolves from the worktree unchanged).
-- **Task 0 is a gate:** the baseline core suite `swift test --package-path CORE` must be green and `xcodebuild -project APP/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build` must succeed before Task 1. Record the baseline test count in `/tmp/ReTiCaMsgr/exp-baseline.txt`.
-- **Commits** go on `feat/disappearing-messages` only. Stage explicit paths (`git -C APP add <path> ...`, never `-A`/`.`). Never stage `ReTiCaMsgr.xcodeproj/xcuserdata/**`, `ReTiCaMsgrCore/.swiftpm/**` or `Package.resolved`. Each task writes its message to its OWN file `/tmp/ReTiCaMsgr/msg-exp-task-N.txt` with the Write tool, then `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-N.txt`. Message = `feat:`/`fix:`/`test:`/`docs:` subject, blank line, body, blank line, then exactly these two lines at column 0 (the first names the model that wrote the commit):
+- **Where:** all work happens ONLY in the app worktree `/Users/ell/development/ios/apps/ReTiCAMsgr-disappearing` on branch `feat/disappearing-messages`, cut from app `main` in Task 0. `APP` below means that path; `CORE` means `APP/ReTiCAMsgrCore`. Never build, test or run git against the main checkout `/Users/ell/development/ios/apps/ReTiCAMsgr` after Task 0's `worktree add`, and never touch `/Users/ell/development/ios/pods/ReTiCA` (read-only path dependency; `CORE/Package.swift`'s `../../../pods/ReTiCA` resolves from the worktree unchanged).
+- **Task 0 is a gate:** the baseline core suite `swift test --package-path CORE` must be green and `xcodebuild -project APP/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build` must succeed before Task 1. Record the baseline test count in `/tmp/ReTiCAMsgr/exp-baseline.txt`.
+- **Commits** go on `feat/disappearing-messages` only. Stage explicit paths (`git -C APP add <path> ...`, never `-A`/`.`). Never stage `ReTiCAMsgr.xcodeproj/xcuserdata/**`, `ReTiCAMsgrCore/.swiftpm/**` or `Package.resolved`. Each task writes its message to its OWN file `/tmp/ReTiCAMsgr/msg-exp-task-N.txt` with the Write tool, then `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-N.txt`. Message = `feat:`/`fix:`/`test:`/`docs:` subject, blank line, body, blank line, then exactly these two lines at column 0 (the first names the model that wrote the commit):
   `Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>`
   `Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1`
   No semicolons anywhere in a commit message.
-- **Shell:** one command per Bash call. No `|`, `&&`, `||`, `;`, `$(...)`, `xargs`, no inline interpreters (`python -c`, heredocs into an interpreter). Scripts go in files under `/tmp/ReTiCaMsgr/` (`mkdir -p /tmp/ReTiCaMsgr` if missing). Redirecting one command's output to a file (`cmd > /tmp/ReTiCaMsgr/x.log 2>&1`) is allowed.
+- **Shell:** one command per Bash call. No `|`, `&&`, `||`, `;`, `$(...)`, `xargs`, no inline interpreters (`python -c`, heredocs into an interpreter). Scripts go in files under `/tmp/ReTiCAMsgr/` (`mkdir -p /tmp/ReTiCAMsgr` if missing). Redirecting one command's output to a file (`cmd > /tmp/ReTiCAMsgr/x.log 2>&1`) is allowed.
 - **Tests:** `swift test --package-path CORE --filter <prefix>` runs one task's tests; the full core suite is `swift test --package-path CORE`. Known flake: `deliveryFailedMarksFailedAndReloads` can fail when run ALONE via `--filter`; it passes in a full run. Never run `swift test` and `xcodebuild` at the same time on the same package. Filtering still compiles every target, so the whole package must compile at the end of every task. Every new test name starts with its task's prefix — `expiryTable` (T1), `expiryWire` (T2), `expiryPreset` (T3), `expiryPurge` (T4), `expirySend` (T5), `expiryReceive` (T6), `expiryTimer` (T7), `expiryInfo` (T8). None of these prefixes matches an existing test name (checked: the only existing names containing "expir" are `expiredLearnedDestinationsArePrunedAtLaunch` and `attachTransferInboundEntryExpiresAfterSilence`, neither of which contains `expiry`).
 - **Mutation verification is mandatory** for every task with tests: (a) run the task's filter, all GREEN; (b) apply the task's listed mutation batch to production code, run the filter once, confirm EVERY listed test is RED — where the table says "sub-batch", run the sub-batches separately so no mutation masks another; (c) revert every mutation BY HAND with the Edit tool (never `git checkout -- <file>`), confirm `git -C APP diff` shows only the task's intended changes, run again, all GREEN. If a test survives its mutation, fix the test and restart at (a). Tests edited only mechanically to compile against a new shape are exempt.
 - **TCA TestStore facts these tests rely on:** under `exhaustivity = .off`, `store.state` reflects effect-delivered actions only after `receive` or `await store.skipReceivedActions(strict: false)`; every `send` clears not-yet-received actions, so a `receive` for something an earlier `send` produced must come before the next `send`; absence claims go `.on` + an exhaustive no-op probe send; file-scope `let` constants of TCA `Action` types need `@MainActor`. `\.date` is frozen at 1700000000 (`infoT0`) in `makeStore`; move it mid-test with `store.dependencies.date = .constant(infoT0.addingTimeInterval(30))` BEFORE advancing the `TestClock`, or a purge will see nothing due. The reducer calls `UUID()` directly.
 - **Test style** (match `AppFeatureTests.swift`): free `@MainActor @Test func` functions, `makeStore(db, identity:)` with `exhaustivity = .off`, `sendAndSettle` + `skipReceivedActions(strict: false)` before reading rows, `#expect` with literals. New AppFeature tests go in `AppFeatureTests.swift` so they can use its private helpers (`makeStore`, `seed`, `msg`, `uuid`, `peerA`, `peerB`, `infoT0`, `sendAndSettle`, `wireMessage`, `receiveAndFetch`, `pendingImage`, `attachTempStore`, `rowsByHashAndDirection`).
-- **`Attachment` vs `Testing.Attachment`:** every TEST file that names the model type adds `import struct ReTiCaMsgrCore.Attachment` after its imports (as `AttachmentStoreTests.swift` does). Production code is unaffected.
-- **Constants (from the spec and amendments):** `ExpiryWire.fieldCustomMeta = 0xFD`, `secondsKey = "reticamsgr.expiry"`, `changeKey = "reticamsgr.expiry.change"`, `maxSeconds = 2_419_200`; presets Off/30 s/5 min/1 h/8 h/1 day/1 week/4 weeks; announcement bodies `Disappearing messages set to <label>` / `Disappearing messages turned off`; peer line `<name> set disappearing messages to <label>` / `<name> turned disappearing messages off`, name falling back to `ReplyPreview.them` ("Them"); caveat `Only ReTiCaMsgr peers honour this. Other apps keep messages.`; migration name `addDisappearingMessages`; table `conversationSettings`.
-- **App target:** new SwiftUI files go in `APP/ReTiCaMsgr/` (synchronized folders, no pbxproj edit). The app build must succeed at the end of Task 9; every core task must leave the package compiling, which the filtered test runs prove.
+- **`Attachment` vs `Testing.Attachment`:** every TEST file that names the model type adds `import struct ReTiCAMsgrCore.Attachment` after its imports (as `AttachmentStoreTests.swift` does). Production code is unaffected.
+- **Constants (from the spec and amendments):** `ExpiryWire.fieldCustomMeta = 0xFD`, `secondsKey = "reticamsgr.expiry"`, `changeKey = "reticamsgr.expiry.change"`, `maxSeconds = 2_419_200`; presets Off/30 s/5 min/1 h/8 h/1 day/1 week/4 weeks; announcement bodies `Disappearing messages set to <label>` / `Disappearing messages turned off`; peer line `<name> set disappearing messages to <label>` / `<name> turned disappearing messages off`, name falling back to `ReplyPreview.them` ("Them"); caveat `Only ReTiCAMsgr peers honour this. Other apps keep messages.`; migration name `addDisappearingMessages`; table `conversationSettings`.
+- **App target:** new SwiftUI files go in `APP/ReTiCAMsgr/` (synchronized folders, no pbxproj edit). The app build must succeed at the end of Task 9; every core task must leave the package compiling, which the filtered test runs prove.
 
 ## Review Focus
 
@@ -45,26 +45,26 @@ Inputs the spec implies but its own examples don't exercise, most likely to bite
 
 - [x] **Step 1: Create the worktree from app main**
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr worktree add /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing -b feat/disappearing-messages main`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr worktree add /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing -b feat/disappearing-messages main`
 Expected: a new worktree at `APP` on `feat/disappearing-messages`, HEAD = app main (504bb42 or later).
 
 - [x] **Step 2: Temp directory**
 
-Run: `mkdir -p /tmp/ReTiCaMsgr`
+Run: `mkdir -p /tmp/ReTiCAMsgr`
 
 - [x] **Step 3: Baseline core suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/exp-t0-core.log 2>&1`
-Expected: the log ends with `Test run with N tests in 0 suites passed`. Write `N` to `/tmp/ReTiCaMsgr/exp-baseline.txt` with the Write tool.
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/exp-t0-core.log 2>&1`
+Expected: the log ends with `Test run with N tests in 0 suites passed`. Write `N` to `/tmp/ReTiCAMsgr/exp-baseline.txt` with the Write tool.
 
 - [x] **Step 4: Baseline app build**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCaMsgr/exp-t0-xcodebuild.log 2>&1`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCAMsgr/exp-t0-xcodebuild.log 2>&1`
 Expected: `** BUILD SUCCEEDED **` at the end of the log.
 
 - [x] **Step 5: Restore any files Xcode rewrote**
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing status --short`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing status --short`
 Expected: empty. If the two `xcschememanagement.plist` files show as modified, restore them with `git -C APP checkout -- <path>` (the ONLY `git checkout --` allowed in this plan, only here and in Task 9 Step 8). Nothing to commit.
 
 ---
@@ -72,17 +72,17 @@ Expected: empty. If the two `xcschememanagement.plist` files show as modified, r
 ### Task 1: Schema, `Message` columns, `ConversationSetting`
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/Database.swift` (new migration after `createAttachments`)
-- Modify: `CORE/Sources/ReTiCaMsgrCore/Message.swift` (three properties after `propagationRefused`)
-- Create: `CORE/Sources/ReTiCaMsgrCore/ConversationSetting.swift`
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift` (append)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/Database.swift` (new migration after `createAttachments`)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/Message.swift` (three properties after `propagationRefused`)
+- Create: `CORE/Sources/ReTiCAMsgrCore/ConversationSetting.swift`
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift` (append)
 
 **Interfaces:**
 - Produces: `Message.expirySeconds: Int?`, `Message.expiresAt: Date?`, `Message.isTimerChange: Bool` (init parameters after `propagationRefused`, defaults `nil`, `nil`, `false`). `ConversationSetting` (`@Table`): `peerHex: String`, `expirySeconds: Int?`, `updatedAt: Date`; `static func expiry(for peerHex: String, _ db: GRDB.Database) throws -> Int?` (nil for no row, NULL or 0); `static func set(_ peerHex: String, seconds: Int, at now: Date, _ db: GRDB.Database) throws` (upsert; 0 stored as NULL). Migration `addDisappearingMessages`.
 
 - [x] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift`:
 
 ```swift
 
@@ -171,12 +171,12 @@ private func expiryTableMessage(_ id: String, hash: String) -> Message {
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryTable > /tmp/ReTiCaMsgr/exp-t1-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryTable > /tmp/ReTiCAMsgr/exp-t1-red.log 2>&1`
 Expected: compile errors (`expirySeconds`, `ConversationSetting` unknown).
 
 - [x] **Step 3: Add the migration**
 
-In `CORE/Sources/ReTiCaMsgrCore/Database.swift`, after the `createAttachments` migration's closing `}` and before `return m`:
+In `CORE/Sources/ReTiCAMsgrCore/Database.swift`, after the `createAttachments` migration's closing `}` and before `return m`:
 
 ```swift
         m.registerMigration("addDisappearingMessages") { db in
@@ -202,7 +202,7 @@ In `CORE/Sources/ReTiCaMsgrCore/Database.swift`, after the `createAttachments` m
 
 - [x] **Step 4: Add the `Message` properties**
 
-In `CORE/Sources/ReTiCaMsgrCore/Message.swift`, after `public var propagationRefused: String?`:
+In `CORE/Sources/ReTiCAMsgrCore/Message.swift`, after `public var propagationRefused: String?`:
 
 ```swift
     /// Disappearing messages: the duration in seconds carried in FIELD_CUSTOM_META (0xFD).
@@ -277,7 +277,7 @@ public struct ConversationSetting: Equatable, Sendable {
 
 - [x] **Step 6: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryTable > /tmp/ReTiCaMsgr/exp-t1-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryTable > /tmp/ReTiCAMsgr/exp-t1-green.log 2>&1`
 Expected: 5 tests passed.
 
 - [x] **Step 7: Mutation verification**
@@ -294,7 +294,7 @@ Apply all five, run the filter once, confirm all five RED. Revert by hand, run a
 
 - [x] **Step 8: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-exp-task-1.txt`:
+Write `/tmp/ReTiCAMsgr/msg-exp-task-1.txt`:
 
 ```
 feat: disappearing-messages schema and conversation settings
@@ -308,29 +308,29 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ConversationSetting.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-1.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ConversationSetting.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-1.txt`
 
 ---
 
 ### Task 2: `ExpiryWire` codec
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/ExpiryWire.swift`
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/ExpiryWireTests.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/ExpiryWire.swift`
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/ExpiryWireTests.swift`
 
 **Interfaces:**
 - Produces: `ExpiryWire.fieldCustomMeta = 0xFD`, `secondsKey`, `changeKey`, `maxSeconds = 2_419_200`; `struct Decoded: Equatable, Sendable { seconds: Int; isChange: Bool }`; `static func clamp(_ seconds: Int) -> Int` (0...maxSeconds); `static func encode(seconds: Int) -> [MsgPackValue.IntPair]` (one 0xFD field, map with `secondsKey` only); `static func encodeChange(seconds: Int) -> [MsgPackValue.IntPair]` (adds `changeKey: true`); `static func decode(_ fields: [MsgPackValue.IntPair]) -> Decoded?` (nil = no expiry).
 
 - [x] **Step 1: Write the failing tests**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/ExpiryWireTests.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/ExpiryWireTests.swift`:
 
 ```swift
 import Testing
 import Foundation
 import ReTiCA
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 /// A 0xFD field built by hand, so these tests pin the wire shape rather than `encode`.
 private func meta(_ value: MsgPackValue) -> [MsgPackValue.IntPair] { [.init(0xFD, value)] }
@@ -411,7 +411,7 @@ private func meta(_ value: MsgPackValue) -> [MsgPackValue.IntPair] { [.init(0xFD
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryWire > /tmp/ReTiCaMsgr/exp-t2-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryWire > /tmp/ReTiCAMsgr/exp-t2-red.log 2>&1`
 Expected: compile error, `ExpiryWire` unknown.
 
 - [x] **Step 3: Create `ExpiryWire.swift`**
@@ -495,7 +495,7 @@ public enum ExpiryWire {
 
 - [x] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryWire > /tmp/ReTiCaMsgr/exp-t2-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryWire > /tmp/ReTiCAMsgr/exp-t2-green.log 2>&1`
 Expected: 7 tests passed.
 
 - [x] **Step 5: Mutation verification**
@@ -514,18 +514,18 @@ Run sub-batch A (first six) once, all six RED; revert; run sub-batch B, RED; rev
 
 - [x] **Step 6: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-exp-task-2.txt` (subject `feat: ExpiryWire codec for FIELD_CUSTOM_META 0xFD`, body naming the keys, the cap, the change flag and the lenient decode, then the two trailer lines).
+Write `/tmp/ReTiCAMsgr/msg-exp-task-2.txt` (subject `feat: ExpiryWire codec for FIELD_CUSTOM_META 0xFD`, body naming the keys, the cap, the change flag and the lenient decode, then the two trailer lines).
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ExpiryWire.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ExpiryWireTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-2.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ExpiryWire.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ExpiryWireTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-2.txt`
 
 ---
 
 ### Task 3: `ExpiryPreset` labels and announcement text
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/ExpiryPreset.swift`
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/ExpiryPresetTests.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/ExpiryPreset.swift`
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/ExpiryPresetTests.swift`
 
 **Interfaces:**
 - Consumes: `ReplyPreview.them` ("Them", existing).
@@ -533,11 +533,11 @@ Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-2.txt`
 
 - [x] **Step 1: Write the failing tests**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/ExpiryPresetTests.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/ExpiryPresetTests.swift`:
 
 ```swift
 import Testing
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 @Test func expiryPresetCasesAreSignalsInOrder() {
     #expect(ExpiryPreset.allCases.map(\.seconds) == [0, 30, 300, 3_600, 28_800, 86_400, 604_800, 2_419_200])
@@ -567,13 +567,13 @@ import Testing
 }
 
 @Test func expiryPresetCaveatNamesOtherApps() {
-    #expect(ExpiryPreset.caveat == "Only ReTiCaMsgr peers honour this. Other apps keep messages.")
+    #expect(ExpiryPreset.caveat == "Only ReTiCAMsgr peers honour this. Other apps keep messages.")
 }
 ```
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryPreset > /tmp/ReTiCaMsgr/exp-t3-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryPreset > /tmp/ReTiCAMsgr/exp-t3-red.log 2>&1`
 Expected: compile error, `ExpiryPreset` unknown.
 
 - [x] **Step 3: Create `ExpiryPreset.swift`**
@@ -599,7 +599,7 @@ public enum ExpiryPreset: Int, CaseIterable, Sendable {
 
     public static let offLabel = "Off"
     /// Shown with the menu: Sideband, NomadNet and Retichat ignore the field and keep the message.
-    public static let caveat = "Only ReTiCaMsgr peers honour this. Other apps keep messages."
+    public static let caveat = "Only ReTiCAMsgr peers honour this. Other apps keep messages."
 
     /// "Off" for 0, otherwise the largest unit that divides the value evenly, so a peer's
     /// non-preset value still reads naturally ("90 seconds", "2 hours").
@@ -637,7 +637,7 @@ public enum ExpiryPreset: Int, CaseIterable, Sendable {
 
 - [x] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryPreset > /tmp/ReTiCaMsgr/exp-t3-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryPreset > /tmp/ReTiCAMsgr/exp-t3-green.log 2>&1`
 Expected: 4 tests passed.
 
 - [x] **Step 5: Mutation verification**
@@ -653,19 +653,19 @@ All four in one batch, all RED; revert; GREEN.
 
 - [x] **Step 6: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-exp-task-3.txt` (subject `feat: ExpiryPreset labels and announcement text`, body, trailers).
+Write `/tmp/ReTiCAMsgr/msg-exp-task-3.txt` (subject `feat: ExpiryPreset labels and announcement text`, body, trailers).
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ExpiryPreset.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ExpiryPresetTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-3.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ExpiryPreset.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ExpiryPresetTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-3.txt`
 
 ---
 
 ### Task 4: `MessagePurge` and `AttachmentStore.deleteExports`
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/MessagePurge.swift`
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AttachmentStore.swift` (new method after `exportURL`)
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/MessagePurgeTests.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/MessagePurge.swift`
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AttachmentStore.swift` (new method after `exportURL`)
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/MessagePurgeTests.swift`
 
 **Interfaces:**
 - Consumes: `Message.expiresAt`, `Attachment` (`messageId`, `path`, `hasBytes`, `id`), `Reaction`, `AttachmentStore.delete(_:)`, `AttachmentStore.exportURL(for:)`, `AttachmentStore.exportDirectory`.
@@ -673,14 +673,14 @@ Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-3.txt`
 
 - [x] **Step 1: Write the failing tests**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/MessagePurgeTests.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/MessagePurgeTests.swift`:
 
 ```swift
 import Testing
 import Foundation
 import SQLiteData
-import struct ReTiCaMsgrCore.Attachment
-@testable import ReTiCaMsgrCore
+import struct ReTiCAMsgrCore.Attachment
+@testable import ReTiCAMsgrCore
 
 private let purgeNow = Date(timeIntervalSince1970: 1700000000)
 private let purgePeer = String(repeating: "7a", count: 16)
@@ -792,12 +792,12 @@ private func purgeMessage(_ n: Int, expiresAt: Date?, expirySeconds: Int? = 60, 
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryPurge > /tmp/ReTiCaMsgr/exp-t4-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryPurge > /tmp/ReTiCAMsgr/exp-t4-red.log 2>&1`
 Expected: compile error, `MessagePurge` and `deleteExports` unknown.
 
 - [x] **Step 3: Add `deleteExports` to `AttachmentStore`**
 
-In `CORE/Sources/ReTiCaMsgrCore/AttachmentStore.swift`, after `exportURL(for:)`:
+In `CORE/Sources/ReTiCAMsgrCore/AttachmentStore.swift`, after `exportURL(for:)`:
 
 ```swift
     /// Removes the export copies of one attachment (`exportDirectory/<id>/`). Called by the purge:
@@ -881,7 +881,7 @@ public enum MessagePurge {
 
 - [x] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryPurge > /tmp/ReTiCaMsgr/exp-t4-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryPurge > /tmp/ReTiCAMsgr/exp-t4-green.log 2>&1`
 Expected: 5 tests passed. If `expiryPurgeDeletesDueRowWithFileExportAttachmentAndReactions` fails on the attachments table not being empty, foreign keys are off for that queue: add `try db.execute(sql: "PRAGMA foreign_keys = ON")` is NOT the fix (GRDB enables them by default); instead check that `Attachment.insert` ran after `Message.insert` in the test and that the cascade clause exists in `createAttachments`.
 
 - [x] **Step 6: Mutation verification**
@@ -898,18 +898,18 @@ All five in one batch, all RED; revert; GREEN.
 
 - [x] **Step 7: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-exp-task-4.txt` (subject `feat: MessagePurge deletes due rows, files, exports and reactions`, body, trailers).
+Write `/tmp/ReTiCAMsgr/msg-exp-task-4.txt` (subject `feat: MessagePurge deletes due rows, files, exports and reactions`, body, trailers).
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessagePurge.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AttachmentStore.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/MessagePurgeTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-4.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessagePurge.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AttachmentStore.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/MessagePurgeTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-4.txt`
 
 ---
 
 ### Task 5: AppFeature — setting the timer and sending with it
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (State, Action, CancelID, `sendTapped`, `closeConversation`, `outgoing`, `reloadThread`, new cases, new file-scope helpers)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (State, Action, CancelID, `sendTapped`, `closeConversation`, `outgoing`, `reloadThread`, new cases, new file-scope helpers)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: Tasks 1–4.
@@ -919,7 +919,7 @@ This task wires the setting, the send path and the sleeper plumbing (`expiryPurg
 
 - [x] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`:
 
 ```swift
 
@@ -1085,7 +1085,7 @@ private func expirySendAndFetch(_ db: any DatabaseWriter, draft: String, expiry:
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expirySend > /tmp/ReTiCaMsgr/exp-t5-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expirySend > /tmp/ReTiCAMsgr/exp-t5-red.log 2>&1`
 Expected: compile errors (`openConversationExpiry`, `expirySelected` unknown).
 
 - [x] **Step 3: State, actions, cancel ID**
@@ -1142,7 +1142,7 @@ Add after the `case let .threadLoaded(...)` case:
                 let now = date.now
                 let alsoViaPropagation = !state.propagationNodeHex.isEmpty
                 // The change goes out as a message with a readable body (spec §1): other LXMF
-                // clients show the sentence, ReTiCaMsgr peers adopt the timer from the field.
+                // clients show the sentence, ReTiCAMsgr peers adopt the timer from the field.
                 let (msg, row) = Self.outgoing(
                     identity: state.identity, peer: peer, peerHex: peerHex,
                     text: ExpiryPreset.announcement(seconds: seconds), now: now,
@@ -1299,8 +1299,8 @@ If `.update { $0.expiresAt = due }` does not compile for an optional `Date` colu
 
 - [x] **Step 7: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expirySend > /tmp/ReTiCaMsgr/exp-t5-green.log 2>&1`
-Expected: 8 tests passed. Then the full suite: `swift test --package-path CORE > /tmp/ReTiCaMsgr/exp-t5-full.log 2>&1` — expected baseline + 29 passed (T1 5, T2 7, T3 4, T4 5, T5 8), no failures. The new `conversationExpiryLoaded` action after every `threadLoaded` is delivered under `exhaustivity = .off` in existing tests; if an existing exhaustive test (`exhaustivity = .on`) now fails on an unexpected `conversationExpiryLoaded`, add a `receive` for it in that test (mechanical edit, exempt from mutation).
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expirySend > /tmp/ReTiCAMsgr/exp-t5-green.log 2>&1`
+Expected: 8 tests passed. Then the full suite: `swift test --package-path CORE > /tmp/ReTiCAMsgr/exp-t5-full.log 2>&1` — expected baseline + 29 passed (T1 5, T2 7, T3 4, T4 5, T5 8), no failures. The new `conversationExpiryLoaded` action after every `threadLoaded` is delivered under `exhaustivity = .off` in existing tests; if an existing exhaustive test (`exhaustivity = .on`) now fails on an unexpected `conversationExpiryLoaded`, add a `receive` for it in that test (mechanical edit, exempt from mutation).
 
 - [x] **Step 8: Mutation verification**
 
@@ -1320,18 +1320,18 @@ Sub-batch A = all rows not marked B; run once, each listed test RED. Revert. Sub
 
 - [x] **Step 9: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-exp-task-5.txt` (subject `feat: set the conversation timer and send messages that carry it`, body naming expirySelected, the announcement row, the 0xFD field order, the sender-side stamp and the expiryPurgeCompleted/expiryDue sleeper plumbing, trailers).
+Write `/tmp/ReTiCAMsgr/msg-exp-task-5.txt` (subject `feat: set the conversation timer and send messages that carry it`, body naming expirySelected, the announcement row, the 0xFD field order, the sender-side stamp and the expiryPurgeCompleted/expiryDue sleeper plumbing, trailers).
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-5.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-5.txt`
 
 ---
 
 ### Task 6: AppFeature — receiving
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (`State.peerDisplayName(_:)`, `.messageReceived`)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (`State.peerDisplayName(_:)`, `.messageReceived`)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: Task 5's state and helpers; `ExpiryWire.decode`; `ExpiryPreset.peerAnnouncement`; `ConversationSetting`.
@@ -1549,7 +1549,7 @@ private func expiryHex(_ identity: Identity) -> String {
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryReceive > /tmp/ReTiCaMsgr/exp-t6-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryReceive > /tmp/ReTiCAMsgr/exp-t6-red.log 2>&1`
 Expected: compiles (everything referenced exists) and the tests FAIL on counts, `expirySeconds == nil`, or the setting.
 
 - [x] **Step 3: `peerDisplayName(_:)`**
@@ -1644,7 +1644,7 @@ After the `if incomingPeer == openPeer { try await reloadThread(...) }` block at
 
 - [x] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryReceive > /tmp/ReTiCaMsgr/exp-t6-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryReceive > /tmp/ReTiCAMsgr/exp-t6-green.log 2>&1`
 Expected: 9 tests passed.
 
 - [x] **Step 6: Mutation verification**
@@ -1664,18 +1664,18 @@ Sub-batch A: all rows not marked B, run once, each RED. Revert. Sub-batch B: the
 
 - [x] **Step 7: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-exp-task-6.txt` (subject `feat: honour the disappearing-messages field on receive`, body, trailers).
+Write `/tmp/ReTiCAMsgr/msg-exp-task-6.txt` (subject `feat: honour the disappearing-messages field on receive`, body, trailers).
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-6.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-6.txt`
 
 ---
 
 ### Task 7: AppFeature — first view, lifecycle and the sleeper
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (`.onLaunch`, `.foregrounded`, `.backgrounded`, `.openConversation`, `.startConversation`)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (`.onLaunch`, `.foregrounded`, `.backgrounded`, `.openConversation`, `.startConversation`)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: Task 5's `stampViewed`, `purgeAndReschedule`, `CancelID.expiry`, `.expiryDue`, `.expiryPurgeCompleted`; `State.isForeground`.
@@ -1894,7 +1894,7 @@ private func expiryTimerRow(_ id: Int, _ peer: String, seconds: Int?, expiresAt:
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryTimer > /tmp/ReTiCaMsgr/exp-t7-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryTimer > /tmp/ReTiCAMsgr/exp-t7-red.log 2>&1`
 Expected: compiles; the tests FAIL (no `expiryPurgeCompleted` received, rows unstamped, `isForeground` unchanged).
 
 - [x] **Step 3: Launch, foreground, background**
@@ -1956,8 +1956,8 @@ Make the same replacement in `case let .startConversation(hex):` (its variable i
 
 - [x] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryTimer > /tmp/ReTiCaMsgr/exp-t7-green.log 2>&1`
-Expected: 8 tests passed. Then the full suite: `swift test --package-path CORE > /tmp/ReTiCaMsgr/exp-t7-full.log 2>&1`, expected baseline + 46 passed. Existing `.foregrounded` tests (`foregroundReDialsWhenTCPDownEvenWithBLEPeerUp`, `foregroundDoesNotReDialWhenTCPIsUp`, the push drain tests) run with exhaustivity off and finish with `store.finish()`; the extra `expiryPurgeCompleted` is skipped. If one asserts exhaustively, add a `receive` for `.expiryPurgeCompleted` (mechanical, exempt).
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryTimer > /tmp/ReTiCAMsgr/exp-t7-green.log 2>&1`
+Expected: 8 tests passed. Then the full suite: `swift test --package-path CORE > /tmp/ReTiCAMsgr/exp-t7-full.log 2>&1`, expected baseline + 46 passed. Existing `.foregrounded` tests (`foregroundReDialsWhenTCPDownEvenWithBLEPeerUp`, `foregroundDoesNotReDialWhenTCPIsUp`, the push drain tests) run with exhaustivity off and finish with `store.finish()`; the extra `expiryPurgeCompleted` is skipped. If one asserts exhaustively, add a `receive` for `.expiryPurgeCompleted` (mechanical, exempt).
 
 - [x] **Step 6: Mutation verification**
 
@@ -1977,18 +1977,18 @@ Sub-batch A: all rows not marked B, each RED. Revert. Sub-batch B: the two marke
 
 - [x] **Step 7: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-exp-task-7.txt` (subject `feat: stamp first view, purge on launch and foreground, run the expiry sleeper`, body, trailers).
+Write `/tmp/ReTiCAMsgr/msg-exp-task-7.txt` (subject `feat: stamp first view, purge on launch and foreground, run the expiry sleeper`, body, trailers).
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-7.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-7.txt`
 
 ---
 
 ### Task 8: Info sheet rows
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/MessageInfo.swift` (`timeline`)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/MessageInfoTests.swift` (append)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/MessageInfo.swift` (`timeline`)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/MessageInfoTests.swift` (append)
 
 **Interfaces:**
 - Consumes: `Message.expirySeconds`, `Message.expiresAt`, `ExpiryPreset.label(forSeconds:)`, existing `timeRow`, `Row`.
@@ -2039,7 +2039,7 @@ private func expiryInfoTimeline(_ m: Message) -> [MessageInfo.Row] {
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryInfo > /tmp/ReTiCaMsgr/exp-t8-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryInfo > /tmp/ReTiCAMsgr/exp-t8-red.log 2>&1`
 Expected: compiles; `expiryInfoStampedRowShowsExpiresTime` and `expiryInfoUnstampedRowShowsDuration` FAIL (no such rows).
 
 - [x] **Step 3: Add the rows**
@@ -2058,7 +2058,7 @@ In `MessageInfo.timeline`, after the `if let reason = m.failureReason { ... }` b
 
 - [x] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore --filter expiryInfo > /tmp/ReTiCaMsgr/exp-t8-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore --filter expiryInfo > /tmp/ReTiCAMsgr/exp-t8-green.log 2>&1`
 Expected: 3 tests passed.
 
 - [x] **Step 5: Mutation verification**
@@ -2074,18 +2074,18 @@ Sub-batch A: rows 1, 3, 4. Sub-batch B: row 2. Revert. GREEN.
 
 - [x] **Step 6: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-exp-task-8.txt` (subject `feat: Info sheet shows when a message expires`, body, trailers).
+Write `/tmp/ReTiCAMsgr/msg-exp-task-8.txt` (subject `feat: Info sheet shows when a message expires`, body, trailers).
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageInfo.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/MessageInfoTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-8.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessageInfo.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/MessageInfoTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-8.txt`
 
 ---
 
 ### Task 9: UI — toolbar menu, title, system line, bubble glyph
 
 **Files:**
-- Create: `APP/ReTiCaMsgr/ExpiryViews.swift`
-- Modify: `APP/ReTiCaMsgr/ChatView.swift` (list rows, toolbar, `MessageBubble` status area)
+- Create: `APP/ReTiCAMsgr/ExpiryViews.swift`
+- Modify: `APP/ReTiCAMsgr/ChatView.swift` (list rows, toolbar, `MessageBubble` status area)
 
 **Interfaces:**
 - Consumes: `store.openConversationExpiry`, `Action.expirySelected(seconds:)`, `Message.isTimerChange`, `Message.expirySeconds`, `ExpiryPreset`.
@@ -2097,14 +2097,14 @@ No unit tests in the app target (none exist today); the deliverable is a success
 ```swift
 //
 //  ExpiryViews.swift
-//  ReTiCaMsgr
+//  ReTiCAMsgr
 //
 
 import SwiftUI
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// The disappearing-messages picker in the chat toolbar (spec 2026-10-05 §4): Signal's presets
-/// with a checkmark on the current one, and the caveat that only ReTiCaMsgr peers honour it.
+/// with a checkmark on the current one, and the caveat that only ReTiCAMsgr peers honour it.
 struct ExpiryMenu: View {
     let current: Int?
     let onSelect: (Int) -> Void
@@ -2237,12 +2237,12 @@ with
 
 - [x] **Step 5: Build the app**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCaMsgr/exp-t9-xcodebuild.log 2>&1`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCAMsgr/exp-t9-xcodebuild.log 2>&1`
 Expected: `** BUILD SUCCEEDED **`. Fix any compile error in the two app files only.
 
 - [x] **Step 6: Full core suite once more**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-disappearing/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/exp-t9-core.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-disappearing/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/exp-t9-core.log 2>&1`
 Expected: baseline + 49 passed, no failures.
 
 - [x] **Step 7: Manual check (Simulator)**
@@ -2253,10 +2253,10 @@ Use the `xcodebuildmcp-cli` skill to boot a simulator, install and launch the ap
 
 Run: `git -C APP status --short`. If only the two `xcschememanagement.plist` files are modified beside the intended changes, restore them with `git -C APP checkout -- <path>`.
 
-Write `/tmp/ReTiCaMsgr/msg-exp-task-9.txt` (subject `feat: disappearing-messages menu, title indicator, system lines and bubble glyph`, body including the manual-check result, trailers).
+Write `/tmp/ReTiCAMsgr/msg-exp-task-9.txt` (subject `feat: disappearing-messages menu, title indicator, system lines and bubble glyph`, body including the manual-check result, trailers).
 
-Run: `git -C APP add ReTiCaMsgr/ExpiryViews.swift ReTiCaMsgr/ChatView.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-9.txt`
+Run: `git -C APP add ReTiCAMsgr/ExpiryViews.swift ReTiCAMsgr/ChatView.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-9.txt`
 
 ---
 
@@ -2288,10 +2288,10 @@ Follow-ups noticed while implementing:
 
 - [x] **Step 2: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-exp-task-10.txt` (subject `docs: disappearing-messages follow-ups`, body, trailers).
+Write `/tmp/ReTiCAMsgr/msg-exp-task-10.txt` (subject `docs: disappearing-messages follow-ups`, body, trailers).
 
 Run: `git -C APP add docs/superpowers/backlog-retica-followups.md docs/superpowers/plans/2026-10-05-disappearing-messages.md`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-exp-task-10.txt`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-exp-task-10.txt`
 
 - [ ] **Step 3: Hand off**
 

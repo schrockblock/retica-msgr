@@ -66,7 +66,7 @@ A later message from that peer or group starts the row again, with only the new 
 
 **While the app runs** (foreground, or a background wake from a push): the app computes the real count and sets the badge.
 
-**While the app isn't running** (iOS): the notification service extension adds 1 per push and sets the badge from that counter. The counter is stored in the shared app group (`ReTiCaMsgrPush.storage()`'s settings, or a sibling key). Pushes that carry no message don't increment:
+**While the app isn't running** (iOS): the notification service extension adds 1 per push and sets the badge from that counter. The counter is stored in the shared app group (`ReTiCAMsgrPush.storage()`'s settings, or a sibling key). Pushes that carry no message don't increment:
 - silent link-request wakes;
 - pushes the extension suppresses for blocked senders.
 
@@ -113,7 +113,7 @@ A later message from that peer or group starts the row again, with only the new 
 
 **A1 (planning, 2026-10-25):** this replaces the counter logic in settled detail 1.
 - **Why:** the logic would have lived in `ReTiCAPush` (a separate pod repository). That would need a cross-repo change and a new handler result type.
-- **Instead:** it lives in this repo's `ReTiCaMsgrPushService` target.
+- **Instead:** it lives in this repo's `ReTiCAMsgrPushService` target.
   - When the extension's verdict is `.deliverOriginal`, it adds **1 per delivered push** to the app-group counter and puts the result on `content.badge`.
   - A `.suppress` verdict adds nothing.
 - **Silent pushes:** silent (content-available, non-mutable) pushes never run the extension, so they never count.
@@ -139,7 +139,7 @@ A later message from that peer or group starts the row again, with only the new 
 
 ## Constraints
 
-- iOS behaviour outside these two features is unchanged. Mac-specific UI goes through the existing `#if os(...)` / `ReTiCaMsgr/Platform/` pattern.
+- iOS behaviour outside these two features is unchanged. Mac-specific UI goes through the existing `#if os(...)` / `ReTiCAMsgr/Platform/` pattern.
 - **Branch:** builds on `feat/macos` (the macOS right-click needs it). Use a new branch off it, `feat/delete-and-badge`, or off main once `feat/macos` merges.
 - **Tests:**
   - TCA TestStore tests for the core actions;

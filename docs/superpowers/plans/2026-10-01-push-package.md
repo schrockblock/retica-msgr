@@ -8,14 +8,14 @@
 
 **Tech Stack:** Swift 6 language mode, swift-tools 6.0, ReTiCA (`Packet`, `Identity`, `HDLC`, `Destination`, `LXMessage.deliveryHash`, `IdentityKeychain`, `InMemoryKeychain`), ComposableArchitecture 1.15+ (TCA, `@Shared(.appStorage)`), Swift Testing, Network.framework (`NWConnection`, `NWListener`), URLSession.
 
-**Spec:** `/Users/ell/development/ios/apps/ReTiCaMsgr/docs/superpowers/specs/2026-10-01-push-relay-design.md`. Read §1 and §2 before starting. It is binding. Where this plan resolves something the spec leaves open, the resolution is listed under "Spec resolutions" below.
+**Spec:** `/Users/ell/development/ios/apps/ReTiCAMsgr/docs/superpowers/specs/2026-10-01-push-relay-design.md`. Read §1 and §2 before starting. It is binding. Where this plan resolves something the spec leaves open, the resolution is listed under "Spec resolutions" below.
 
 ## Global Constraints
 
 **Where you work**
 - The package is a NEW git repository at `/Users/ell/development/ios/pods/ReTiCAPush`, on branch `main`. Task 1 creates it. All work happens there.
 - Never touch `/Users/ell/development/ios/pods/ReTiCA`: no edits, no git, no builds inside it. Another agent works there. The package depends on it by path (`../ReTiCA`), which also resolves ReTiCA's own `../FCB` dependency because both live under `pods/`.
-- Never commit in `/Users/ell/development/ios/apps/ReTiCaMsgr` from this plan. The app plan is separate.
+- Never commit in `/Users/ell/development/ios/apps/ReTiCAMsgr` from this plan. The app plan is separate.
 - **ReTiCA drift:** the package builds ReTiCA from its live checkout, and it may change mid-run. If a build or test failure traces into ReTiCA source, stop and report it. Do not work around it. A stale `.build` directory in the package may be deleted if it causes a build failure.
 
 **Shell**
@@ -81,7 +81,7 @@ Signing layout:          domain UTF-8 ‖ publicKey(64) ‖ UInt16 BE token leng
 JSON keys:               v, identity_public_key (base64), push_token (hex), platform, environment,
                          bundle_id, issued_at (int), signature (base64)
 Re-registration rule:    skip the POST when the same token was registered within 24 hours
-Denied-permission text:  "Notifications are off for ReTiCaMsgr in Settings"
+Denied-permission text:  "Notifications are off for ReTiCAMsgr in Settings"
 Invalid URL text:        "Invalid registration URL"
 Extension deadline:      20 s overall, 10 s for the TCP write
 Proof packet:            header1, .proof, broadcast, single, destinationHash = packetHash.prefix(16),
@@ -1994,7 +1994,7 @@ import ReTiCA
         $0.status = .awaitingPermission
     }
     await store.receive(.permissionResolved(granted: false)) {
-        $0.status = .failed("Notifications are off for ReTiCaMsgr in Settings")
+        $0.status = .failed("Notifications are off for ReTiCAMsgr in Settings")
     }
     await store.finish()
     #expect(store.state.enabled == true)
@@ -2123,7 +2123,7 @@ public struct RegistrationFailure: Error, Equatable, Sendable {
 /// transport. Never touches ReTiCA's node.
 @Reducer
 public struct PushFeature {
-    public static let deniedText = "Notifications are off for ReTiCaMsgr in Settings"
+    public static let deniedText = "Notifications are off for ReTiCAMsgr in Settings"
     public static let invalidURLText = "Invalid registration URL"
     /// A POST is skipped when the same token was registered more recently than this.
     public static let reregistrationInterval: TimeInterval = 24 * 60 * 60

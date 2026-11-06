@@ -1,6 +1,6 @@
-# ReTiCaMsgr
+# ReTiCAMsgr
 
-ReTiCaMsgr is a messaging app for iPhone, iPad and Mac that runs over
+ReTiCAMsgr is a messaging app for iPhone, iPad and Mac that runs over
 [Reticulum](https://reticulum.network), using the [LXMF](https://github.com/markqvist/LXMF)
 message format. It is built in SwiftUI with The Composable Architecture, on top of
 [ReTiCA](../../pods/ReTiCA), a Swift implementation of Reticulum and LXMF that lives in its own
@@ -10,7 +10,7 @@ The app is not published on the App Store, and this repository has no license fi
 
 ## What it is
 
-Most messengers route every message through the company that runs them. ReTiCaMsgr does not
+Most messengers route every message through the company that runs them. ReTiCAMsgr does not
 have a company server in the middle. Your device holds a cryptographic identity, and your address
 is derived from it. Messages are encrypted on your device to the recipient's identity and handed
 across whatever Reticulum network is available: an internet connection to a Reticulum node, a
@@ -91,7 +91,7 @@ What is on `main` today.
   build.
 - Hiding the push banner for a blocked sender needs Apple's notification-filtering entitlement.
   The extension already returns empty content for blocked senders, but the entitlement is
-  commented out in `ReTiCaMsgrNotificationService.entitlements` until Apple grants it, so the
+  commented out in `ReTiCAMsgrNotificationService.entitlements` until Apple grants it, so the
   banner still shows.
 
 ### Identity
@@ -146,7 +146,7 @@ adds a menu bar icon with an unread dot and a launch-at-login option. Known gaps
 
 ## Working with other Reticulum apps
 
-ReTiCaMsgr uses LXMF, the same message format as
+ReTiCAMsgr uses LXMF, the same message format as
 [Sideband](https://github.com/markqvist/Sideband),
 [NomadNet](https://github.com/markqvist/NomadNet), MeshChat, Columba and Retichat. Plain text
 messages work in both directions with any of them: give them your address, or find them in
@@ -193,7 +193,7 @@ opaque payload and a fixed "New message" title.
 Limits:
 
 - **Only single-packet messages arrive through the push itself.** Short text from another
-  ReTiCaMsgr is sent this way. Larger messages, and messages from clients that send over a link
+  ReTiCAMsgr is sent this way. Larger messages, and messages from clients that send over a link
   (LXMF "direct" delivery: Sideband, NomadNet, Retichat), arrive as a link request that a
   suspended phone cannot answer in time. The banner still appears, and the message reaches you
   through a propagation node.
@@ -213,20 +213,20 @@ The client side is the [ReTiCAPush](../../pods/ReTiCAPush) package. Its
 
 - Xcode 26.4 or later (the project was last upgraded with Xcode 26.4; ReTiCA uses Swift tools
   6.3).
-- Deployment targets: iOS 26.4 and macOS 26.4 for the app. The `ReTiCaMsgrCore` package itself
+- Deployment targets: iOS 26.4 and macOS 26.4 for the app. The `ReTiCAMsgrCore` package itself
   declares iOS 17 and macOS 14.
 - An Apple developer account to run on a device, because the app uses an app group, a shared
   Keychain access group and push notifications.
 
 ### Sibling checkouts
 
-The app depends on several packages by local path, not by URL. `ReTiCaMsgrCore/Package.swift`
+The app depends on several packages by local path, not by URL. `ReTiCAMsgrCore/Package.swift`
 expects this layout:
 
 ```
 <root>/
   apps/
-    ReTiCaMsgr/          this repository
+    ReTiCAMsgr/          this repository
   pods/
     ReTiCA/             Reticulum and LXMF in Swift
     ReTiCAPush/         push wake-ups (depends on ../ReTiCA)
@@ -237,7 +237,7 @@ expects this layout:
 ReTiCA's remote is `github.com/schrockblock/retica`. ReTiCAPush, MeshtasticKit and FCB have no
 published remote at the moment, so building outside the developer's machine needs copies of them.
 
-Worktrees of this repository placed next to it (for example `apps/ReTiCaMsgr-feature`) resolve
+Worktrees of this repository placed next to it (for example `apps/ReTiCAMsgr-feature`) resolve
 the same paths.
 
 The other dependencies are fetched by Swift Package Manager: Point-Free's
@@ -247,7 +247,7 @@ plus what ReTiCA and MeshtasticKit pull in (swift-protobuf, IOS-CoreBluetooth-Mo
 
 ### Running
 
-Open `ReTiCaMsgr.xcodeproj`, choose the `ReTiCaMsgr` scheme, and run on a device, a simulator or
+Open `ReTiCAMsgr.xcodeproj`, choose the `ReTiCAMsgr` scheme, and run on a device, a simulator or
 My Mac. Bluetooth, Meshtastic and push need a real device.
 
 ### Signing, for a fork
@@ -257,12 +257,12 @@ The identifiers are tied to the developer's team. A fork needs to change:
 - `DEVELOPMENT_TEAM` (`HK6WSAR793`) and the bundle IDs (`co.lithobyte.ReTiCaMsgr`,
   `co.lithobyte.ReTiCaMsgr.NotificationService`, and the two test bundles) in the project.
 - The app group `group.co.lithobyte.ReTiCaMsgr` in all four `.entitlements` files and in
-  `ReTiCaMsgrCore/Sources/ReTiCaMsgrPushService/ReTiCaMsgrPush.swift` (`appGroupID`).
+  `ReTiCAMsgrCore/Sources/ReTiCAMsgrPushService/ReTiCAMsgrPush.swift` (`appGroupID`).
 - The Keychain access group `co.lithobyte.reticulum.identity` in the entitlements files, and
   `SharedIdentityLocation.accessGroup` in
-  `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/IdentityStore.swift`, which hard-codes the team prefix.
-  `ReTiCaMsgrTests/TestHostScanTests.swift` checks that value.
-- The built-in node in `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/DefaultNode.swift`, if you do not
+  `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/IdentityStore.swift`, which hard-codes the team prefix.
+  `ReTiCAMsgrTests/TestHostScanTests.swift` checks that value.
+- The built-in node in `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/DefaultNode.swift`, if you do not
   want the app to connect to the developer's hub. Push through it will not work for a different
   bundle ID anyway (see above).
 - `aps-environment` is `development` in the entitlements.
@@ -270,21 +270,21 @@ The identifiers are tied to the developer's team. A fork needs to change:
 
 ### Tests
 
-Most of the logic, and most of the tests, are in the `ReTiCaMsgrCore` package. They run on the
+Most of the logic, and most of the tests, are in the `ReTiCAMsgrCore` package. They run on the
 Mac host:
 
 ```
-swift test --package-path ReTiCaMsgrCore
+swift test --package-path ReTiCAMsgrCore
 ```
 
 The suite has about 1,000 tests. A cold build plus a full run takes several minutes. A few
 Meshtastic tests wait on real timeouts and can fail when the machine is heavily loaded; rerun them
 on their own with `--filter mesh`.
 
-The app target has a smaller set of hosted tests (`ReTiCaMsgrTests`) for the runtime, Keychain,
+The app target has a smaller set of hosted tests (`ReTiCAMsgrTests`) for the runtime, Keychain,
 push glue and platform helpers. Run them from Xcode, or with `xcodebuild test` against an iOS
 simulator. On the Mac, run only that target with an arm64 destination
-(`-destination 'platform=macOS,arch=arm64' -only-testing:ReTiCaMsgrTests`); a full macOS scheme
+(`-destination 'platform=macOS,arch=arm64' -only-testing:ReTiCAMsgrTests`); a full macOS scheme
 run fails on an x86_64 swift-syntax build error.
 
 Setting `RETICAMSGR_TEST_HOST=1` in the environment starts the app with an in-memory identity and
@@ -293,19 +293,19 @@ database, which is useful for unsigned smoke runs.
 ## Project layout
 
 ```
-ReTiCaMsgr/                    the app target (iOS and macOS): SwiftUI views, AppDelegate,
+ReTiCAMsgr/                    the app target (iOS and macOS): SwiftUI views, AppDelegate,
                                AppRuntime, platform glue
   Platform/                    Mac/iOS differences: images, pasteboard, menu bar presence
-ReTiCaMsgrCore/                Swift package with the app's logic
-  Sources/ReTiCaMsgrCore/      AppFeature (the root TCA reducer) and its extensions, the
+ReTiCAMsgrCore/                Swift package with the app's logic
+  Sources/ReTiCAMsgrCore/      AppFeature (the root TCA reducer) and its extensions, the
                                database (sqlite-data), wire codecs for LXMF fields, groups,
                                attachments, contacts, blocking, identity
-  Sources/ReTiCaMsgrPushService/
+  Sources/ReTiCAMsgrPushService/
                                what the notification extension links (no TCA, no SQLite)
-  Tests/ReTiCaMsgrCoreTests/   the main test suite
-ReTiCaMsgrNotificationService/ Notification Service Extension (iOS only)
-ReTiCaMsgrTests/               app-hosted tests
-ReTiCaMsgrUITests/             UI test target
+  Tests/ReTiCAMsgrCoreTests/   the main test suite
+ReTiCAMsgrNotificationService/ Notification Service Extension (iOS only)
+ReTiCAMsgrTests/               app-hosted tests
+ReTiCAMsgrUITests/             UI test target
 scripts/                       trim-emoji-test.swift: rebuilds the bundled emoji list
 docs/superpowers/specs/        design records, one per feature, with amendments
 docs/superpowers/plans/        the implementation plans that followed them

@@ -1,9 +1,9 @@
 # Message replies
 
-**Written:** 2026-09-27. **Repo:** ReTiCaMsgr (`/Users/ell/development/ios/apps/ReTiCaMsgr`).
-- **Logic:** `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/`.
-- **UI:** `ReTiCaMsgr/`.
-- **Implementation:** in the worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-replies` on branch `feat/message-replies`, merged to `main`.
+**Written:** 2026-09-27. **Repo:** ReTiCAMsgr (`/Users/ell/development/ios/apps/ReTiCAMsgr`).
+- **Logic:** `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/`.
+- **UI:** `ReTiCAMsgr/`.
+- **Implementation:** in the worktree `/Users/ell/development/ios/apps/ReTiCAMsgr-replies` on branch `feat/message-replies`, merged to `main`.
 
 ## Goal
 
@@ -129,11 +129,11 @@ Migration `addReplies` is registered after `addMessageInfo` in `Database.swift`.
 
 ## Testing
 
-Swift Testing in `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/`. Every new test goes through mutate → red → revert → green, with no new known issues.
+Swift Testing in `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/`. Every new test goes through mutate → red → revert → green, with no new known issues.
 
 - **`ReplyWire`**
   - Round trip through a real `LXMessage.create` → pack → unpack.
-  - Byte-level comparison against reference `umsgpack` output for `{0x30: hash, 0x31: quote}`, using a script in `/tmp/ReTiCaMsgr/` run with `/Users/ell/opt/anaconda3/envs/rns/bin/python`.
+  - Byte-level comparison against reference `umsgpack` output for `{0x30: hash, 0x31: quote}`, using a script in `/tmp/ReTiCAMsgr/` run with `/Users/ell/opt/anaconda3/envs/rns/bin/python`.
   - Trim: ≤ 100 characters is unchanged, > 100 is cut to 100 + "…", surrounding whitespace is trimmed, and a ZWJ emoji at the boundary is not split.
   - Invalid `0x30` (missing, not bin, 15 or 33 bytes) → `nil`.
   - Invalid `0x31` (not bin, 401 bytes, invalid UTF-8) → the reply is kept with `quote == nil`.

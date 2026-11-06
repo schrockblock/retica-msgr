@@ -2,7 +2,7 @@
 
 **Written:** 2026-08-21. **Status:** approved, not yet implemented.
 
-A read-only triage screen in ReTiCaMsgr Settings that answers one question:
+A read-only triage screen in ReTiCAMsgr Settings that answers one question:
 **which layer is broken?** Born out of a debugging session where three device
 symptoms took a full investigation to attribute, and where two of the three would
 have been a single glance had this screen existed.
@@ -34,7 +34,7 @@ appears that is invisible in instantaneous state.
 
 ## Architecture
 
-**`DiagnosticsSnapshot`** — a new pure value type in `ReTiCaMsgrCore`.
+**`DiagnosticsSnapshot`** — a new pure value type in `ReTiCAMsgrCore`.
 
 ```swift
 public struct DiagnosticsSnapshot: Equatable {
@@ -222,7 +222,7 @@ Two deliberate differences from the on-screen rendering:
 - The timestamp is included, from the injected date.
 
 ```
-ReTiCaMsgr diagnostics — 2026-08-21T18:40:12Z
+ReTiCAMsgr diagnostics — 2026-08-21T18:40:12Z
 
 SOCKET  [problem] app reports connected, interface reports connecting
   app connection       connected
@@ -242,7 +242,7 @@ rows shows `31914671…` and `a82f6355…`.)
 
 ## Testing
 
-Unit tests in `ReTiCaMsgrCoreTests`, over hand-built `AppFeature.State` fixtures.
+Unit tests in `ReTiCAMsgrCoreTests`, over hand-built `AppFeature.State` fixtures.
 The view itself is not tested; it holds no logic.
 
 **One test per health rule, asserting BOTH the `Health` and the reason string.** A

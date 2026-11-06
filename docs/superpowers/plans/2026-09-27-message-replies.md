@@ -8,23 +8,23 @@
 
 **Tech Stack:** Swift 6 (package) / Swift 5 mode (app), TCA (ComposableArchitecture), SQLiteData/StructuredQueries on GRDB, Swift Testing, SwiftUI (iOS 26.4), ReTiCA (`LXMessage`, `MsgPackValue`, `MsgPack`, `LXMFNode.LearnedPeer`).
 
-**Spec:** `/Users/ell/development/ios/apps/ReTiCaMsgr-replies/docs/superpowers/specs/2026-09-27-message-replies-design.md`. Read it before starting. It is binding. Where this plan resolves something the spec leaves open, the resolution is listed under "Spec resolutions" below.
+**Spec:** `/Users/ell/development/ios/apps/ReTiCAMsgr-replies/docs/superpowers/specs/2026-09-27-message-replies-design.md`. Read it before starting. It is binding. Where this plan resolves something the spec leaves open, the resolution is listed under "Spec resolutions" below.
 
 ## Global Constraints
 
 **Where you work**
-- All work happens ONLY in the worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-replies`, on branch `feat/message-replies`.
-- Never commit in `/Users/ell/development/ios/apps/ReTiCaMsgr`.
+- All work happens ONLY in the worktree `/Users/ell/development/ios/apps/ReTiCAMsgr-replies`, on branch `feat/message-replies`.
+- Never commit in `/Users/ell/development/ios/apps/ReTiCAMsgr`.
 - Never touch `/Users/ell/development/ios/pods/ReTiCA`: no edits, no git, no builds inside it. Another agent works there.
-- **ReTiCA drift:** the package builds ReTiCA from its live checkout, and it may change mid-run. If a build or test failure traces into ReTiCA source, stop and report it. Do not work around it. A stale local `.build` directory inside the worktree (`ReTiCaMsgrCore/.build`) may be deleted if it causes a build failure.
+- **ReTiCA drift:** the package builds ReTiCA from its live checkout, and it may change mid-run. If a build or test failure traces into ReTiCA source, stop and report it. Do not work around it. A stale local `.build` directory inside the worktree (`ReTiCAMsgrCore/.build`) may be deleted if it causes a build failure.
 
 **Shell**
 - One command per Bash call. No `|`, `&&`, `||`, `;`, `$(...)` or `xargs`.
-- No inline interpreters (`python -c`, `swift -e`, heredocs into interpreters, and so on). Scripts go in files under `/tmp/ReTiCaMsgr/`. Create that directory once with `mkdir -p /tmp/ReTiCaMsgr`.
+- No inline interpreters (`python -c`, `swift -e`, heredocs into interpreters, and so on). Scripts go in files under `/tmp/ReTiCAMsgr/`. Create that directory once with `mkdir -p /tmp/ReTiCAMsgr`.
 
 **Commits**
-- Stage explicit paths only: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies add <path> <path> ...`. Never `git add -A` or `git add .`. The worktree may hold unrelated untracked or modified files (xcuserdata, other plans, this plan) that must not be staged.
-- **Each task writes its commit message to its own file**, `/tmp/ReTiCaMsgr/msg-replies-task-N.txt` (N = the task number), with the **Write** tool, then runs `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies commit -F /tmp/ReTiCaMsgr/msg-replies-task-N.txt`. Never reuse another task's file. A shared message file produced wrong commit messages twice before.
+- Stage explicit paths only: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies add <path> <path> ...`. Never `git add -A` or `git add .`. The worktree may hold unrelated untracked or modified files (xcuserdata, other plans, this plan) that must not be staged.
+- **Each task writes its commit message to its own file**, `/tmp/ReTiCAMsgr/msg-replies-task-N.txt` (N = the task number), with the **Write** tool, then runs `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies commit -F /tmp/ReTiCAMsgr/msg-replies-task-N.txt`. Never reuse another task's file. A shared message file produced wrong commit messages twice before.
 - No semicolons anywhere in a commit message.
 - End every commit message with these two trailer lines, at column 0, after a blank line. Put the name of the model that actually wrote the commit in the first line (for example `Claude Opus 5.5`):
   ```
@@ -33,7 +33,7 @@
   ```
 
 **Tests**
-- Command: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore [--filter X]`.
+- Command: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore [--filter X]`.
 - The baseline is **202 tests, all green**.
 - The whole package must compile at the end of every task.
 - Each task's new tests share a unique name prefix, so one `--filter` selects exactly them:
@@ -49,7 +49,7 @@
 **Mutation verification (mandatory for every task with tests)**
 1. The new tests go green.
 2. Apply the task's listed batch of production mutations, all at once. Run the task's filter and confirm that EVERY new test is red.
-3. Revert every mutation BY HAND with the Edit tool. Never use `git checkout -- <file>`, `git restore` or `git stash`. Then run `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies diff` and confirm that only the intended task changes remain.
+3. Revert every mutation BY HAND with the Edit tool. Never use `git checkout -- <file>`, `git restore` or `git stash`. Then run `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies diff` and confirm that only the intended task changes remain.
 4. The new tests are green again, then the full suite is green.
 - Each task's batch below has been checked so that no mutation hides another's effect, none crashes the test process, and each changes the value under test on the fixture used (fixtures are non-uniform where order or truncation matters).
 - If any new test survives the batch, that test is not testing what it claims. Fix the test and restart from step 1.
@@ -65,7 +65,7 @@
 **UI rule**
 - Tappable custom rows and buttons get `.frame(maxWidth: .infinity, alignment: .leading)` (or ≥ 44 pt sizing) + `.contentShape(Rectangle())`.
 
-**App build check:** `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build`
+**App build check:** `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build`
 
 **Values from the spec, copied verbatim**
 - Fields (reference `LXMF/LXMF.py:23-24`): `FIELD_REPLY_TO = 0x30` (the original's full `LXMessage.hash`, as bytes), `FIELD_REPLY_QUOTE = 0x31` (the quoted content, as UTF-8 bytes).
@@ -113,19 +113,19 @@ These are five inputs the spec does not spell out that are most likely to bite a
 
 | File | Status | Responsibility |
 |---|---|---|
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift` | Modify | `replyToHash` / `replyQuote` properties and init parameters (default nil) |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift` | Modify | `addReplies` migration |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReplyWire.swift` | Create | Pure codec for 0x30 / 0x31 and `trimQuote` |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` | Modify | `ReplyTarget`, `replyTarget` state, `replyTapped` / `replyCancelled`, reply fields on send, reply columns on receive, `openPeerDisplayName` |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReplyPreview.swift` | Create | Pure resolver: reply row + thread + peer name → what the bubble shows |
-| `ReTiCaMsgr/ReplyViews.swift` | Create | `QuoteBlock` and `ReplyComposerBar` SwiftUI views |
-| `ReTiCaMsgr/ChatView.swift` | Modify | Reply menu row, focus, composer bar, quote block in bubbles, scroll + highlight |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift` | Modify | Migration tests |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReplyWireTests.swift` | Create | Codec tests, including the reference byte check |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` | Modify | Reducer tests for target, send and receive |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReplyPreviewTests.swift` | Create | Resolver and `openPeerDisplayName` tests |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift` | Modify | `replyToHash` / `replyQuote` properties and init parameters (default nil) |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift` | Modify | `addReplies` migration |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReplyWire.swift` | Create | Pure codec for 0x30 / 0x31 and `trimQuote` |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` | Modify | `ReplyTarget`, `replyTarget` state, `replyTapped` / `replyCancelled`, reply fields on send, reply columns on receive, `openPeerDisplayName` |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReplyPreview.swift` | Create | Pure resolver: reply row + thread + peer name → what the bubble shows |
+| `ReTiCAMsgr/ReplyViews.swift` | Create | `QuoteBlock` and `ReplyComposerBar` SwiftUI views |
+| `ReTiCAMsgr/ChatView.swift` | Modify | Reply menu row, focus, composer bar, quote block in bubbles, scroll + highlight |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift` | Modify | Migration tests |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReplyWireTests.swift` | Create | Codec tests, including the reference byte check |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` | Modify | Reducer tests for target, send and receive |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReplyPreviewTests.swift` | Create | Resolver and `openPeerDisplayName` tests |
 
-The app target uses file-system-synchronized groups, so a new file in `ReTiCaMsgr/` joins the target automatically. New files in `Tests/ReTiCaMsgrCoreTests/` are picked up automatically as well.
+The app target uses file-system-synchronized groups, so a new file in `ReTiCAMsgr/` joins the target automatically. New files in `Tests/ReTiCAMsgrCoreTests/` are picked up automatically as well.
 
 `MessageInfo.swift` needs no change: `fieldNames` already maps `0x30: "reply to"` and `0x31: "reply quote"` (line 211), and outgoing and incoming rows already record `fieldKeys` from `msg.fields` / `m.fields`.
 
@@ -135,11 +135,11 @@ The app target uses file-system-synchronized groups, so a new file in `ReTiCaMsg
 - `Tests/.../AppFeatureTests.swift:72` (the `msg` helper)
 - `Tests/.../MessageInfoTests.swift:17`, `:50`, `:67`, `:103`, `:130`, `:153`
 - `Tests/.../ConversationTests.swift:10`
-- There are none in `ReTiCaMsgr/`. Task 7's temporary scaffold adds some and removes them again.
+- There are none in `ReTiCAMsgr/`. Task 7's temporary scaffold adds some and removes them again.
 
 **Before Task 1:**
-- Run `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies branch --show-current`. It must print `feat/message-replies`.
-- Run `mkdir -p /tmp/ReTiCaMsgr`.
+- Run `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies branch --show-current`. It must print `feat/message-replies`.
+- Run `mkdir -p /tmp/ReTiCAMsgr`.
 - Run the full suite once and confirm 202 tests pass with 0 known issues.
 
 **Date storage note:** StructuredQueries stores `Date` as ISO-8601 text with millisecond precision. Test timestamps use whole seconds. `makeStore` freezes `\.date` at `1700000000` (`2023-11-14 22:13:20 UTC`).
@@ -149,9 +149,9 @@ The app target uses file-system-synchronized groups, so a new file in `ReTiCaMsg
 ### Task 1: Migration and model
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift:8-9` (doc comment), `:38` (after `stampState`), `:59` (init parameters), `:79` (assignments)
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift:103-104` (after the `addMessageInfo` migration, before `return m`)
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift` (append)
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift:8-9` (doc comment), `:38` (after `stampState`), `:59` (init parameters), `:79` (assignments)
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift:103-104` (after the `addMessageInfo` migration, before `return m`)
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift` (append)
 
 **Interfaces:**
 - Consumes: nothing new.
@@ -222,7 +222,7 @@ Append to `DatabaseTests.swift`:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore --filter replyMigration`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore --filter replyMigration`
 Expected: a compile failure. `Message` has no `replyToHash` / `replyQuote`, and the init has no such parameters.
 
 - [ ] **Step 3: Add the model properties**
@@ -285,7 +285,7 @@ In `Database.swift`, insert between the closing `}` of the `addMessageInfo` migr
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore --filter replyMigration`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore --filter replyMigration`
 Expected: 2 tests pass.
 
 - [ ] **Step 6: Mutation check**
@@ -296,20 +296,20 @@ Apply both mutations together:
 
 No masking: M1 does not touch the round trip (it inserts `replyQuote` explicitly). M2 does not change the legacy test (it expects nil anyway).
 
-Run the filter and confirm both tests are red. Revert both by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies diff` and confirm no mutation text remains.
+Run the filter and confirm both tests are red. Revert both by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies diff` and confirm no mutation text remains.
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore`
 Expected: 204 tests pass, 0 known issues.
 
 - [ ] **Step 8: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/msg-replies-task-1.txt` with the Write tool:
+Write `/tmp/ReTiCAMsgr/msg-replies-task-1.txt` with the Write tool:
 
 ```
 feat: add message reply columns
@@ -321,16 +321,16 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies commit -F /tmp/ReTiCaMsgr/msg-replies-task-1.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies commit -F /tmp/ReTiCAMsgr/msg-replies-task-1.txt`
 
 ---
 
 ### Task 2: `ReplyWire` codec
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReplyWire.swift`
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReplyWireTests.swift`
-- Temporary (not committed): `/tmp/ReTiCaMsgr/reply_fields_reference.py`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReplyWire.swift`
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReplyWireTests.swift`
+- Temporary (not committed): `/tmp/ReTiCAMsgr/reply_fields_reference.py`
 
 **Interfaces:**
 - Consumes: `MsgPackValue`, `MsgPackValue.IntPair`, `MsgPack.encode(_:)`, `LXMessage` from ReTiCA.
@@ -352,7 +352,7 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies commit -F /tmp/R
 
 - [ ] **Step 1: Produce the reference bytes**
 
-Write `/tmp/ReTiCaMsgr/reply_fields_reference.py` with the Write tool:
+Write `/tmp/ReTiCAMsgr/reply_fields_reference.py` with the Write tool:
 
 ```python
 import RNS.vendor.umsgpack as umsgpack
@@ -364,7 +364,7 @@ print(packed.hex())
 print(len(packed))
 ```
 
-Run: `/Users/ell/opt/anaconda3/envs/rns/bin/python /tmp/ReTiCaMsgr/reply_fields_reference.py`
+Run: `/Users/ell/opt/anaconda3/envs/rns/bin/python /tmp/ReTiCAMsgr/reply_fields_reference.py`
 Expected output, exactly:
 
 ```
@@ -382,7 +382,7 @@ Create `ReplyWireTests.swift`:
 import Testing
 import Foundation
 import ReTiCA
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 /// Non-uniform bytes, so a reversal or truncation changes the value.
 private let originalHash = Data((0..<32).map { UInt8($0) })
@@ -404,7 +404,7 @@ private func replyFields(replyTo: MsgPackValue?, quote: MsgPackValue?) -> [MsgPa
 }
 
 /// The expected bytes are reference umsgpack's `packb({0x30: bytes(range(32)), 0x31: "Hi ☕ there".encode()})`,
-/// from /tmp/ReTiCaMsgr/reply_fields_reference.py run with the rns env's Python.
+/// from /tmp/ReTiCAMsgr/reply_fields_reference.py run with the rns env's Python.
 @Test func replyWireEncodeMatchesReferenceUmsgpackBytes() throws {
     let expected = try #require(Data(hexString:
         "8230c420000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f31c40c486920e29895207468657265"))
@@ -509,7 +509,7 @@ private func replyFields(replyTo: MsgPackValue?, quote: MsgPackValue?) -> [MsgPa
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore --filter replyWire`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore --filter replyWire`
 Expected: a compile failure, `cannot find 'ReplyWire' in scope`.
 
 - [ ] **Step 4: Write the codec**
@@ -584,7 +584,7 @@ public enum ReplyWire {
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore --filter replyWire`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore --filter replyWire`
 Expected: 9 tests pass.
 
 - [ ] **Step 6: Mutation check**
@@ -604,20 +604,20 @@ Check that no mutation hides another:
 - M3 does not touch the invalid-field tests, which build their fields by hand.
 - No mutation can crash. M5 builds a valid String, and M6 only removes code.
 
-Run the filter and confirm all 9 tests are red. Revert all six by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies diff` and confirm no mutation text remains. (`ReplyWire.swift` and `ReplyWireTests.swift` are untracked, so check them by reading `ReplyWire.swift` against Step 4.)
+Run the filter and confirm all 9 tests are red. Revert all six by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies diff` and confirm no mutation text remains. (`ReplyWire.swift` and `ReplyWireTests.swift` are untracked, so check them by reading `ReplyWire.swift` against Step 4.)
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore`
 Expected: 213 tests pass, 0 known issues.
 
 - [ ] **Step 8: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReplyWire.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReplyWireTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReplyWire.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReplyWireTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/msg-replies-task-2.txt` with the Write tool:
+Write `/tmp/ReTiCAMsgr/msg-replies-task-2.txt` with the Write tool:
 
 ```
 feat: add the ReplyWire codec for LXMF reply fields
@@ -631,21 +631,21 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies commit -F /tmp/ReTiCaMsgr/msg-replies-task-2.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies commit -F /tmp/ReTiCAMsgr/msg-replies-task-2.txt`
 
 ---
 
 ### Task 3: Reply target and send
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`
   - `:34-36`: add `ReplyTarget` after `PublicKeyRequestStatus`, before `@ObservableState`
   - `:55`: add `replyTarget` after `public var draft = ""`
   - `:150`: add two actions after `case reactionSelected(...)`
   - `:474-479`: `closeConversation`
   - `:486-528`: `sendTapped`
   - `:562`: new `replyTapped` / `replyCancelled` cases after the `reactionSelected` case
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append at the end, after line 2567)
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append at the end, after line 2567)
 
 **Interfaces:**
 - Consumes: `ReplyWire.encode(replyTo:quote:)`, `ReplyWire.trimQuote(_:)` (Task 2), `Message.replyToHash` / `replyQuote` and the init parameters (Task 1).
@@ -787,7 +787,7 @@ private func replySendAndFetch(draft: String, target: AppFeature.ReplyTarget?)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore --filter replyTarget`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore --filter replyTarget`
 Expected: a compile failure. `AppFeature.ReplyTarget`, `replyTarget`, `.replyTapped` and `.replyCancelled` do not exist.
 
 - [ ] **Step 3: Add the type, state and actions**
@@ -928,7 +928,7 @@ After the closing `)` of the `reactionSelected` case's `return .merge(...)` (lin
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore --filter replyTarget`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore --filter replyTarget`
 Expected: 7 tests pass.
 
 - [ ] **Step 6: Mutation check**
@@ -955,20 +955,20 @@ Check that no mutation hides another:
 - M7 only changes the no-target row. With a target, `replyToHash` is non-nil.
 - Nothing can crash.
 
-Run the filter and confirm all 7 tests are red. Revert all seven by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies diff` and confirm only the Step 3–4 changes remain.
+Run the filter and confirm all 7 tests are red. Revert all seven by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies diff` and confirm only the Step 3–4 changes remain.
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore`
 Expected: 220 tests pass, 0 known issues. In particular `sendPersistsToOpenPeerAndReloadsBoth` and `infoSendStoresSizesFieldKeysAndSendTime` still pass (no target → no fields, `fieldKeys == ""`).
 
 - [ ] **Step 8: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/msg-replies-task-3.txt` with the Write tool:
+Write `/tmp/ReTiCAMsgr/msg-replies-task-3.txt` with the Write tool:
 
 ```
 feat: send replies with LXMF reply fields
@@ -982,15 +982,15 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies commit -F /tmp/ReTiCaMsgr/msg-replies-task-3.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies commit -F /tmp/ReTiCAMsgr/msg-replies-task-3.txt`
 
 ---
 
 ### Task 4: Receive path
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`, in the `messageReceived` case: the `let row = Message(` block after `case .notReaction: break` (originally lines 666–682, about 30 lines lower after Task 3)
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append at the end)
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`, in the `messageReceived` case: the `let row = Message(` block after `case .notReaction: break` (originally lines 666–682, about 30 lines lower after Task 3)
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append at the end)
 
 **Interfaces:**
 - Consumes: `ReplyWire.decode(_:)` (Task 2), `Message.replyToHash` / `replyQuote` (Task 1). Test helpers already in the file: `makeStore`, `wireMessage(from:to:at:title:content:fields:)`, `receiveAndFetch(_:me:method:)`.
@@ -1064,7 +1064,7 @@ private let replyOriginalHash = Data((0..<32).map { UInt8(($0 * 37 + 11) & 0xFF)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore --filter replyReceive`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore --filter replyReceive`
 Expected: `replyReceiveStoresBothColumns` and `replyReceiveInvalidQuoteStoresHashOnly` fail, because `replyToHash` is nil. `replyReceiveReactionWithReplyFieldsIsOnlyAReaction` passes already. That is expected: it pins behaviour that exists today, and Step 5's M3 proves it can fail.
 
 - [ ] **Step 3: Store the reply columns**
@@ -1098,7 +1098,7 @@ In the `messageReceived` case, replace the block from `let row = Message(` throu
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore --filter replyReceive`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore --filter replyReceive`
 Expected: 3 tests pass.
 
 - [ ] **Step 5: Mutation check**
@@ -1113,20 +1113,20 @@ Check that nothing hides anything:
 - M1 and M2 do not affect the reaction test, which asserts that no row exists.
 - Nothing can crash.
 
-Run the filter and confirm all 3 tests are red. Revert all three by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies diff` and confirm only the Step 3 change remains.
+Run the filter and confirm all 3 tests are red. Revert all three by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies diff` and confirm only the Step 3 change remains.
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore`
 Expected: 223 tests pass, 0 known issues.
 
 - [ ] **Step 7: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/msg-replies-task-4.txt` with the Write tool:
+Write `/tmp/ReTiCAMsgr/msg-replies-task-4.txt` with the Write tool:
 
 ```
 feat: store reply fields on incoming messages
@@ -1139,16 +1139,16 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies commit -F /tmp/ReTiCaMsgr/msg-replies-task-4.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies commit -F /tmp/ReTiCAMsgr/msg-replies-task-4.txt`
 
 ---
 
 ### Task 5: `ReplyPreview` resolver and the peer name
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReplyPreview.swift`
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`: in `State`, after `setThreadReactionRows` (originally lines 120–123, about 17 lines lower after Task 3)
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReplyPreviewTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReplyPreview.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`: in `State`, after `setThreadReactionRows` (originally lines 120–123, about 17 lines lower after Task 3)
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReplyPreviewTests.swift`
 
 **Interfaces:**
 - Consumes: `ReplyWire.trimQuote(_:)` (Task 2), `Message.replyToHash` / `replyQuote` (Task 1), `LXMFNode.LearnedPeer.displayName` via `state.node.client.learnedPeers`.
@@ -1179,7 +1179,7 @@ import Testing
 import Foundation
 import ReTiCA
 import ReTiCANode
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private let peer = String(repeating: "ab", count: 16)
 private let originalHash = String(repeating: "a1", count: 32)
@@ -1268,7 +1268,7 @@ private func message(_ n: Int, outgoing: Bool, body: String, hash: String = "",
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore --filter replyPreview`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore --filter replyPreview`
 Expected: a compile failure. `ReplyPreview` and `openPeerDisplayName` do not exist.
 
 - [ ] **Step 3: Write the resolver**
@@ -1348,7 +1348,7 @@ In `AppFeature.swift`, inside `State`, directly after the closing `}` of `setThr
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore --filter replyPreview`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore --filter replyPreview`
 Expected: 7 tests pass.
 
 - [ ] **Step 6: Mutation check**
@@ -1367,20 +1367,20 @@ Check that no mutation hides another:
 - `replyPreviewNeitherShowsUnavailable` uses `peerName: nil`, so M3 cannot mask M4 there. The incoming case becomes "Them" either way.
 - Nothing can crash.
 
-Run the filter and confirm all 7 tests are red. Revert all six by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies diff` and confirm only the Step 4 addition remains in `AppFeature.swift`. Read `ReplyPreview.swift` back against Step 3.
+Run the filter and confirm all 7 tests are red. Revert all six by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies diff` and confirm only the Step 4 addition remains in `AppFeature.swift`. Read `ReplyPreview.swift` back against Step 3.
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore`
 Expected: 230 tests pass, 0 known issues.
 
 - [ ] **Step 8: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReplyPreview.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReplyPreviewTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReplyPreview.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReplyPreviewTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/msg-replies-task-5.txt` with the Write tool:
+Write `/tmp/ReTiCAMsgr/msg-replies-task-5.txt` with the Write tool:
 
 ```
 feat: resolve what a reply bubble quotes
@@ -1394,15 +1394,15 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies commit -F /tmp/ReTiCaMsgr/msg-replies-task-5.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies commit -F /tmp/ReTiCAMsgr/msg-replies-task-5.txt`
 
 ---
 
 ### Task 6: UI — menu row, composer bar, quote block, scroll and highlight
 
 **Files:**
-- Create: `ReTiCaMsgr/ReplyViews.swift`
-- Modify: `ReTiCaMsgr/ChatView.swift` (whole file)
+- Create: `ReTiCAMsgr/ReplyViews.swift`
+- Modify: `ReTiCAMsgr/ChatView.swift` (whole file)
 
 **Interfaces:**
 - Consumes: `AppFeature.State.replyTarget`, `.openPeerDisplayName`, `AppFeature.Action.replyTapped(_:)` / `.replyCancelled` (Tasks 3, 5); `ReplyPreview.resolve(for:in:peerName:)`, `ReplyPreview.senderLabel(originalIsOutgoing:peerName:)`, `ReplyPreview.Resolved` (Task 5); `ReplyWire.trimQuote(_:)` (Task 2).
@@ -1412,16 +1412,16 @@ No unit tests: this task is SwiftUI layout. The Task 7 manual check covers it.
 
 - [ ] **Step 1: Create the reply views**
 
-Create `ReTiCaMsgr/ReplyViews.swift`:
+Create `ReTiCAMsgr/ReplyViews.swift`:
 
 ```swift
 //
 //  ReplyViews.swift
-//  ReTiCaMsgr
+//  ReTiCAMsgr
 //
 
 import SwiftUI
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// The quoted original inside a reply's bubble. It can be tapped (to scroll to the original) only
 /// when the original is in this thread and a tap handler is given. The context-menu preview passes none.
@@ -1516,7 +1516,7 @@ Replace the whole file with:
 ```swift
 //
 //  ChatView.swift
-//  ReTiCaMsgr
+//  ReTiCAMsgr
 //
 //  Created by Elliot Schrock on 8/1/26.
 //
@@ -1524,7 +1524,7 @@ Replace the whole file with:
 import SwiftUI
 import UIKit
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 struct ChatView: View {
     @Bindable var store: StoreOf<AppFeature>
@@ -1745,21 +1745,21 @@ The only changes from the current file are these:
 
 - [ ] **Step 3: Build the app**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build`
 Expected: `** BUILD SUCCEEDED **`. If it fails in ReTiCA sources, stop and report it (ReTiCA drift). If it fails in these two files, fix it here.
 
 - [ ] **Step 4: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore`
 Expected: 230 tests pass, 0 known issues (unchanged, since this task touches only the app target).
 
 - [ ] **Step 5: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies add ReTiCaMsgr/ReplyViews.swift ReTiCaMsgr/ChatView.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies add ReTiCAMsgr/ReplyViews.swift ReTiCAMsgr/ChatView.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/msg-replies-task-6.txt` with the Write tool:
+Write `/tmp/ReTiCAMsgr/msg-replies-task-6.txt` with the Write tool:
 
 ```
 feat: reply from the message menu
@@ -1773,14 +1773,14 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies commit -F /tmp/ReTiCaMsgr/msg-replies-task-6.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies commit -F /tmp/ReTiCAMsgr/msg-replies-task-6.txt`
 
 ---
 
 ### Task 7: Manual simulator verification
 
 **Files:**
-- Modify TEMPORARILY: `ReTiCaMsgr/ReTiCaMsgrApp.swift`. **This is reverted by hand before the task ends and is never committed.**
+- Modify TEMPORARILY: `ReTiCAMsgr/ReTiCAMsgrApp.swift`. **This is reverted by hand before the task ends and is never committed.**
 
 **Interfaces:**
 - Consumes: everything above.
@@ -1798,7 +1798,7 @@ Check the session defaults before the first build, as the skill requires.
 
 - [ ] **Step 2: Add the temporary seed scaffold**
 
-In `ReTiCaMsgrApp.swift`, replace lines 20–21:
+In `ReTiCAMsgrApp.swift`, replace lines 20–21:
 
 ```swift
         prepareDependencies {
@@ -1896,13 +1896,13 @@ enum ReplySeed {
 #endif
 ```
 
-The file already imports `SQLiteData` (which re-exports `DatabaseWriter` and the query DSL), `ReTiCANode` (`LXMFNode.LearnedPeer`) and `ReTiCaMsgrCore`.
+The file already imports `SQLiteData` (which re-exports `DatabaseWriter` and the query DSL), `ReTiCANode` (`LXMFNode.LearnedPeer`) and `ReTiCAMsgrCore`.
 
 Before running, open Settings in the app once and note whether a propagation node is configured. Do not change it. If one is set, the reply sent in check 4 is also uploaded to that node, addressed to the fake peer `6c6c…`. That is harmless but should be mentioned in the report.
 
 - [ ] **Step 3: Build and run on a simulator**
 
-Use the skill's simulator build-and-run for `/Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgr.xcodeproj`, scheme `ReTiCaMsgr`. Open the conversation `6c6c…` from the Chats list.
+Use the skill's simulator build-and-run for `/Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgr.xcodeproj`, scheme `ReTiCAMsgr`. Open the conversation `6c6c…` from the Chats list.
 
 - [ ] **Step 4: Verify, taking a screenshot for each check**
 
@@ -1940,7 +1940,7 @@ If check 2's focus does not move to the text field, the menu dismissal is swallo
                                 }
 ```
 
-Rebuild, re-check, and commit it in a new commit, staging only `ReTiCaMsgr/ChatView.swift`, with the message in `/tmp/ReTiCaMsgr/msg-replies-task-7-fix.txt` ("fix: focus the text field after the Reply menu dismisses", plus the trailers). The scaffold must not be staged.
+Rebuild, re-check, and commit it in a new commit, staging only `ReTiCAMsgr/ChatView.swift`, with the message in `/tmp/ReTiCAMsgr/msg-replies-task-7-fix.txt` ("fix: focus the text field after the Reply menu dismisses", plus the trailers). The scaffold must not be staged.
 
 For any other failing check, stop. Diagnose it with superpowers:systematic-debugging, fix it in the owning task's files with a new commit (its own message file), and redo this task.
 
@@ -1963,18 +1963,18 @@ With the Edit tool:
   This deletes the `let database` line and the `#if DEBUG` block.
 - delete the whole `#if DEBUG enum ReplySeed ... #endif` block at the end of the file.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies diff -- ReTiCaMsgr/ReTiCaMsgrApp.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies diff -- ReTiCAMsgr/ReTiCAMsgrApp.swift`
 Expected: empty output.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-replies status --short`
-Expected: no entry for `ReTiCaMsgrApp.swift`. Only pre-existing unrelated entries remain.
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-replies status --short`
+Expected: no entry for `ReTiCAMsgrApp.swift`. Only pre-existing unrelated entries remain.
 
 - [ ] **Step 7: Final checks**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build`
 Expected: `** BUILD SUCCEEDED **` with the scaffold gone.
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-replies/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-replies/ReTiCAMsgrCore`
 Expected: 230 tests pass, 0 known issues.
 
 Nothing is committed in this task, apart from a focus fix if Step 4 needed one. Report:

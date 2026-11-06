@@ -12,20 +12,20 @@
 
 ## Global Constraints
 
-- **Where:** all work happens ONLY in the app worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-groups` on branch `feat/group-chats`, cut from app `main` in Task 0. `APP` below means that path; `CORE` means `APP/ReTiCaMsgrCore`. Never build, test or run git against the main checkout `/Users/ell/development/ios/apps/ReTiCaMsgr` after Task 0's `worktree add`, and never touch `/Users/ell/development/ios/pods/ReTiCA` (read-only path dependency; `CORE/Package.swift`'s `../../../pods/ReTiCA` resolves from the worktree unchanged).
-- **Task 0 is a gate:** the baseline core suite `swift test --package-path CORE` must be green and `xcodebuild -project APP/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build` must succeed before Task 1. Record the baseline test count in `/tmp/ReTiCaMsgr/grp-baseline.txt`.
-- **Commits** go on `feat/group-chats` only. Stage explicit paths (`git -C APP add <path> ...`, never `-A`/`.`). Never stage `ReTiCaMsgr.xcodeproj/xcuserdata/**`, `ReTiCaMsgrCore/.swiftpm/**` or `Package.resolved`. Each task writes its message to its OWN file `/tmp/ReTiCaMsgr/msg-grp-task-N.txt` with the Write tool, then `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-N.txt`. Message = `feat:`/`fix:`/`test:`/`docs:` subject, blank line, body, blank line, then exactly these two lines at column 0 (the first names the model that wrote the commit):
+- **Where:** all work happens ONLY in the app worktree `/Users/ell/development/ios/apps/ReTiCAMsgr-groups` on branch `feat/group-chats`, cut from app `main` in Task 0. `APP` below means that path; `CORE` means `APP/ReTiCAMsgrCore`. Never build, test or run git against the main checkout `/Users/ell/development/ios/apps/ReTiCAMsgr` after Task 0's `worktree add`, and never touch `/Users/ell/development/ios/pods/ReTiCA` (read-only path dependency; `CORE/Package.swift`'s `../../../pods/ReTiCA` resolves from the worktree unchanged).
+- **Task 0 is a gate:** the baseline core suite `swift test --package-path CORE` must be green and `xcodebuild -project APP/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build` must succeed before Task 1. Record the baseline test count in `/tmp/ReTiCAMsgr/grp-baseline.txt`.
+- **Commits** go on `feat/group-chats` only. Stage explicit paths (`git -C APP add <path> ...`, never `-A`/`.`). Never stage `ReTiCAMsgr.xcodeproj/xcuserdata/**`, `ReTiCAMsgrCore/.swiftpm/**` or `Package.resolved`. Each task writes its message to its OWN file `/tmp/ReTiCAMsgr/msg-grp-task-N.txt` with the Write tool, then `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-N.txt`. Message = `feat:`/`fix:`/`test:`/`docs:` subject, blank line, body, blank line, then exactly these two lines at column 0 (the first names the model that wrote the commit):
   `Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>`
   `Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1`
   No semicolons anywhere in a commit message.
-- **Shell:** one command per Bash call. No `|`, `&&`, `||`, `;`, `$(...)`, `xargs`, no inline interpreters (`python -c`, heredocs into an interpreter). Scripts go in files under `/tmp/ReTiCaMsgr/` (`mkdir -p /tmp/ReTiCaMsgr` if missing). Redirecting one command's output to a file (`cmd > /tmp/ReTiCaMsgr/x.log 2>&1`) is allowed.
+- **Shell:** one command per Bash call. No `|`, `&&`, `||`, `;`, `$(...)`, `xargs`, no inline interpreters (`python -c`, heredocs into an interpreter). Scripts go in files under `/tmp/ReTiCAMsgr/` (`mkdir -p /tmp/ReTiCAMsgr` if missing). Redirecting one command's output to a file (`cmd > /tmp/ReTiCAMsgr/x.log 2>&1`) is allowed.
 - **Tests:** `swift test --package-path CORE --filter <prefix>` runs one task's tests; the full core suite is `swift test --package-path CORE`. Known flake: `deliveryFailedMarksFailedAndReloads` can fail when run ALONE via `--filter`; it passes in a full run. Never run `swift test` and `xcodebuild` at the same time on the same package. Filtering still compiles every target, so the whole package must compile at the end of every task. Every new test name starts with its task's prefix — `groupTable` (T1), `groupWire` (T2), `groupRules` (T3), `groupConv` (T4), `groupCreate` (T5), `groupSend` (T6), `groupDeliver` (T7), `groupReceive` (T8), `groupControl` (T9), `groupInfo` (T10). No existing test name starts with `group` (checked 2026-10-09 with a grep of `func group` over the test folder: none).
 - **Mutation verification is mandatory** for every task with tests: (a) run the task's filter, all GREEN; (b) apply the task's listed mutation batch to production code, run the filter once, confirm EVERY listed test is RED — where the table says "sub-batch", run the sub-batches separately so no mutation masks another; (c) revert every mutation BY HAND with the Edit tool (never `git checkout -- <file>`), confirm `git -C APP diff` shows only the task's intended changes, run again, all GREEN. If a test survives its mutation, fix the test and restart at (a). Tests edited only mechanically to compile against a new shape are exempt.
 - **TCA TestStore facts these tests rely on:** under `exhaustivity = .off`, `store.state` reflects effect-delivered actions only after `receive` or `await store.skipReceivedActions(strict: false)`; every `send` clears not-yet-received actions, so a `receive` for something an earlier `send` produced must come before the next `send`; a non-exhaustive `receive { predicate }` skips the actions that do not match and waits for one that does. **Never call `store.finish()` after an action that reaches the node's send path or `pathLearned`**: the router arms a retry timer and the path handler arms a 30 s debounce on the `TestClock`, and `finish()` would wait on them. After such actions, `receive` the expected actions and then `await store.skipReceivedActions(strict: false)` before reading rows. `\.date` is frozen at 1700000000 (`infoT0`) in `makeStore`. The reducer calls `UUID()` directly; group and post ids come from `GroupWire.randomId()`, so tests read them back from rows rather than predicting them.
 - **Test style** (match `AppFeatureTests.swift`): free `@MainActor @Test func` functions, `makeStore(db, identity:)` with `exhaustivity = .off`, `#expect` with literals. New AppFeature tests go in `AppFeatureTests.swift` so they can use its private helpers (`makeStore`, `seed`, `msg`, `uuid`, `peerA`, `peerB`, `infoT0`, `sendAndSettle`, `wireMessage`, `receiveAndFetch`, `reactionMessage`, `hashData`, `learnedEntry`). Task 4 adds the group helpers (`groupHexA`, `memberC`, `memberD`, `groupMemberHash`, `groupStore`, `groupSends`) that later tasks use, and Task 8 adds `groupPostWire` and `groupReceive`.
-- **`Attachment` vs `Testing.Attachment`:** every TEST file that names the model type adds `import struct ReTiCaMsgrCore.Attachment` after its imports. Production code is unaffected.
+- **`Attachment` vs `Testing.Attachment`:** every TEST file that names the model type adds `import struct ReTiCAMsgrCore.Attachment` after its imports. Production code is unaffected.
 - **Constants (from the spec and amendments):** `GroupWire.fieldCustomMeta = 0xFD`, `groupKey = "reticamsgr.group"`, `controlKey = "reticamsgr.group.ctl"`, `idLength = 16`, `maxNameBytes = 32`, `maxMembers = 12`, actions `"roster"` / `"leave"`, control map keys `"a"`, `"n"`, `"m"`, `"r"`; `GroupState.invited/active/left/dissolved`; `GroupDeliveryStatus.waiting = "waiting"`; `GroupControl.roster = "roster"`, `.leave = "leave"`; migration `createGroups`; tables `chatGroups`, `groupMembers`, `groupDeliveries` (amendment A1: the Swift type is `ChatGroup`, since SwiftUI owns `Group` and `GROUPS` is an SQLite keyword); wire bodies and lines exactly as `GroupEventText` in Task 3 spells them; caveat `Members on other apps see posts as separate direct messages and cannot reply to the group.`
-- **App target:** new SwiftUI files go in `APP/ReTiCaMsgr/` (synchronized folders, no pbxproj edit). The app build must succeed at the end of Task 11; every core task must leave the package compiling, which the filtered test runs prove.
+- **App target:** new SwiftUI files go in `APP/ReTiCAMsgr/` (synchronized folders, no pbxproj edit). The app build must succeed at the end of Task 11; every core task must leave the package compiling, which the filtered test runs prove.
 
 ## Review Focus
 
@@ -45,26 +45,26 @@ Inputs the spec implies but its own examples don't exercise, most likely to bite
 
 - [x] **Step 1: Create the worktree from app main**
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr worktree add /Users/ell/development/ios/apps/ReTiCaMsgr-groups -b feat/group-chats main`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr worktree add /Users/ell/development/ios/apps/ReTiCAMsgr-groups -b feat/group-chats main`
 Expected: a new worktree at `APP` on `feat/group-chats`, HEAD = app main (the commit carrying this plan, or later).
 
 - [x] **Step 2: Temp directory**
 
-Run: `mkdir -p /tmp/ReTiCaMsgr`
+Run: `mkdir -p /tmp/ReTiCAMsgr`
 
 - [x] **Step 3: Baseline core suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/grp-t0-core.log 2>&1`
-Expected: the log ends with `Test run with N tests in 0 suites passed`. Write `N` to `/tmp/ReTiCaMsgr/grp-baseline.txt` with the Write tool.
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/grp-t0-core.log 2>&1`
+Expected: the log ends with `Test run with N tests in 0 suites passed`. Write `N` to `/tmp/ReTiCAMsgr/grp-baseline.txt` with the Write tool.
 
 - [x] **Step 4: Baseline app build**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCaMsgr/grp-t0-xcodebuild.log 2>&1`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCAMsgr/grp-t0-xcodebuild.log 2>&1`
 Expected: `** BUILD SUCCEEDED **` at the end of the log.
 
 - [x] **Step 5: Restore any files Xcode rewrote**
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-groups status --short`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-groups status --short`
 Expected: empty. If the two `xcschememanagement.plist` files show as modified, restore them with `git -C APP checkout -- <path>` (the ONLY `git checkout --` allowed in this plan, only here and in Task 11 Step 9). Nothing to commit.
 
 ---
@@ -72,19 +72,19 @@ Expected: empty. If the two `xcschememanagement.plist` files show as modified, r
 ### Task 1: Schema, `Message` columns, `ChatGroup`, `GroupMember`, `GroupDelivery`
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/Database.swift` (new migration after `addExpiresAtIndex`)
-- Modify: `CORE/Sources/ReTiCaMsgrCore/Message.swift` (four properties after `isTimerChange`)
-- Create: `CORE/Sources/ReTiCaMsgrCore/ChatGroup.swift`
-- Create: `CORE/Sources/ReTiCaMsgrCore/GroupMember.swift`
-- Create: `CORE/Sources/ReTiCaMsgrCore/GroupDelivery.swift`
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift` (append)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/Database.swift` (new migration after `addExpiresAtIndex`)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/Message.swift` (four properties after `isTimerChange`)
+- Create: `CORE/Sources/ReTiCAMsgrCore/ChatGroup.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/GroupMember.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/GroupDelivery.swift`
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift` (append)
 
 **Interfaces:**
 - Produces: `Message.groupHex: String?`, `Message.groupPostId: String?`, `Message.isGroupEvent: Bool`, `Message.groupControl: String?` (init parameters after `isTimerChange`, defaults `nil`, `nil`, `false`, `nil`). `GroupState` (`invited`, `active`, `left`, `dissolved`), `GroupControl` (`roster`, `leave`), `GroupDeliveryStatus.waiting`. `ChatGroup` (`@Table`): `groupHex`, `name`, `creatorHex`, `revision: Int`, `state`, `updatedAt: Date`; `isOpen: Bool` (invited or active); `static func fetch(_ groupHex: String, _ db: GRDB.Database) throws -> ChatGroup?`; `static func upsert(_ group: ChatGroup, _ db: GRDB.Database) throws`. `GroupMember` (`@Table`): `groupHex`, `memberHex`; `static func members(of groupHex: String, _ db: GRDB.Database) throws -> [String]` (sorted); `static func replace(_ groupHex: String, with members: [String], _ db: GRDB.Database) throws`; `static func contains(_ groupHex: String, _ memberHex: String, _ db: GRDB.Database) throws -> Bool`. `GroupDelivery` (`@Table`): `messageId: UUID`, `memberHex`, `messageHash: String?`, `status`, `storedAt`, `deliveredAt`, `failedAt: Date?`; `static func byMessageId(_ rows: [GroupDelivery]) -> [UUID: [GroupDelivery]]` (each list sorted by `memberHex`). Migration `createGroups`.
 
 - [x] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift`:
 
 ```swift
 
@@ -236,12 +236,12 @@ private func groupTableMessage(_ id: String, groupHex: String?, postId: String?)
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupTable > /tmp/ReTiCaMsgr/grp-t1-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupTable > /tmp/ReTiCAMsgr/grp-t1-red.log 2>&1`
 Expected: compile errors (`ChatGroup`, `groupHex` unknown).
 
 - [x] **Step 3: Add the migration**
 
-In `CORE/Sources/ReTiCaMsgrCore/Database.swift`, after the `addExpiresAtIndex` migration's closing `}` and before `return m`:
+In `CORE/Sources/ReTiCAMsgrCore/Database.swift`, after the `addExpiresAtIndex` migration's closing `}` and before `return m`:
 
 ```swift
         m.registerMigration("createGroups") { db in
@@ -293,7 +293,7 @@ In `CORE/Sources/ReTiCaMsgrCore/Database.swift`, after the `addExpiresAtIndex` m
 
 - [x] **Step 4: Add the `Message` properties**
 
-In `CORE/Sources/ReTiCaMsgrCore/Message.swift`, after `public var isTimerChange: Bool`:
+In `CORE/Sources/ReTiCAMsgrCore/Message.swift`, after `public var isTimerChange: Bool`:
 
 ```swift
     /// Group chats (spec 2026-10-09 §2): the group this row belongs to, as hex. nil for a
@@ -480,7 +480,7 @@ public enum GroupDeliveryStatus {
 
 - [x] **Step 8: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupTable > /tmp/ReTiCaMsgr/grp-t1-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupTable > /tmp/ReTiCAMsgr/grp-t1-green.log 2>&1`
 Expected: 6 tests passed.
 
 - [x] **Step 9: Mutation verification**
@@ -498,7 +498,7 @@ Apply all six, run the filter once, confirm all six RED. Revert by hand, run aga
 
 - [x] **Step 10: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-1.txt`:
+Write `/tmp/ReTiCAMsgr/msg-grp-task-1.txt`:
 
 ```
 feat: group-chat schema and models
@@ -513,29 +513,29 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ChatGroup.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/GroupMember.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/GroupDelivery.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-1.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ChatGroup.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/GroupMember.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/GroupDelivery.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-1.txt`
 
 ---
 
 ### Task 2: `GroupWire` codec
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/GroupWire.swift`
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/GroupWireTests.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/GroupWire.swift`
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/GroupWireTests.swift`
 
 **Interfaces:**
 - Produces: `GroupWire.fieldCustomMeta = 0xFD`, `groupKey`, `controlKey`, `idLength = 16`, `maxNameBytes = 32`, `maxMembers = 12`, `actionRoster = "roster"`, `actionLeave = "leave"`; `enum Decoded: Equatable, Sendable { case post(groupId: Data, postId: Data); case marker(groupId: Data); case roster(groupId: Data, name: String, members: [Data], revision: Int); case leave(groupId: Data) }`; `static func randomId() -> Data` (16 random bytes); `static func trimName(_ name: String) -> String` (trimmed, at most 32 UTF-8 bytes, cut on a Character boundary); `static func encodePost(groupId: Data, postId: Data) -> [MsgPackValue.IntPair]`; `static func encodeMarker(groupId: Data) -> [MsgPackValue.IntPair]`; `static func encodeRoster(groupId: Data, name: String, members: [Data], revision: Int) -> [MsgPackValue.IntPair]`; `static func encodeLeave(groupId: Data) -> [MsgPackValue.IntPair]`; `static func decode(_ fields: [MsgPackValue.IntPair]) -> Decoded?` (nil = not a group message). Every `encode*` returns exactly one 0xFD pair.
 
 - [x] **Step 1: Write the failing tests**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/GroupWireTests.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/GroupWireTests.swift`:
 
 ```swift
 import Testing
 import Foundation
 import ReTiCA
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private let gid = Data((0..<16).map { UInt8($0 + 0x10) })
 private let pid = Data((0..<16).map { UInt8(0xF0 - $0) })
@@ -601,7 +601,7 @@ private func ctl(_ pairs: [MsgPackValue.Pair], ids: [MsgPackValue] = [.bin(gid)]
         destinationHash: Data(repeating: 0x11, count: 16),
         timestamp: 1700000000.25,
         title: Data("Mutual Aid".utf8),
-        content: Data("Ada invited you to the group Mutual Aid in ReTiCaMsgr".utf8),
+        content: Data("Ada invited you to the group Mutual Aid in ReTiCAMsgr".utf8),
         fields: fields
     )
     let back = try #require(LXMessage.unpack(m.packed))
@@ -683,7 +683,7 @@ private func ctl(_ pairs: [MsgPackValue.Pair], ids: [MsgPackValue] = [.bin(gid)]
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupWire > /tmp/ReTiCaMsgr/grp-t2-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupWire > /tmp/ReTiCAMsgr/grp-t2-red.log 2>&1`
 Expected: compile errors (`GroupWire` unknown).
 
 - [x] **Step 3: Create `GroupWire.swift`**
@@ -835,7 +835,7 @@ public enum GroupWire {
 
 - [x] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupWire > /tmp/ReTiCaMsgr/grp-t2-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupWire > /tmp/ReTiCAMsgr/grp-t2-green.log 2>&1`
 Expected: 11 tests passed.
 
 - [x] **Step 5: Mutation verification**
@@ -857,7 +857,7 @@ Sub-batch A: the first five rows together. Sub-batch B: the last five together. 
 
 - [x] **Step 6: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-2.txt`:
+Write `/tmp/ReTiCAMsgr/msg-grp-task-2.txt`:
 
 ```
 feat: GroupWire codec for the 0xFD group entries
@@ -870,29 +870,29 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/GroupWire.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/GroupWireTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-2.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/GroupWire.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/GroupWireTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-2.txt`
 
 ---
 
 ### Task 3: `GroupRoster` rules, derived status, `GroupEventText`
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/GroupRoster.swift`
-- Create: `CORE/Sources/ReTiCaMsgrCore/GroupEventText.swift`
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/GroupRulesTests.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/GroupRoster.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/GroupEventText.swift`
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/GroupRulesTests.swift`
 
 **Interfaces:**
-- Produces: `GroupRoster.applies(revision: Int, from senderHex: String, to stored: ChatGroup?) -> Bool`; `struct GroupRoster.Diff: Equatable, Sendable { added: [String]; removed: [String]; renamed: String?; dissolved: Bool }`; `GroupRoster.diff(oldMembers: [String], oldName: String, newMembers: [String], newName: String) -> Diff` (lists sorted); `GroupRoster.derivedStatus(_ rows: [GroupDelivery]) -> String`; `GroupRoster.statusLabel(_ rows: [GroupDelivery]) -> String`. `GroupEventText`: `you = "You"`, `appName = "ReTiCaMsgr"`, `caveat`, `fallbackName(_ hex: String) -> String` (first 8 characters), the line functions `created(name:)`, `invited(by:name:)`, `added(by:who:)`, `removed(by:who:)`, `removedYou(by:)`, `renamed(by:to:)`, `left(who:)`, `declined()`, `deleted(by:)`, and the wire bodies `rosterBody(inviter:name:)`, `leaveBody(who:name:)`, `deleteBody(who:name:)`.
+- Produces: `GroupRoster.applies(revision: Int, from senderHex: String, to stored: ChatGroup?) -> Bool`; `struct GroupRoster.Diff: Equatable, Sendable { added: [String]; removed: [String]; renamed: String?; dissolved: Bool }`; `GroupRoster.diff(oldMembers: [String], oldName: String, newMembers: [String], newName: String) -> Diff` (lists sorted); `GroupRoster.derivedStatus(_ rows: [GroupDelivery]) -> String`; `GroupRoster.statusLabel(_ rows: [GroupDelivery]) -> String`. `GroupEventText`: `you = "You"`, `appName = "ReTiCAMsgr"`, `caveat`, `fallbackName(_ hex: String) -> String` (first 8 characters), the line functions `created(name:)`, `invited(by:name:)`, `added(by:who:)`, `removed(by:who:)`, `removedYou(by:)`, `renamed(by:to:)`, `left(who:)`, `declined()`, `deleted(by:)`, and the wire bodies `rosterBody(inviter:name:)`, `leaveBody(who:name:)`, `deleteBody(who:name:)`.
 
 - [x] **Step 1: Write the failing tests**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/GroupRulesTests.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/GroupRulesTests.swift`:
 
 ```swift
 import Testing
 import Foundation
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private let creator = String(repeating: "c", count: 32)
 private let other = String(repeating: "d", count: 32)
@@ -979,7 +979,7 @@ private func delivery(_ member: String, _ status: String) -> GroupDelivery {
 
 /// Amendment A4: the bodies other clients see.
 @Test func groupRulesWireBodiesNameTheAppAndGroup() {
-    #expect(GroupEventText.rosterBody(inviter: "Ada", name: "Mutual Aid") == "Ada invited you to the group Mutual Aid in ReTiCaMsgr")
+    #expect(GroupEventText.rosterBody(inviter: "Ada", name: "Mutual Aid") == "Ada invited you to the group Mutual Aid in ReTiCAMsgr")
     #expect(GroupEventText.leaveBody(who: "Bob", name: "Mutual Aid") == "Bob left the group Mutual Aid")
     #expect(GroupEventText.deleteBody(who: "Ada", name: "Mutual Aid") == "Ada deleted the group Mutual Aid")
     #expect(GroupEventText.caveat == "Members on other apps see posts as separate direct messages and cannot reply to the group.")
@@ -988,7 +988,7 @@ private func delivery(_ member: String, _ status: String) -> GroupDelivery {
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupRules > /tmp/ReTiCaMsgr/grp-t3-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupRules > /tmp/ReTiCAMsgr/grp-t3-red.log 2>&1`
 Expected: compile errors (`GroupRoster`, `GroupEventText` unknown).
 
 - [x] **Step 3: Create `GroupRoster.swift`**
@@ -1075,7 +1075,7 @@ import Foundation
 /// testable and the same text serves the thread, the list preview and the wire.
 public enum GroupEventText {
     public static let you = "You"
-    public static let appName = "ReTiCaMsgr"
+    public static let appName = "ReTiCAMsgr"
     /// Shown on the group info screen (spec §4).
     public static let caveat = "Members on other apps see posts as separate direct messages and cannot reply to the group."
 
@@ -1107,7 +1107,7 @@ public enum GroupEventText {
 
 - [x] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupRules > /tmp/ReTiCaMsgr/grp-t3-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupRules > /tmp/ReTiCAMsgr/grp-t3-green.log 2>&1`
 Expected: 6 tests passed.
 
 - [x] **Step 6: Mutation verification**
@@ -1125,7 +1125,7 @@ Apply all six, run the filter once, confirm all six RED. Revert by hand, run aga
 
 - [x] **Step 7: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-3.txt`:
+Write `/tmp/ReTiCAMsgr/msg-grp-task-3.txt`:
 
 ```
 feat: group roster rules, derived status and event text
@@ -1138,18 +1138,18 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/GroupRoster.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/GroupEventText.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/GroupRulesTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-3.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/GroupRoster.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/GroupEventText.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/GroupRulesTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-3.txt`
 
 ---
 
 ### Task 4: `Conversation` kinds, group thread state and loading
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/Conversation.swift`
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (State, Action, `openConversation`, `startConversation`, `closeConversation`, `threadLoaded`, new cases, `reloadConversations`, `reloadThread`)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/ConversationTests.swift` (append)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append; also adds the shared group helpers Tasks 5–10 use)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/Conversation.swift`
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (State, Action, `openConversation`, `startConversation`, `closeConversation`, `threadLoaded`, new cases, `reloadConversations`, `reloadThread`)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/ConversationTests.swift` (append)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append; also adds the shared group helpers Tasks 5–10 use)
 
 **Interfaces:**
 - Consumes: Task 1.
@@ -1157,7 +1157,7 @@ Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-3.txt`
 
 - [x] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/ConversationTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/ConversationTests.swift`:
 
 ```swift
 
@@ -1197,7 +1197,7 @@ Append to `CORE/Tests/ReTiCaMsgrCoreTests/ConversationTests.swift`:
 }
 ```
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`:
 
 ```swift
 
@@ -1380,12 +1380,12 @@ private func groupSends(_ store: TestStoreOf<AppFeature>, _ action: AppFeature.A
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupConv > /tmp/ReTiCaMsgr/grp-t4-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupConv > /tmp/ReTiCAMsgr/grp-t4-red.log 2>&1`
 Expected: compile errors (`kind`, `openGroupConversation` unknown).
 
 - [x] **Step 3: `Conversation` kinds**
 
-Replace the whole of `CORE/Sources/ReTiCaMsgrCore/Conversation.swift` above `isValidPeerAddress` with:
+Replace the whole of `CORE/Sources/ReTiCAMsgrCore/Conversation.swift` above `isValidPeerAddress` with:
 
 ```swift
 import Foundation
@@ -1639,8 +1639,8 @@ If structured-queries rejects `||` in the `where` closure, fetch the two halves 
 
 - [x] **Step 7: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupConv > /tmp/ReTiCaMsgr/grp-t4-green.log 2>&1`
-Expected: 7 tests passed. Then run the full suite: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/grp-t4-full.log 2>&1`. Expected: baseline + 30 passed, no failures (the existing `threadLoaded` and `conversationsLoaded` tests still pass, since a peer thread now receives one extra `groupLoaded` first and the non-exhaustive `receive` skips it).
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupConv > /tmp/ReTiCAMsgr/grp-t4-green.log 2>&1`
+Expected: 7 tests passed. Then run the full suite: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/grp-t4-full.log 2>&1`. Expected: baseline + 30 passed, no failures (the existing `threadLoaded` and `conversationsLoaded` tests still pass, since a peer thread now receives one extra `groupLoaded` first and the non-exhaustive `receive` skips it).
 
 - [x] **Step 8: Mutation verification**
 
@@ -1658,7 +1658,7 @@ Apply all seven, run the filter once, confirm all seven RED. Revert by hand, run
 
 - [x] **Step 9: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-4.txt`:
+Write `/tmp/ReTiCAMsgr/msg-grp-task-4.txt`:
 
 ```
 feat: group conversations in the list and the thread state
@@ -1673,17 +1673,17 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ConversationTests.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-4.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Conversation.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ConversationTests.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-4.txt`
 
 ---
 
 ### Task 5: Copy builder, deferred dispatcher, creating a group
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/GroupDelivery.swift` (add `refreshDerivedStatus`)
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (Action, `createGroup`, `pathLearned`, `interfaceConnected`, `rehydrateLearnedDestinations`, two static builders, one private effect helper, one file-scope dispatcher)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/GroupDelivery.swift` (add `refreshDerivedStatus`)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (Action, `createGroup`, `pathLearned`, `interfaceConnected`, `rehydrateLearnedDestinations`, two static builders, one private effect helper, one file-scope dispatcher)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: Tasks 1–4.
@@ -1691,7 +1691,7 @@ Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-4.txt`
 
 - [x] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`:
 
 ```swift
 
@@ -1733,7 +1733,7 @@ Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
     let rosterCopy = try #require(AppFeature.groupCopy(of: roster, to: member, group: group, members: [memberC, myHex],
                                                        identity: me, myName: "Ada", timestamp: 1700000010))
     #expect(rosterCopy.title == Data("Mutual Aid".utf8))
-    #expect(rosterCopy.content == Data("Ada invited you to the group Mutual Aid in ReTiCaMsgr".utf8))
+    #expect(rosterCopy.content == Data("Ada invited you to the group Mutual Aid in ReTiCAMsgr".utf8))
     #expect(GroupWire.decode(rosterCopy.fields) == .roster(groupId: gid, name: "Mutual Aid",
                                                            members: [member, Data(hexString: myHex)!], revision: 4))
 
@@ -1811,7 +1811,7 @@ Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
     let wire = try #require(sent.first)
     #expect(wire.destinationHash == Data(hexString: memberC))
     #expect(wire.title == Data("Mutual Aid".utf8))
-    #expect(wire.content == Data("Ada invited you to the group Mutual Aid in ReTiCaMsgr".utf8))
+    #expect(wire.content == Data("Ada invited you to the group Mutual Aid in ReTiCAMsgr".utf8))
     #expect(wire.timestamp == infoT0.timeIntervalSince1970)
     let expectedRoster = [memberC, memberD, myHex].sorted().map { Data(hexString: $0)! }
     #expect(GroupWire.decode(wire.fields) == .roster(groupId: Data(hexString: groupHex)!, name: "Mutual Aid",
@@ -1908,7 +1908,7 @@ Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupCreate > /tmp/ReTiCaMsgr/grp-t5-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupCreate > /tmp/ReTiCAMsgr/grp-t5-red.log 2>&1`
 Expected: compile errors (`groupCopy`, `createGroup` unknown).
 
 - [x] **Step 3: `GroupDelivery.refreshDerivedStatus`**
@@ -2146,7 +2146,7 @@ These two hooks share the dispatcher the `pathLearned` test exercises; they have
 
 - [x] **Step 8: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupCreate > /tmp/ReTiCaMsgr/grp-t5-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupCreate > /tmp/ReTiCAMsgr/grp-t5-green.log 2>&1`
 Expected: 6 tests passed.
 
 - [x] **Step 9: Mutation verification**
@@ -2164,7 +2164,7 @@ Apply all six, run the filter once, confirm all six RED. Revert by hand, run aga
 
 - [x] **Step 10: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-5.txt`:
+Write `/tmp/ReTiCAMsgr/msg-grp-task-5.txt`:
 
 ```
 feat: group creation with per-member roster copies and deferred dispatch
@@ -2181,16 +2181,16 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/GroupDelivery.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-5.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/GroupDelivery.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-5.txt`
 
 ---
 
 ### Task 6: Sending posts and reactions in a group
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (`sendTapped`, `reactionSelected`, one private helper)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (`sendTapped`, `reactionSelected`, one private helper)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: Tasks 1–5 (`groupCopy`, `dispatchWaitingGroupCopies`, `GroupDelivery.waiting`, `refreshDerivedStatus`).
@@ -2198,7 +2198,7 @@ Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-5.txt`
 
 - [x] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`:
 
 ```swift
 
@@ -2326,7 +2326,7 @@ Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupSend > /tmp/ReTiCaMsgr/grp-t6-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupSend > /tmp/ReTiCAMsgr/grp-t6-red.log 2>&1`
 Expected: the five tests fail (a group store's `sendTapped` today writes a one-to-one row keyed on the group hex, or hangs waiting for `sendMessage` — a hang is a failure too, under the test timeout).
 
 - [x] **Step 3: `sendTapped` branches to `sendGroupPost`**
@@ -2442,7 +2442,7 @@ The rest of the case (the one-to-one path) stays as it is below this block.
 
 - [x] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupSend > /tmp/ReTiCaMsgr/grp-t6-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupSend > /tmp/ReTiCAMsgr/grp-t6-green.log 2>&1`
 Expected: 5 tests passed.
 
 - [x] **Step 6: Mutation verification**
@@ -2459,7 +2459,7 @@ Apply all five, run the filter once, confirm all five RED. Revert by hand, run a
 
 - [x] **Step 7: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-6.txt`:
+Write `/tmp/ReTiCAMsgr/msg-grp-task-6.txt`:
 
 ```
 feat: send posts and reactions in a group
@@ -2474,17 +2474,17 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-6.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-6.txt`
 
 ---
 
 ### Task 7: Delivery delegates update member rows and the derived status
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/GroupDelivery.swift` (add `Outcome` and `applyOutcome`)
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (`propagationAccepted`, `deliveryConfirmed`, `markUndeliverable`)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/GroupDelivery.swift` (add `Outcome` and `applyOutcome`)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (`propagationAccepted`, `deliveryConfirmed`, `markUndeliverable`)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: Tasks 1, 3, 5.
@@ -2492,7 +2492,7 @@ Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-6.txt`
 
 - [x] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`:
 
 ```swift
 
@@ -2617,7 +2617,7 @@ private func groupDeliverRows(_ db: any DatabaseWriter) async throws -> (c: Grou
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupDeliver > /tmp/ReTiCaMsgr/grp-t7-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupDeliver > /tmp/ReTiCAMsgr/grp-t7-red.log 2>&1`
 Expected: the four tests fail (rows stay `sending`).
 
 - [x] **Step 3: `GroupDelivery.applyOutcome`**
@@ -2697,7 +2697,7 @@ In `markUndeliverable`, after the `failedAt` update inside the write, add:
 
 - [x] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupDeliver > /tmp/ReTiCaMsgr/grp-t7-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupDeliver > /tmp/ReTiCAMsgr/grp-t7-green.log 2>&1`
 Expected: 4 tests passed.
 
 - [x] **Step 6: Mutation verification**
@@ -2713,7 +2713,7 @@ Sub-batch A: rows 1–3 together. Sub-batch B: row 4 alone. Revert by hand, run 
 
 - [x] **Step 7: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-7.txt`:
+Write `/tmp/ReTiCAMsgr/msg-grp-task-7.txt`:
 
 ```
 feat: delivery delegates update group member rows
@@ -2726,16 +2726,16 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/GroupDelivery.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-7.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/GroupDelivery.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-7.txt`
 
 ---
 
 ### Task 8: Receiving posts and reactions
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (`.messageReceived`: the reaction branch and the ordinary-message write)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (`.messageReceived`: the reaction branch and the ordinary-message write)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: Tasks 1–4.
@@ -2743,7 +2743,7 @@ Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-7.txt`
 
 - [x] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`:
 
 ```swift
 
@@ -2928,7 +2928,7 @@ private func groupReceive(_ store: TestStoreOf<AppFeature>, _ m: LXMessage, vali
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupReceive > /tmp/ReTiCaMsgr/grp-t8-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupReceive > /tmp/ReTiCAMsgr/grp-t8-red.log 2>&1`
 Expected: the seven tests fail (`groupHex` nil on every stored row; the group reaction from the non-member is kept).
 
 - [x] **Step 3: The reaction branch**
@@ -3055,8 +3055,8 @@ The `viewedNow` computation above the row stays as it is: it compares `incomingP
 
 - [x] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupReceive > /tmp/ReTiCaMsgr/grp-t8-green.log 2>&1`
-Expected: 7 tests passed. Then the full suite: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/grp-t8-full.log 2>&1`, baseline + 57 passed (the one-to-one receive and expiry tests must still pass unchanged).
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupReceive > /tmp/ReTiCAMsgr/grp-t8-green.log 2>&1`
+Expected: 7 tests passed. Then the full suite: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/grp-t8-full.log 2>&1`, baseline + 57 passed (the one-to-one receive and expiry tests must still pass unchanged).
 
 - [x] **Step 6: Mutation verification**
 
@@ -3074,7 +3074,7 @@ Apply all seven, run the filter once, confirm all seven RED. Revert by hand, run
 
 - [x] **Step 7: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-8.txt`:
+Write `/tmp/ReTiCAMsgr/msg-grp-task-8.txt`:
 
 ```
 feat: receive group posts and reactions
@@ -3088,17 +3088,17 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-8.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-8.txt`
 
 ---
 
 ### Task 9: Control messages and local roster actions
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/GroupControlApply.swift`
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (Action, `.messageReceived` control branches, new cases, two private helpers)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
+- Create: `CORE/Sources/ReTiCAMsgrCore/GroupControlApply.swift`
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (Action, `.messageReceived` control branches, new cases, two private helpers)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: Tasks 1–8.
@@ -3106,7 +3106,7 @@ Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-8.txt`
 
 - [x] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`:
 
 ```swift
 
@@ -3114,7 +3114,7 @@ Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
 
 private func groupRosterWire(from sender: Identity, to me: Identity, members: [String], name: String = "Mutual Aid",
                              revision: Int, at ts: Double = 1700000000.5) -> LXMessage {
-    wireMessage(from: sender, to: me, at: ts, title: name, content: "someone invited you to the group \(name) in ReTiCaMsgr",
+    wireMessage(from: sender, to: me, at: ts, title: name, content: "someone invited you to the group \(name) in ReTiCAMsgr",
                 fields: GroupWire.encodeRoster(groupId: Data(hexString: groupHexA)!, name: name,
                                                members: members.map { Data(hexString: $0)! }, revision: revision))
 }
@@ -3221,7 +3221,7 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     #expect(rows.first?.isGroupEvent == false)
     #expect(rows.first?.peerHex == outsiderHex)
     #expect(rows.first?.messageHash == m.hash.hexString)
-    #expect(rows.first?.body == "someone invited you to the group Mutual Aid in ReTiCaMsgr")
+    #expect(rows.first?.body == "someone invited you to the group Mutual Aid in ReTiCAMsgr")
     #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.revision == 1)
     #expect(try await db.read { try GroupMember.members(of: groupHexA, $0) } == [memberC, myHex].sorted())
 }
@@ -3343,7 +3343,7 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
     let sent = await groupSends(store, .addGroupMembers([memberD, memberC, myHex, "junk"]), count: 1)
     let wire = try #require(sent.first)
     #expect(wire.destinationHash == Data(hexString: memberC))
-    #expect(wire.content == Data("Ada invited you to the group Mutual Aid in ReTiCaMsgr".utf8))
+    #expect(wire.content == Data("Ada invited you to the group Mutual Aid in ReTiCAMsgr".utf8))
     #expect(GroupWire.decode(wire.fields) == .roster(groupId: Data(hexString: groupHexA)!, name: "Mutual Aid",
                                                      members: [memberC, memberD, myHex].sorted().map { Data(hexString: $0)! }, revision: 2))
     #expect(try await db.read { try ChatGroup.fetch(groupHexA, $0) }?.revision == 2)
@@ -3474,7 +3474,7 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupControl > /tmp/ReTiCaMsgr/grp-t9-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupControl > /tmp/ReTiCAMsgr/grp-t9-red.log 2>&1`
 Expected: compile errors (`addGroupMembers` etc. unknown).
 
 - [x] **Step 3: Create `GroupControlApply.swift`**
@@ -3845,8 +3845,8 @@ Add the cases after `.createGroup`:
 
 - [x] **Step 7: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupControl > /tmp/ReTiCaMsgr/grp-t9-green.log 2>&1`
-Expected: 16 tests passed. Then the full suite: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/grp-t9-full.log 2>&1`, baseline + 73 passed.
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupControl > /tmp/ReTiCAMsgr/grp-t9-green.log 2>&1`
+Expected: 16 tests passed. Then the full suite: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/grp-t9-full.log 2>&1`, baseline + 73 passed.
 
 - [x] **Step 8: Mutation verification**
 
@@ -3872,7 +3872,7 @@ Sub-batch A: the first eight rows (`GroupControlApply` and the receive helper). 
 
 - [x] **Step 9: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-9.txt`:
+Write `/tmp/ReTiCAMsgr/msg-grp-task-9.txt`:
 
 ```
 feat: group rosters and leaves, received and local
@@ -3888,17 +3888,17 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/GroupControlApply.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-9.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/GroupControlApply.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-9.txt`
 
 ---
 
 ### Task 10: Info sheet Members section and reply labels by sender
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/MessageInfo.swift` (`sections(for:...)` gains `deliveries:` and `memberNames:`; new `members` section)
-- Modify: `CORE/Sources/ReTiCaMsgrCore/ReplyPreview.swift` (`resolve` gains `names:`)
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/GroupInfoTests.swift`
+- Modify: `CORE/Sources/ReTiCAMsgrCore/MessageInfo.swift` (`sections(for:...)` gains `deliveries:` and `memberNames:`; new `members` section)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/ReplyPreview.swift` (`resolve` gains `names:`)
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/GroupInfoTests.swift`
 
 **Interfaces:**
 - Consumes: Tasks 1, 3.
@@ -3906,13 +3906,13 @@ Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-9.txt`
 
 - [x] **Step 1: Write the failing tests**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/GroupInfoTests.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/GroupInfoTests.swift`:
 
 ```swift
 import Testing
 import Foundation
-@testable import ReTiCaMsgrCore
-import struct ReTiCaMsgrCore.Attachment
+@testable import ReTiCAMsgrCore
+import struct ReTiCAMsgrCore.Attachment
 
 private let utc = TimeZone(identifier: "UTC")!
 private let t0 = Date(timeIntervalSince1970: 1700000000)          // 2023-11-14 22:13:20 UTC
@@ -3985,7 +3985,7 @@ private func post(outgoing: Bool, peer: String) -> Message {
 
 - [x] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupInfo > /tmp/ReTiCaMsgr/grp-t10-red.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupInfo > /tmp/ReTiCAMsgr/grp-t10-red.log 2>&1`
 Expected: compile errors (`deliveries:` and `names:` labels unknown).
 
 - [x] **Step 3: `MessageInfo` members section**
@@ -4063,7 +4063,7 @@ Replace `resolve(for:in:peerName:attachments:)` with:
 
 - [x] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore --filter groupInfo > /tmp/ReTiCaMsgr/grp-t10-green.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore --filter groupInfo > /tmp/ReTiCAMsgr/grp-t10-green.log 2>&1`
 Expected: 3 tests passed. The existing `MessageInfoTests` and `ReplyPreviewTests` still pass (run them with `--filter infoSections` and `--filter replyPreview`).
 
 - [x] **Step 6: Mutation verification**
@@ -4078,7 +4078,7 @@ Apply all three, run the filter once, confirm all three RED. Revert by hand, run
 
 - [x] **Step 7: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-10.txt`:
+Write `/tmp/ReTiCAMsgr/msg-grp-task-10.txt`:
 
 ```
 feat: Info sheet Members section and reply labels by sender
@@ -4091,18 +4091,18 @@ Co-Authored-By: <model> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C APP add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageInfo.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReplyPreview.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/GroupInfoTests.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-10.txt`
+Run: `git -C APP add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessageInfo.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReplyPreview.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/GroupInfoTests.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-10.txt`
 
 ---
 
 ### Task 11: UI — new group, group thread, info screen, list rows
 
 **Files:**
-- Create: `APP/ReTiCaMsgr/GroupViews.swift`
-- Modify: `APP/ReTiCaMsgr/ConversationListView.swift` (rows, the `+` menu)
-- Modify: `APP/ReTiCaMsgr/ChatView.swift` (gating, rows, composer, toolbar, bubble status and sender name)
-- Modify: `APP/ReTiCaMsgr/MessageInfoSheet.swift` (pass deliveries and names)
+- Create: `APP/ReTiCAMsgr/GroupViews.swift`
+- Modify: `APP/ReTiCAMsgr/ConversationListView.swift` (rows, the `+` menu)
+- Modify: `APP/ReTiCAMsgr/ChatView.swift` (gating, rows, composer, toolbar, bubble status and sender name)
+- Modify: `APP/ReTiCAMsgr/MessageInfoSheet.swift` (pass deliveries and names)
 
 **Interfaces:**
 - Consumes: `Conversation.kind/title/groupState`, `store.openConversationKind`, `store.openGroup`, `store.openGroupMembers`, `store.deliveriesByMessageId`, `store.anyGroupMemberReachable`, `store.isOpenGroupCreator`, `store.threadSenderNames`, `store.state.groupMemberName(_:)`, the actions of Tasks 4–9, `GroupRoster.statusLabel`, `GroupEventText.caveat`, `GroupWire.maxMembers`, `Message.isGroupEvent`.
@@ -4114,14 +4114,14 @@ No unit tests in the app target (none exist today); the deliverable is a success
 ```swift
 //
 //  GroupViews.swift
-//  ReTiCaMsgr
+//  ReTiCAMsgr
 //
 
 import SwiftUI
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
-/// Local hex helper — ReTiCaMsgrCore's `Data.hexString` is internal to the package.
+/// Local hex helper — ReTiCAMsgrCore's `Data.hexString` is internal to the package.
 private func groupHex(_ data: Data) -> String {
     data.map { String(format: "%02x", $0) }.joined()
 }
@@ -4656,12 +4656,12 @@ In `MessageInfoSheet`, replace the `MessageInfo.sections(for: message, attachmen
 
 - [x] **Step 6: Build the app**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCaMsgr/grp-t11-xcodebuild.log 2>&1`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCAMsgr/grp-t11-xcodebuild.log 2>&1`
 Expected: `** BUILD SUCCEEDED **`. Fix any compile error in the four app files only. `ChatGroup`, `GroupState`, `GroupRoster`, `GroupEventText`, `GroupWire` and `isValidPeerAddress` are public in Core; if one is not, make it public in Core and note it in the commit body.
 
 - [x] **Step 7: Full core suite once more**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-groups/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/grp-t11-core.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-groups/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/grp-t11-core.log 2>&1`
 Expected: baseline + 76 passed, no failures.
 
 - [x] **Step 8: Manual check (Simulator)**
@@ -4672,10 +4672,10 @@ Use the `xcodebuildmcp-cli` skill to boot a simulator, install and launch the ap
 
 Run: `git -C APP status --short`. If only the two `xcschememanagement.plist` files are modified beside the intended changes, restore them with `git -C APP checkout -- <path>`.
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-11.txt` (subject `feat: group chat screens`, body listing the four screens and the manual-check result, trailers).
+Write `/tmp/ReTiCAMsgr/msg-grp-task-11.txt` (subject `feat: group chat screens`, body listing the four screens and the manual-check result, trailers).
 
-Run: `git -C APP add ReTiCaMsgr/GroupViews.swift ReTiCaMsgr/ConversationListView.swift ReTiCaMsgr/ChatView.swift ReTiCaMsgr/MessageInfoSheet.swift`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-11.txt`
+Run: `git -C APP add ReTiCAMsgr/GroupViews.swift ReTiCAMsgr/ConversationListView.swift ReTiCAMsgr/ChatView.swift ReTiCAMsgr/MessageInfoSheet.swift`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-11.txt`
 
 ---
 
@@ -4715,10 +4715,10 @@ Follow-ups noticed while implementing:
 
 - [x] **Step 2: Commit**
 
-Write `/tmp/ReTiCaMsgr/msg-grp-task-12.txt` (subject `docs: group-chat follow-ups`, body, trailers).
+Write `/tmp/ReTiCAMsgr/msg-grp-task-12.txt` (subject `docs: group-chat follow-ups`, body, trailers).
 
 Run: `git -C APP add docs/superpowers/backlog-retica-followups.md docs/superpowers/plans/2026-10-09-group-chats.md`
-Run: `git -C APP commit -F /tmp/ReTiCaMsgr/msg-grp-task-12.txt`
+Run: `git -C APP commit -F /tmp/ReTiCAMsgr/msg-grp-task-12.txt`
 
 - [ ] **Step 3: Hand off**
 

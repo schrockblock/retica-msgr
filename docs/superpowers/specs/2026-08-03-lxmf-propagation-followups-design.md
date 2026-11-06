@@ -19,7 +19,7 @@ memory) is used to re-validate the two behavioral items.
 
 Repos: the library changes land in the **ReTiCA pods repo**
 (`/Users/ell/development/ios/pods/ReTiCA`); the app test tightenings land in
-the **app repo** (`/Users/ell/development/ios/apps/ReTiCaMsgr`).
+the **app repo** (`/Users/ell/development/ios/apps/ReTiCAMsgr`).
 
 ## Scope decisions (settled in brainstorming)
 
@@ -138,7 +138,7 @@ in `AppFeatureTests.swift`.
 - Corresponding tests under `Tests/`.
 
 **App repo:**
-- `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` — 4b.
+- `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` — 4b.
 
 ## Non-goals
 

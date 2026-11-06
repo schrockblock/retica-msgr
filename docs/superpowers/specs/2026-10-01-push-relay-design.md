@@ -1,7 +1,7 @@
 # Push notifications via a push-capable hub — design
 
 **Date:** 2026-10-01. **Scope:** a new SPM package `ReTiCAPush` (sibling of ReTiCA, its own
-repo), the ReTiCaMsgr app (settings, AppDelegate, a Notification Service Extension, entitlements)
+repo), the ReTiCAMsgr app (settings, AppDelegate, a Notification Service Extension, entitlements)
 and a server contract document that lives in the package. **Depends on:** nothing new in ReTiCA.
 Everything the client needs is already public: `Packet`, `Identity.sign`, `HDLC.frame`,
 `Destination.hash`, `IdentityKeychain`, and `Transport.Action.received` (reachable from the app as
@@ -11,7 +11,7 @@ interface that has not registered yet when that interface is plain, Transport.sw
 
 ## Goal
 
-Let a ReTiCaMsgr user opt in to being woken by a push when a message arrives for them while the
+Let a ReTiCAMsgr user opt in to being woken by a push when a message arrives for them while the
 app is not connected, with the message delivered through ReTiCA's ordinary receive path, a
 content-free "New message" banner, and the sender receiving a regular Reticulum delivery proof
 through the existing path. Off by default. The sender needs nothing and never knows push was
@@ -142,7 +142,7 @@ ReTiCAPush/
 - `setEnabled(true)`: persist the flag, write hub host/port and keychain location to
   `pushSettings`, status `.awaitingPermission`, run `requestAuthorization`. Granted → status
   `.awaitingToken`, `registerForRemoteNotifications()`. Denied → `.failed("Notifications are off
-  for ReTiCaMsgr in Settings")`; the flag stays on so the user can fix it in iOS Settings and
+  for ReTiCAMsgr in Settings")`; the flag stays on so the user can fix it in iOS Settings and
   relaunch.
 - `deviceTokenReceived(token)`: store it. If `lastRegistration` has the same token hex and
   `registeredAt` is within 24 h, status `.registered(registeredAt)` and stop. Otherwise, status
@@ -313,7 +313,7 @@ token-based APNs client. No change to RNS itself. No code in this deliverable.
 
 ### 3.2 AppDelegate and runtime
 
-- `ReTiCaMsgrApp` gains `@UIApplicationDelegateAdaptor(AppDelegate.self)`. `AppDelegate` owns the
+- `ReTiCAMsgrApp` gains `@UIApplicationDelegateAdaptor(AppDelegate.self)`. `AppDelegate` owns the
   `AppRuntime` (built with `.forProcess()`), and the App struct reads `delegate.runtime`.
   `RootView` is unchanged.
 - `AppDelegate` implements:
@@ -345,10 +345,10 @@ New section **Push Notifications** between Relay and Run as Propagation Node:
 
 ### 3.4 Project changes
 
-- `ReTiCaMsgrCore/Package.swift`: add `.package(path: "../../../pods/ReTiCAPush")` and the
+- `ReTiCAMsgrCore/Package.swift`: add `.package(path: "../../../pods/ReTiCAPush")` and the
   `ReTiCAPush` product to the core target; the core test target also gets `ReTiCAPushCore` for
   building test packets.
-- New Xcode target `ReTiCaMsgrNotificationService` (Notification Service Extension, bundle id
+- New Xcode target `ReTiCAMsgrNotificationService` (Notification Service Extension, bundle id
   `co.lithobyte.ReTiCaMsgr.NotificationService`), linking the `ReTiCAPushExtension` product of
   the same package. Its `NotificationService.swift` builds `PushServiceHandler` with the live
   Keychain loader and the live `NWConnection` sender and always returns the original content.
@@ -358,7 +358,7 @@ New section **Push Notifications** between Relay and Run as Propagation Node:
     existing keychain access group unchanged.
   - Extension: the same application group and the same keychain access group
     `$(AppIdentifierPrefix)co.lithobyte.reticulum.identity`.
-- `ReTiCaMsgr/Info.plist`: `UIBackgroundModes` gains `remote-notification`.
+- `ReTiCAMsgr/Info.plist`: `UIBackgroundModes` gains `remote-notification`.
 - `AppRuntime.Environment` gains the app-group container URL (nil under `.testHost()`).
 
 ### 3.5 What does not change
@@ -424,7 +424,7 @@ global rule. All Swift Testing; TestStore with `exhaustivity = .off` unless a te
 - malformed payload: nothing stashed, nothing sent.
 - the frame sender throws or hangs past the deadline: `handle` still returns.
 
-### `ReTiCaMsgrCoreTests` (`AppFeature`)
+### `ReTiCAMsgrCoreTests` (`AppFeature`)
 
 - `push(.delegate(.inject))` with a packet built for the test identity reaches `messageReceived`
   and a `received` row is stored.

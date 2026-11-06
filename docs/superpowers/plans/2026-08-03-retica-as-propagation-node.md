@@ -2,27 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let ReTiCaMsgr act as an LXMF propagation node — register `lxmf.propagation`, accept store-and-forward offers from real LXMF clients, persist them across restarts, and serve their two-phase `/get` downloads.
+**Goal:** Let ReTiCAMsgr act as an LXMF propagation node — register `lxmf.propagation`, accept store-and-forward offers from real LXMF clients, persist them across restarts, and serve their two-phase `/get` downloads.
 
 **Architecture:** A new `LXMFServiceNode` reducer composes the existing `LXMFNode` (client, owns the single `TransportEndpoint`) with the existing `PropagationNode` (store + serve logic), adding only serve-translation over the shared endpoint. All serve behavior is gated on `nodeModeEnabled`. Persistence lives in the app (GRDB), keeping the library pure.
 
 **Tech Stack:** Swift 6, The Composable Architecture (TCA), swift-testing (`@Test`/`#expect`), GRDB + SQLiteData (app), ReTiCA (ReTiCA / ReTiCANode / ReTiCATransport / ReTiCAInterfaces).
 
-**Spec:** `/Users/ell/development/ios/apps/ReTiCaMsgr/docs/superpowers/specs/2026-08-03-retica-as-propagation-node-design.md`
+**Spec:** `/Users/ell/development/ios/apps/ReTiCAMsgr/docs/superpowers/specs/2026-08-03-retica-as-propagation-node-design.md`
 
 ## Global Constraints
 
-- **TWO REPOS.** Tasks 1–4 → ReTiCA pods `/Users/ell/development/ios/pods/ReTiCA`. Tasks 5–7 → app `/Users/ell/development/ios/apps/ReTiCaMsgr`. Commit directly to `main` in BOTH; no feature branches.
+- **TWO REPOS.** Tasks 1–4 → ReTiCA pods `/Users/ell/development/ios/pods/ReTiCA`. Tasks 5–7 → app `/Users/ell/development/ios/apps/ReTiCAMsgr`. Commit directly to `main` in BOTH; no feature branches.
 - **Commit trailers must start at COLUMN 0 (no indent)**, exactly:
   `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
   `Claude-Session: https://claude.ai/code/session_01AtkFmSeVgRBk3zwfDCqUwy`
 - **Use `git commit -F <file>`, NEVER `-m`** (trailers contain `;` and the shell rule below forbids it). After each commit verify:
   `git -C <repo> log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'` must print the URL.
-- **No compound shell commands.** One command per invocation: no `&&`, `||`, `;`, pipes, `xargs`, or inline interpreter scripts (`python -c`, heredocs). A single `>` redirect of a real command is allowed. Write scripts to a file under `/tmp/ReTiCaMsgr/` and run that file.
+- **No compound shell commands.** One command per invocation: no `&&`, `||`, `;`, pipes, `xargs`, or inline interpreter scripts (`python -c`, heredocs). A single `>` redirect of a real command is allowed. Write scripts to a file under `/tmp/ReTiCAMsgr/` and run that file.
 - **Stage only your own files.** `git add <explicit paths>` — never `git add -A` or `git add .` (concurrent BLE work is in flight; broad adds have swept unrelated files into commits before).
 - **Three-step mutation verification for every new/changed test:** (a) run, all pass; (b) mutate the production code they cover in ONE batch so they should fail, run, confirm they all fail; (c) revert, run, confirm green. Only then commit.
 - **TCA tests are non-exhaustive:** set `store.exhaustivity = .off` and assert outcomes/behavior, not implementation path.
-- Temp files go under `/tmp/ReTiCaMsgr/`.
+- Temp files go under `/tmp/ReTiCAMsgr/`.
 - Library code stays pure — **no file I/O in ReTiCA**. Persistence is app-side only.
 - Run library tests with `swift test` from `/Users/ell/development/ios/pods/ReTiCA`.
 - **`swift package clean`** if you hit a signal-11/stale-link failure after changing MsgPack/transport code.
@@ -41,15 +41,15 @@
 | `Tests/ReTiCANodeTests/PropagationNodeTests.swift` (modify) | Cover the two new delegates |
 | `Tests/ReTiCANodeTests/LXMFServiceNodeTests.swift` (new) | Unit + real-link integration coverage of the combined node |
 
-**App (`apps/ReTiCaMsgr`)**
+**App (`apps/ReTiCAMsgr`)**
 
 | File | Responsibility |
 | --- | --- |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` (modify) | Rewire to `LXMFServiceNode`; node-mode lifecycle; persistence mirror + rehydrate |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/PropagationEntryRow.swift` (new) | `@Table` row for a stored propagation entry |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift` (modify) | Migration creating `propagationEntries` |
-| `ReTiCaMsgr/SettingsView.swift` (modify) | "Act as a propagation node" toggle |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (modify) | Node-mode + persistence wiring tests |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` (modify) | Rewire to `LXMFServiceNode`; node-mode lifecycle; persistence mirror + rehydrate |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/PropagationEntryRow.swift` (new) | `@Table` row for a stored propagation entry |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift` (modify) | Migration creating `propagationEntries` |
+| `ReTiCAMsgr/SettingsView.swift` (modify) | "Act as a propagation node" toggle |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (modify) | Node-mode + persistence wiring tests |
 
 ---
 
@@ -206,13 +206,13 @@ Mutate in ONE batch: in `ingestContainer` change `entries` to `[]`; in `messages
 
 - [ ] **Step 8: Commit**
 
-Write the message to `/tmp/ReTiCaMsgr/commit-task1.txt` (trailers at column 0), then:
+Write the message to `/tmp/ReTiCAMsgr/commit-task1.txt` (trailers at column 0), then:
 
 ```bash
 git -C /Users/ell/development/ios/pods/ReTiCA add Sources/ReTiCA/LXMF/PropagationStore.swift Sources/ReTiCANode/PropagationNode.swift Tests/ReTiCANodeTests/PropagationNodeTests.swift
 ```
 ```bash
-git -C /Users/ell/development/ios/pods/ReTiCA commit -F /tmp/ReTiCaMsgr/commit-task1.txt
+git -C /Users/ell/development/ios/pods/ReTiCA commit -F /tmp/ReTiCAMsgr/commit-task1.txt
 ```
 ```bash
 git -C /Users/ell/development/ios/pods/ReTiCA log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
@@ -379,7 +379,7 @@ Mutate: change the two guards to `guard true else { return .none }` (i.e. delete
 ```bash
 git -C /Users/ell/development/ios/pods/ReTiCA add Sources/ReTiCANode/LXMFNode.swift Tests/ReTiCANodeTests/LXMFServiceNodeTests.swift
 ```
-Then `git commit -F /tmp/ReTiCaMsgr/commit-task2.txt` and verify the trailer.
+Then `git commit -F /tmp/ReTiCAMsgr/commit-task2.txt` and verify the trailer.
 
 ---
 
@@ -805,7 +805,7 @@ Mutate in ONE batch: (1) in `registerPropagation` change `targetStampCost: state
 ```bash
 git -C /Users/ell/development/ios/pods/ReTiCA add Sources/ReTiCANode/LXMFServiceNode.swift Tests/ReTiCANodeTests/LXMFServiceNodeTests.swift
 ```
-Then `git commit -F /tmp/ReTiCaMsgr/commit-task3.txt` and verify the trailer.
+Then `git commit -F /tmp/ReTiCAMsgr/commit-task3.txt` and verify the trailer.
 
 ---
 
@@ -1006,22 +1006,22 @@ Mutate: in `LXMFServiceNode.registerPropagation` change the aspects to `["propag
 ```bash
 git -C /Users/ell/development/ios/pods/ReTiCA add Tests/ReTiCANodeTests/LXMFServiceNodeTests.swift
 ```
-Then `git commit -F /tmp/ReTiCaMsgr/commit-task4.txt` and verify the trailer.
+Then `git commit -F /tmp/ReTiCAMsgr/commit-task4.txt` and verify the trailer.
 
 ---
 
 ### Task 5: App — rewire to `LXMFServiceNode` (and repair the BLE-refactor break)
 
-**Repo:** app `/Users/ell/development/ios/apps/ReTiCaMsgr`
+**Repo:** app `/Users/ell/development/ios/apps/ReTiCAMsgr`
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
 
 **IMPORTANT — the app core does NOT currently compile.** A concurrent ReTiCA BLE refactor replaced the endpoint action surface, and `AppFeature` still uses the old names. Verify first:
 
 ```bash
-swift build --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore
+swift build --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore
 ```
 
 You will see errors around `AppFeature.swift:68`. This task repairs that **and** performs the rewire — they touch the same lines, so doing them together avoids double churn. Renames required (old → new):
@@ -1068,12 +1068,12 @@ Work through `AppFeature.swift` case by case. Every previously-working behavior 
 
 - [ ] **Step 3: Build**
 
-Run: `swift build --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`
+Run: `swift build --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`
 Expected: builds clean (the pre-existing break is now repaired).
 
 - [ ] **Step 4: Run the existing app tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`
 Expected: all existing tests pass. Update any test that references the old action paths using the same table — assertions and behavior must not change, only paths.
 
 - [ ] **Step 5: Mutation-verify**
@@ -1083,20 +1083,20 @@ The existing app tests already cover this wiring (send, receive, deliveryFailed,
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
 ```
-Then `git commit -F /tmp/ReTiCaMsgr/commit-task5.txt` and verify the trailer.
+Then `git commit -F /tmp/ReTiCAMsgr/commit-task5.txt` and verify the trailer.
 
 ---
 
 ### Task 6: App — node-mode toggle and lifecycle
 
-**Repo:** app `/Users/ell/development/ios/apps/ReTiCaMsgr`
+**Repo:** app `/Users/ell/development/ios/apps/ReTiCAMsgr`
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`
-- Modify: `ReTiCaMsgr/SettingsView.swift`
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`
+- Modify: `ReTiCAMsgr/SettingsView.swift`
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
 
 **Interfaces:**
 - Consumes: `LXMFServiceNode.Action.setNodeMode(Bool)` (Task 3); the rewired paths (Task 5).
@@ -1132,7 +1132,7 @@ Append to `AppFeatureTests.swift`. It already has the helper
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter NodeMode`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter NodeMode`
 Expected: FAIL — `setNodeMode` / `nodeModeEnabled` don't exist on `AppFeature`.
 
 - [ ] **Step 3: Add the shared setting and action**
@@ -1169,7 +1169,7 @@ In the existing `interfaceConnected` handler, append node-mode to the effects it
 
 - [ ] **Step 5: Add the Settings toggle**
 
-In `ReTiCaMsgr/SettingsView.swift`, add a section (the `Propagation Node` section configures the node we *use*; this one is about *being* one):
+In `ReTiCAMsgr/SettingsView.swift`, add a section (the `Propagation Node` section configures the node we *use*; this one is about *being* one):
 
 ```swift
                 Section("Run as Propagation Node") {
@@ -1185,7 +1185,7 @@ In `ReTiCaMsgr/SettingsView.swift`, add a section (the `Propagation Node` sectio
 
 - [ ] **Step 6: Run the tests — expect PASS**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`
 
 - [ ] **Step 7: Mutation-verify**
 
@@ -1194,21 +1194,21 @@ Mutate in ONE batch: in `.setNodeMode` return `.none` instead of forwarding; and
 - [ ] **Step 8: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgr/SettingsView.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgr/SettingsView.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
 ```
-Then `git commit -F /tmp/ReTiCaMsgr/commit-task6.txt` and verify the trailer.
+Then `git commit -F /tmp/ReTiCAMsgr/commit-task6.txt` and verify the trailer.
 
 ---
 
 ### Task 7: App — persistence and launch rehydrate
 
-**Repo:** app `/Users/ell/development/ios/apps/ReTiCaMsgr`
+**Repo:** app `/Users/ell/development/ios/apps/ReTiCAMsgr`
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/PropagationEntryRow.swift`
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift`
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/PropagationEntryRow.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
 
 **Why:** a node that forgets its backlog on relaunch is not a node. The library stays pure (no file I/O in ReTiCA), so the host mirrors the store using Task 1's `storedEntries` / `purged` signals, surfaced by Task 3 as `messagesStored` / `messagesPurged`.
 
@@ -1292,12 +1292,12 @@ Append to `AppFeatureTests.swift`:
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter Propagation`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter Propagation`
 Expected: FAIL — `PropagationEntryRow` does not exist.
 
 - [ ] **Step 3: Create the row type**
 
-`ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/PropagationEntryRow.swift`:
+`ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/PropagationEntryRow.swift`:
 
 ```swift
 import Foundation
@@ -1405,7 +1405,7 @@ In `.onLaunch`, add a third effect that loads the backlog:
 
 - [ ] **Step 6: Run the tests — expect PASS**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`
 
 - [ ] **Step 7: Mutation-verify**
 
@@ -1415,16 +1415,16 @@ Mutate in ONE batch: make `messagesStored` return `.none`; make `messagesPurged`
 
 Run:
 ```bash
-xcodebuildmcp simulator build --simulator-id 5AF38BDA-B932-4C8F-AA6E-AD46A4688FE3 --project-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgr.xcodeproj --scheme ReTiCaMsgr
+xcodebuildmcp simulator build --simulator-id 5AF38BDA-B932-4C8F-AA6E-AD46A4688FE3 --project-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgr.xcodeproj --scheme ReTiCAMsgr
 ```
 Expected: build succeeds (catches SwiftUI-side breakage the SwiftPM build misses).
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/PropagationEntryRow.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/PropagationEntryRow.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
 ```
-Then `git commit -F /tmp/ReTiCaMsgr/commit-task7.txt` and verify the trailer.
+Then `git commit -F /tmp/ReTiCAMsgr/commit-task7.txt` and verify the trailer.
 
 ---
 
@@ -1432,9 +1432,9 @@ Then `git commit -F /tmp/ReTiCaMsgr/commit-task7.txt` and verify the trailer.
 
 Not optional. Every propagation interop bug found so far — the missing PN stamp, the link-request double-encoding, the purge transient_id double-strip — was invisible to stub-based unit tests and surfaced only against real reference code. This is the mirror of the client-side validation already done against `lxmd`.
 
-1. Start the hub: `rnsd --config /tmp/ReTiCaMsgr/reticulum -v` (background).
-2. Build/run ReTiCaMsgr on a simulator, Settings → enable **Act as a propagation node**, and note the app's propagation address.
-3. Drive a **reference Python LXMF client** (env `rns`, `/Users/ell/opt/anaconda3/envs/rns/bin/python`) that: sets `outbound_propagation_node` to the app's address, sends a message addressed to a second identity via propagation, then syncs as that second identity and downloads it. Write the driver to `/tmp/ReTiCaMsgr/` as a file and run it as one command (no `python -c`).
+1. Start the hub: `rnsd --config /tmp/ReTiCAMsgr/reticulum -v` (background).
+2. Build/run ReTiCAMsgr on a simulator, Settings → enable **Act as a propagation node**, and note the app's propagation address.
+3. Drive a **reference Python LXMF client** (env `rns`, `/Users/ell/opt/anaconda3/envs/rns/bin/python`) that: sets `outbound_propagation_node` to the app's address, sends a message addressed to a second identity via propagation, then syncs as that second identity and downloads it. Write the driver to `/tmp/ReTiCAMsgr/` as a file and run it as one command (no `python -c`).
 4. Confirm: the app ingests and persists the offer; the reference client's phase-1 list returns the transient_id; phase-2 returns a blob that opens to the original message; phase-3 purge **evicts** (this is the exact invariant the earlier double-strip bug broke — verify the row disappears from the app's database).
 5. Relaunch the app and confirm the backlog is still served (persistence).
 

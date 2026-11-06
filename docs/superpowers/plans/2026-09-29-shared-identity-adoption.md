@@ -1,8 +1,8 @@
-# Shared Identity Adoption Implementation Plan (ReTiCaMsgr, Part B)
+# Shared Identity Adoption Implementation Plan (ReTiCAMsgr, Part B)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** ReTiCaMsgr loads its Reticulum identity from the shared Keychain item Nbhd already uses, through `ReTiCAKeychain` only, never minting once messages exist, refusing a changed identity until the user accepts it, and offering Retry and a strict restore from an identity backup.
+**Goal:** ReTiCAMsgr loads its Reticulum identity from the shared Keychain item Nbhd already uses, through `ReTiCAKeychain` only, never minting once messages exist, refusing a changed identity until the user accepts it, and offering Retry and a strict restore from an identity backup.
 
 **Architecture:** The core package's `IdentityStore` becomes a thin seam over `IdentityKeychain` (`load` / `loadOrCreate` / `importIdentity`) with a `LoadPolicy` chosen from "any message row exists". Pure core types (`IdentityAnchor`, `IdentityState`, `LaunchIdentity`, `IdentityRestore`) decide the launch outcome. An `@Observable` `AppRuntime` in the app target opens the database once, resolves the identity, and builds the TCA store only in `ready`; every other state shows `IdentityRecoveryView`. The identity only ever enters the app by building the store.
 
@@ -12,13 +12,13 @@
 
 ## Global Constraints
 
-- Work in the app worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-shared-identity` (branch `feat/shared-identity`).
+- Work in the app worktree `/Users/ell/development/ios/apps/ReTiCAMsgr-shared-identity` (branch `feat/shared-identity`).
 - Shared location exactly: service `reticulum.identity`, access group `HK6WSAR793.co.lithobyte.reticulum.identity`; entitlement `$(AppIdentifierPrefix)co.lithobyte.reticulum.identity`. `legacy: []` everywhere. The old `KeychainIdentity` type and every `SecItem*` call in this repo are deleted; the shared item is touched only through `ReTiCAKeychain`.
 - Never mint under `.loadOnly`; never mint on `.failed`; `hasMessages` throwing counts as "messages exist".
 - UserDefaults key `reticamsgr.expectedIdentityHash` (lowercase hex of the 16-byte identity hash). `recordReady` writes only when no anchor exists; only `replace(with:)` (the explicit "Use the new identity") overwrites it.
 - No key material in logs or test output; only outcome kinds and hashes.
 - Test hosts (hosted XCTest via `XCTestConfigurationFilePath`, UI tests via `RETICAMSGR_TEST_HOST=1`) use an in-memory Keychain, an in-memory database and a suite-named `UserDefaults`.
-- Core test command: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-shared-identity/ReTiCaMsgrCore` (add `--filter <prefix>` per task). App build: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-shared-identity/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'id=AF8E1DCF-F093-4978-BBA6-C0F154B43242' build`. Hosted tests: the same with `test -only-testing:ReTiCaMsgrTests`. Never run `swift test` and `xcodebuild` at the same time.
+- Core test command: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-shared-identity/ReTiCAMsgrCore` (add `--filter <prefix>` per task). App build: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-shared-identity/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'id=AF8E1DCF-F093-4978-BBA6-C0F154B43242' build`. Hosted tests: the same with `test -only-testing:ReTiCAMsgrTests`. Never run `swift test` and `xcodebuild` at the same time.
 - The app target does not build between Task 1 and Task 4 (the entry point still calls the old `load()`); Tasks 1–3 are gated by the core suite only.
 - Every new test follows the mutation protocol: green → mutate production → red → revert by hand → green; masked mutations in separate sub-batches.
 - Test prefixes: `identityStore`, `identityLaunch`, `identityRestore`, `appRuntime`, `sharedKeychain`, `testHostScan`.
@@ -36,9 +36,9 @@
 ### Task 1: `IdentityStore` over `ReTiCAKeychain`
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Package.swift`
-- Modify (rewrite): `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/IdentityStore.swift`
-- Modify (rewrite): `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/IdentityStoreTests.swift`
+- Modify: `ReTiCAMsgrCore/Package.swift`
+- Modify (rewrite): `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/IdentityStore.swift`
+- Modify (rewrite): `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/IdentityStoreTests.swift`
 
 **Interfaces:**
 - Consumes: ReTiCA `IdentityKeychain.load/loadOrCreate/importIdentity`, `KeychainOps`, `InMemoryKeychain`, `IdentityKeychain.Failure` (incl. `ambiguousItems`, `synchronizableItem`).
@@ -46,7 +46,7 @@
 
 - [ ] **Step 1: Add the package dependency**
 
-In `ReTiCaMsgrCore/Package.swift`, in the `ReTiCaMsgrCore` target's `dependencies`, add after the `ReTiCANode` product line:
+In `ReTiCAMsgrCore/Package.swift`, in the `ReTiCAMsgrCore` target's `dependencies`, add after the `ReTiCANode` product line:
 
 ```swift
                 .product(name: "ReTiCAKeychain", package: "ReTiCA"),
@@ -54,7 +54,7 @@ In `ReTiCaMsgrCore/Package.swift`, in the `ReTiCaMsgrCore` target's `dependencie
 
 - [ ] **Step 2: Write the failing tests**
 
-Replace `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/IdentityStoreTests.swift` with:
+Replace `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/IdentityStoreTests.swift` with:
 
 ```swift
 import Foundation
@@ -62,7 +62,7 @@ import Security
 import Testing
 import ReTiCA
 import ReTiCAKeychain
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private let shared = SharedIdentityLocation.shared
 
@@ -179,7 +179,7 @@ private func makeSeed() -> (Identity, Data) {
 
 - [ ] **Step 3: Run to verify failure**
 
-Run: `swift test --package-path <worktree>/ReTiCaMsgrCore --filter identityStore`
+Run: `swift test --package-path <worktree>/ReTiCAMsgrCore --filter identityStore`
 Expected: compile errors (`SharedIdentityLocation`, `LoadPolicy`, `live(ops:)`, `reason(for:)` missing; `load()` has no parameter).
 
 - [ ] **Step 4: Rewrite `IdentityStore.swift`**
@@ -195,7 +195,7 @@ import Security
 /// this app never uses its own `SecItem` code, so its copy collides and dedupes with Nbhd's.
 public enum SharedIdentityLocation {
     public static let service = "reticulum.identity"
-    /// Must equal `$(AppIdentifierPrefix)co.lithobyte.reticulum.identity` in ReTiCaMsgr.entitlements.
+    /// Must equal `$(AppIdentifierPrefix)co.lithobyte.reticulum.identity` in ReTiCAMsgr.entitlements.
     public static let accessGroup = "HK6WSAR793.co.lithobyte.reticulum.identity"
     public static let shared = IdentityKeychain.Location(service: service, accessGroup: accessGroup)
 }
@@ -333,7 +333,7 @@ public extension DependencyValues {
 
 - [ ] **Step 5: Run to verify pass**
 
-Run: `swift test --package-path <worktree>/ReTiCaMsgrCore --filter identityStore` → PASS. Then the whole core suite → PASS (the app target is expected NOT to build until Task 4).
+Run: `swift test --package-path <worktree>/ReTiCAMsgrCore --filter identityStore` → PASS. Then the whole core suite → PASS (the app target is expected NOT to build until Task 4).
 
 - [ ] **Step 6: Mutation check**
 
@@ -341,16 +341,16 @@ Batch A: in `live` `.loadOnly`, map `.absent` to `loadOrCreate`'s mint (call `lo
 Batch B: in `restore`, map `.identityPresent` to `.restored(Identity())`-equivalent (`.invalidKey`) → `identityStoreRestoreImportsOnceAndRefusesAfter` fails; in `testValue` return `.absent` for `.loadOnly` → `identityStoreTestValueIsStable…` fails.
 Revert by hand; PASS.
 
-- [ ] **Step 7: Commit** — `feat: IdentityStore loads the shared identity through ReTiCAKeychain` (stage `ReTiCaMsgrCore/Package.swift`, the source and the test file).
+- [ ] **Step 7: Commit** — `feat: IdentityStore loads the shared identity through ReTiCAKeychain` (stage `ReTiCAMsgrCore/Package.swift`, the source and the test file).
 
 ---
 
 ### Task 2: Policy, anchor, state and the launch resolver
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift` (add `hasMessages`)
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/IdentityLaunch.swift`
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/IdentityLaunchTests.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift` (add `hasMessages`)
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/IdentityLaunch.swift`
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/IdentityLaunchTests.swift`
 
 **Interfaces:**
 - Consumes: Task 1's `IdentityStore`, `LoadPolicy`, `IdentityLoad`, `IdentityFailureReason`; `AppDatabase.makeInMemory`; `Message`.
@@ -364,7 +364,7 @@ import Testing
 import GRDB
 import ReTiCA
 import ReTiCAKeychain
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private func insertOneMessage(_ db: any DatabaseWriter) throws {
     let m = Message(id: UUID(), peerHex: String(repeating: "ab", count: 16), isOutgoing: true, body: "hi",
@@ -594,8 +594,8 @@ Revert by hand; PASS.
 ### Task 3: `IdentityRestore`
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/IdentityRestore.swift`
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/IdentityRestoreTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/IdentityRestore.swift`
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/IdentityRestoreTests.swift`
 
 **Interfaces:**
 - Consumes: ReTiCA `IdentityBackup.decodeBase32`, `Identity.keySize`, `Identity(privateKey:)`; Task 1's `IdentityFailureReason`.
@@ -608,7 +608,7 @@ import Foundation
 import Testing
 import ReTiCA
 import ReTiCAKeychain
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private func makeSeed() -> (Identity, Data) {
     let identity = Identity()
@@ -768,11 +768,11 @@ Revert by hand; PASS.
 ### Task 4: `AppRuntime`, entitlements, entry point and the recovery UI
 
 **Files:**
-- Create: `ReTiCaMsgr/ReTiCaMsgr.entitlements`, `ReTiCaMsgrTests/ReTiCaMsgrTests.entitlements`
-- Modify: `ReTiCaMsgr.xcodeproj/project.pbxproj` (four build-configuration blocks)
-- Create: `ReTiCaMsgr/AppRuntime.swift`, `ReTiCaMsgr/IdentityRecoveryView.swift`, `ReTiCaMsgr/RestoreIdentitySheet.swift`, `ReTiCaMsgr/IdentityRecoveryText.swift`
-- Modify: `ReTiCaMsgr/ReTiCaMsgrApp.swift`, `ReTiCaMsgr/ContentView.swift`
-- Create: `ReTiCaMsgrUITests/TestApp.swift`; Modify: `ReTiCaMsgrUITests/ReTiCaMsgrUITests.swift`, `ReTiCaMsgrUITests/ReTiCaMsgrUITestsLaunchTests.swift`
+- Create: `ReTiCAMsgr/ReTiCAMsgr.entitlements`, `ReTiCAMsgrTests/ReTiCAMsgrTests.entitlements`
+- Modify: `ReTiCAMsgr.xcodeproj/project.pbxproj` (four build-configuration blocks)
+- Create: `ReTiCAMsgr/AppRuntime.swift`, `ReTiCAMsgr/IdentityRecoveryView.swift`, `ReTiCAMsgr/RestoreIdentitySheet.swift`, `ReTiCAMsgr/IdentityRecoveryText.swift`
+- Modify: `ReTiCAMsgr/ReTiCAMsgrApp.swift`, `ReTiCAMsgr/ContentView.swift`
+- Create: `ReTiCAMsgrUITests/TestApp.swift`; Modify: `ReTiCAMsgrUITests/ReTiCAMsgrUITests.swift`, `ReTiCAMsgrUITests/ReTiCAMsgrUITestsLaunchTests.swift`
 
 **Interfaces:**
 - Consumes: Tasks 1–3; TCA `Store(initialState:reducer:withDependencies:)`; `AppFeature.State(identity:)`, `.onLaunch`, `.foregrounded`, `AppFeature.publicKeyRequestPath`, `RequestResponder`.
@@ -782,7 +782,7 @@ Gate for this task: the app builds (`xcodebuild … build`) and the core suite i
 
 - [ ] **Step 1: Entitlements files**
 
-`ReTiCaMsgr/ReTiCaMsgr.entitlements` and `ReTiCaMsgrTests/ReTiCaMsgrTests.entitlements`, identical content:
+`ReTiCAMsgr/ReTiCAMsgr.entitlements` and `ReTiCAMsgrTests/ReTiCAMsgrTests.entitlements`, identical content:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -800,14 +800,14 @@ Gate for this task: the app builds (`xcodebuild … build`) and the core suite i
 - [ ] **Step 2: Project settings**
 
 In `project.pbxproj`, add a line directly ABOVE `CODE_SIGN_STYLE = Automatic;` in each of these four `buildSettings` blocks (use the Edit tool with enough surrounding context to hit exactly one block each time — the `PRODUCT_BUNDLE_IDENTIFIER` line in the same block disambiguates):
-- `49C39951301E7A5B003D6278 /* Debug */` and `49C39952301E7A5B003D6278 /* Release */` (app, `PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgr`): `CODE_SIGN_ENTITLEMENTS = ReTiCaMsgr/ReTiCaMsgr.entitlements;`
-- `49C39954301E7A5B003D6278 /* Debug */` and `49C39955301E7A5B003D6278 /* Release */` (tests, `co.lithobyte.ReTiCaMsgrTests`): `CODE_SIGN_ENTITLEMENTS = ReTiCaMsgrTests/ReTiCaMsgrTests.entitlements;`
+- `49C39951301E7A5B003D6278 /* Debug */` and `49C39952301E7A5B003D6278 /* Release */` (app, `PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgr`): `CODE_SIGN_ENTITLEMENTS = ReTiCAMsgr/ReTiCAMsgr.entitlements;`
+- `49C39954301E7A5B003D6278 /* Debug */` and `49C39955301E7A5B003D6278 /* Release */` (tests, `co.lithobyte.ReTiCaMsgrTests`): `CODE_SIGN_ENTITLEMENTS = ReTiCAMsgrTests/ReTiCAMsgrTests.entitlements;`
 
 - [ ] **Step 3: `IdentityRecoveryText.swift`** (pure strings, so Task 5 can test them without a view)
 
 ```swift
 import Foundation
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// Plain wording per identity state and restore outcome (spec §5.5). Public facts only.
 enum IdentityRecoveryText {
@@ -851,11 +851,11 @@ enum IdentityRecoveryText {
         case .locked:
             return Screen(title: "Identity locked", message: "Your identity is locked. Unlock your device, then tap Retry.", detail: nil, showsRestore: false, showsAccept: false)
         case let .strayItem(detail):
-            return Screen(title: "Unexpected identity item", message: "Another Reticulum identity item is in an unexpected place on this device. ReTiCaMsgr won't guess which one to use.", detail: detail, showsRestore: false, showsAccept: false)
+            return Screen(title: "Unexpected identity item", message: "Another Reticulum identity item is in an unexpected place on this device. ReTiCAMsgr won't guess which one to use.", detail: detail, showsRestore: false, showsAccept: false)
         case .corrupt:
             return Screen(title: "Identity unreadable", message: "The identity stored on this device can't be read.", detail: "The stored item is not a 64-byte identity.", showsRestore: false, showsAccept: false)
         case .accessDenied:
-            return Screen(title: "Identity access denied", message: "ReTiCaMsgr isn't allowed to read the identity. This is a signing or configuration problem, not your data.", detail: "errSecMissingEntitlement (-34018): check the keychain-access-groups entitlement and the team prefix.", showsRestore: false, showsAccept: false)
+            return Screen(title: "Identity access denied", message: "ReTiCAMsgr isn't allowed to read the identity. This is a signing or configuration problem, not your data.", detail: "errSecMissingEntitlement (-34018): check the keychain-access-groups entitlement and the team prefix.", showsRestore: false, showsAccept: false)
         case let .other(status):
             return Screen(title: "Identity unavailable", message: "Your identity couldn't be loaded.", detail: status.map { "OSStatus \($0)" } ?? "No status was reported.", showsRestore: false, showsAccept: false)
         }
@@ -876,7 +876,7 @@ enum IdentityRecoveryText {
             case .noExpectedIdentity: return "Restore isn't possible: this device has no record of which identity your conversations used."
             }
         case .refused(.identityPresent):
-            return "Another Reticulum identity already exists on this device, so ReTiCaMsgr won't replace it. Nothing was changed."
+            return "Another Reticulum identity already exists on this device, so ReTiCAMsgr won't replace it. Nothing was changed."
         case .refused(.notMissing):
             return nil
         case let .failed(reason):
@@ -897,7 +897,7 @@ import GRDB
 import ReTiCA
 import ReTiCANode          // RequestResponder (member-import visibility is on; amended at execution)
 import ReTiCAKeychain
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// Owns the database, resolves the identity, and builds the store ONLY in `.ready` (spec §5.4).
 /// The identity enters the app by building the store and never changes afterwards.
@@ -1026,14 +1026,14 @@ final class AppRuntime {
 
 - [ ] **Step 5: Entry point and root**
 
-`ReTiCaMsgrApp.swift` becomes:
+`ReTiCAMsgrApp.swift` becomes:
 
 ```swift
 import SwiftUI
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 @main
-struct ReTiCaMsgrApp: App {
+struct ReTiCAMsgrApp: App {
     @State private var runtime = AppRuntime(environment: .forProcess())
     @Environment(\.scenePhase) private var scenePhase
 
@@ -1059,7 +1059,7 @@ struct ReTiCaMsgrApp: App {
 ```swift
 import SwiftUI
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 struct RootView: View {
     let runtime: AppRuntime
@@ -1087,7 +1087,7 @@ struct RootView: View {
 
 ```swift
 import SwiftUI
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 struct IdentityRecoveryView: View {
     let runtime: AppRuntime
@@ -1147,7 +1147,7 @@ struct IdentityRecoveryView: View {
 ```swift
 import SwiftUI
 import UniformTypeIdentifiers
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// Paste the base32 text form or pick the 64-byte identity file (spec §5.5). Input lives only
 /// here and is cleared on success, cancel, dismiss and rejection. Nothing is logged.
@@ -1246,7 +1246,7 @@ struct RestoreIdentitySheet: View {
 
 - [ ] **Step 8: UI-test helper and launches**
 
-`ReTiCaMsgrUITests/TestApp.swift`:
+`ReTiCAMsgrUITests/TestApp.swift`:
 
 ```swift
 import XCTest
@@ -1262,7 +1262,7 @@ enum TestApp {
 }
 ```
 
-In `ReTiCaMsgrUITests.swift` replace both `XCUIApplication()` with `TestApp.make()`. In `ReTiCaMsgrUITestsLaunchTests.swift` do the same for its `XCUIApplication()`.
+In `ReTiCAMsgrUITests.swift` replace both `XCUIApplication()` with `TestApp.make()`. In `ReTiCAMsgrUITestsLaunchTests.swift` do the same for its `XCUIApplication()`.
 
 - [ ] **Step 9: Build and run the core suite**
 
@@ -1275,13 +1275,13 @@ Run the app build (Global Constraints command) → `** BUILD SUCCEEDED **`. Then
 ### Task 5: Hosted tests — runtime behaviour, the real access group, and the test-host guard
 
 **Files:**
-- Create: `ReTiCaMsgrTests/AppRuntimeTests.swift`, `ReTiCaMsgrTests/SharedKeychainTests.swift`, `ReTiCaMsgrTests/TestHostScanTests.swift`, `ReTiCaMsgrTests/IdentityRecoveryTextTests.swift`
-- Delete: the template `ReTiCaMsgrTests/ReTiCaMsgrTests.swift`
+- Create: `ReTiCAMsgrTests/AppRuntimeTests.swift`, `ReTiCAMsgrTests/SharedKeychainTests.swift`, `ReTiCAMsgrTests/TestHostScanTests.swift`, `ReTiCAMsgrTests/IdentityRecoveryTextTests.swift`
+- Delete: the template `ReTiCAMsgrTests/ReTiCAMsgrTests.swift`
 
 **Interfaces:**
 - Consumes: Task 4's `AppRuntime`, `IdentityRecoveryText`; `InMemoryKeychain`, `KeychainOps.live`, `IdentityStore.live(ops:shared:)`.
 
-Test command: `xcodebuild -project <worktree>/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'id=AF8E1DCF-F093-4978-BBA6-C0F154B43242' test -only-testing:ReTiCaMsgrTests` (boot the simulator first with `xcrun simctl boot AF8E1DCF-F093-4978-BBA6-C0F154B43242`; ignore "already booted").
+Test command: `xcodebuild -project <worktree>/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'id=AF8E1DCF-F093-4978-BBA6-C0F154B43242' test -only-testing:ReTiCAMsgrTests` (boot the simulator first with `xcrun simctl boot AF8E1DCF-F093-4978-BBA6-C0F154B43242`; ignore "already booted").
 
 - [ ] **Step 1: Write the tests**
 
@@ -1293,8 +1293,8 @@ import Testing
 import GRDB
 import ReTiCA
 import ReTiCAKeychain
-import ReTiCaMsgrCore
-@testable import ReTiCaMsgr
+import ReTiCAMsgrCore
+@testable import ReTiCAMsgr
 
 private let shared = SharedIdentityLocation.shared
 
@@ -1462,8 +1462,8 @@ import Foundation
 import Testing
 import ReTiCA
 import ReTiCAKeychain
-import ReTiCaMsgrCore
-@testable import ReTiCaMsgr
+import ReTiCAMsgrCore
+@testable import ReTiCAMsgr
 
 /// Deletes only test-owned services. Refuses the production service outright.
 private enum TestKeychain {
@@ -1497,8 +1497,8 @@ private enum TestKeychain {
 ```swift
 import Foundation
 import Testing
-import ReTiCaMsgrCore
-@testable import ReTiCaMsgr
+import ReTiCAMsgrCore
+@testable import ReTiCAMsgr
 
 @Test func identityRecoveryTextPerState() {
     let expected = Data(repeating: 0xAB, count: 16)
@@ -1533,9 +1533,9 @@ import ReTiCaMsgrCore
 ```swift
 import Foundation
 import Testing
-@testable import ReTiCaMsgr
+@testable import ReTiCAMsgr
 
-/// Repo root from this file's path (…/ReTiCaMsgrTests/TestHostScanTests.swift).
+/// Repo root from this file's path (…/ReTiCAMsgrTests/TestHostScanTests.swift).
 private let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
 
 private func swiftFiles(under folder: String) throws -> [(String, String)] {
@@ -1547,31 +1547,31 @@ private func swiftFiles(under folder: String) throws -> [(String, String)] {
 @Test func testHostScanOnlyTheHelperSetsTheFlag() throws {
     var setters: [String] = []
     var readers: [String] = []
-    for folder in ["ReTiCaMsgr", "ReTiCaMsgrTests", "ReTiCaMsgrUITests"] {
+    for folder in ["ReTiCAMsgr", "ReTiCAMsgrTests", "ReTiCAMsgrUITests"] {
         for (name, source) in try swiftFiles(under: folder) {
             if source.contains("launchEnvironment") { setters.append("\(folder)/\(name)") }
             if source.contains("RETICAMSGR_TEST_HOST") { readers.append("\(folder)/\(name)") }
         }
     }
     // This file names both strings in its own source, so it appears in both lists.
-    #expect(Set(setters) == ["ReTiCaMsgrUITests/TestApp.swift", "ReTiCaMsgrTests/TestHostScanTests.swift"])
-    #expect(Set(readers) == ["ReTiCaMsgr/AppRuntime.swift", "ReTiCaMsgrUITests/TestApp.swift", "ReTiCaMsgrTests/TestHostScanTests.swift"])
+    #expect(Set(setters) == ["ReTiCAMsgrUITests/TestApp.swift", "ReTiCAMsgrTests/TestHostScanTests.swift"])
+    #expect(Set(readers) == ["ReTiCAMsgr/AppRuntime.swift", "ReTiCAMsgrUITests/TestApp.swift", "ReTiCAMsgrTests/TestHostScanTests.swift"])
 }
 
 @Test func testHostScanEntitlementsNameTheSharedGroup() throws {
-    let url = repoRoot.appendingPathComponent("ReTiCaMsgr/ReTiCaMsgr.entitlements")
+    let url = repoRoot.appendingPathComponent("ReTiCAMsgr/ReTiCAMsgr.entitlements")
     let plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any]
     let groups = plist?["keychain-access-groups"] as? [String]
     #expect(groups == ["$(AppIdentifierPrefix)co.lithobyte.reticulum.identity"])
-    #expect(ReTiCaMsgrCore.SharedIdentityLocation.accessGroup == "HK6WSAR793.co.lithobyte.reticulum.identity")
-    #expect(ReTiCaMsgrCore.SharedIdentityLocation.accessGroup.hasSuffix(String(groups![0].dropFirst("$(AppIdentifierPrefix)".count))))
-    let tests = repoRoot.appendingPathComponent("ReTiCaMsgrTests/ReTiCaMsgrTests.entitlements")
+    #expect(ReTiCAMsgrCore.SharedIdentityLocation.accessGroup == "HK6WSAR793.co.lithobyte.reticulum.identity")
+    #expect(ReTiCAMsgrCore.SharedIdentityLocation.accessGroup.hasSuffix(String(groups![0].dropFirst("$(AppIdentifierPrefix)".count))))
+    let tests = repoRoot.appendingPathComponent("ReTiCAMsgrTests/ReTiCAMsgrTests.entitlements")
     let testPlist = try PropertyListSerialization.propertyList(from: Data(contentsOf: tests), format: nil) as? [String: Any]
     #expect(testPlist?["keychain-access-groups"] as? [String] == groups)
 }
 ```
 
-(`TestHostScanTests.swift` needs `import ReTiCaMsgrCore` for the second test.) Delete `ReTiCaMsgrTests/ReTiCaMsgrTests.swift`.
+(`TestHostScanTests.swift` needs `import ReTiCAMsgrCore` for the second test.) Delete `ReTiCAMsgrTests/ReTiCAMsgrTests.swift`.
 
 - [ ] **Step 2: Run** — boot the simulator, then the hosted test command. Expected: PASS (the `QRCodeImageTests` still pass).
 

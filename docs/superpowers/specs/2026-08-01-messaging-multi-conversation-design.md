@@ -1,4 +1,4 @@
-# ReTiCaMsgr Slice 2 — Multiple Conversations (Design)
+# ReTiCAMsgr Slice 2 — Multiple Conversations (Design)
 
 ## Goal
 
@@ -11,7 +11,7 @@ starting a new conversation by peer address. Delivery stays **opportunistic
 
 Builds directly on the one-conversation MVP (spec
 `2026-08-01-messaging-mvp-one-conversation-design.md`). That MVP is a single
-`AppFeature` reducer (in the local SPM package `ReTiCaMsgrCore`) scoping
+`AppFeature` reducer (in the local SPM package `ReTiCAMsgrCore`) scoping
 `LXMFNode` from the ReTiCA/LXMF package, with SQLiteData (`@Table Message`) for
 persistence and three SwiftUI screens (Chat / Address / Settings) in a TabView.
 
@@ -173,16 +173,16 @@ pass).
 
 ## Files
 
-- **Modify** `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` — state,
+- **Modify** `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` — state,
   actions, wiring per above.
-- **Create** `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift` — the
+- **Create** `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Conversation.swift` — the
   derived struct + the group-latest-per-peer helper.
-- **Modify** `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` —
+- **Modify** `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` —
   the eight tests above (replacing the three MVP tests where they overlap).
-- **Create** `ReTiCaMsgr/ConversationListView.swift` — list + compose sheet.
-- **Modify** `ReTiCaMsgr/ChatView.swift` — render `threadMessages`, per-peer gate.
-- **Modify** `ReTiCaMsgr/SettingsView.swift` — remove the peer field.
-- **Modify** `ReTiCaMsgr/ContentView.swift` (RootView) — Chat tab now hosts
+- **Create** `ReTiCAMsgr/ConversationListView.swift` — list + compose sheet.
+- **Modify** `ReTiCAMsgr/ChatView.swift` — render `threadMessages`, per-peer gate.
+- **Modify** `ReTiCAMsgr/SettingsView.swift` — remove the peer field.
+- **Modify** `ReTiCAMsgr/ContentView.swift` (RootView) — Chat tab now hosts
   `ConversationListView` in a `NavigationStack`.
 - **No change** to `Message.swift`, `Database.swift`, `IdentityStore.swift`,
   `Data+Hex.swift`, the DB migration, or `Package.swift`.

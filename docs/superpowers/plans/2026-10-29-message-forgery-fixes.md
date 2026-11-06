@@ -20,8 +20,8 @@
 
 - **Worktrees and paths:**
   - ReTiCA worktree: `/Users/ell/development/ios/pods/ReTiCA-worktrees/forgery` (branch `fix/forgery`). Never touch `/Users/ell/development/ios/pods/ReTiCA` itself, where another agent works.
-  - App worktree: `/Users/ell/development/ios/apps/ReTiCaMsgr-forgery` (branch `fix/forgery`).
-  - Parallel app tasks use sibling worktrees `ReTiCaMsgr-forgery-core` and `ReTiCaMsgr-forgery-ui` (branches `fix/forgery-core` and `fix/forgery-ui`).
+  - App worktree: `/Users/ell/development/ios/apps/ReTiCAMsgr-forgery` (branch `fix/forgery`).
+  - Parallel app tasks use sibling worktrees `ReTiCAMsgr-forgery-core` and `ReTiCAMsgr-forgery-ui` (branches `fix/forgery-core` and `fix/forgery-ui`).
 - **"Ours" means `deliveryDestinationHash`** for both `.direct` and `.propagated`. A nil value means drop.
 - **Check order** in `LXMFRouter` `.received`:
   1. unpack;
@@ -37,11 +37,11 @@
 - **The unverified marker copy is exactly "Unverified sender".**
 - **Tests:** Swift Testing. Every new test follows the user's three-step mutation rule (pass, fail under a batch mutation, revert and pass), with the evidence recorded.
 - **Commands:**
-  - ReTiCA tests: `swift test --package-path <worktree> --scratch-path /tmp/ReTiCaMsgr/retica-forgery --no-parallel --filter <name>`. Use `--no-parallel` for full runs. Known flake: `pnNodeOfferRejectedWithInvalidPeeringKey`.
-  - App core tests: `swift test --package-path ReTiCaMsgrCore --scratch-path /tmp/ReTiCaMsgr/core-<task>`. Known flakes: `meshLiveScanMapsEachRadio` and `meshLiveScanFinishesWhenTheSourceFinishes`.
-  - App builds: iOS and macOS `xcodebuild` with `-derivedDataPath /tmp/ReTiCaMsgr/dd-<task>-{ios,mac}`; macOS adds `CODE_SIGNING_ALLOWED=NO`.
+  - ReTiCA tests: `swift test --package-path <worktree> --scratch-path /tmp/ReTiCAMsgr/retica-forgery --no-parallel --filter <name>`. Use `--no-parallel` for full runs. Known flake: `pnNodeOfferRejectedWithInvalidPeeringKey`.
+  - App core tests: `swift test --package-path ReTiCAMsgrCore --scratch-path /tmp/ReTiCAMsgr/core-<task>`. Known flakes: `meshLiveScanMapsEachRadio` and `meshLiveScanFinishesWhenTheSourceFinishes`.
+  - App builds: iOS and macOS `xcodebuild` with `-derivedDataPath /tmp/ReTiCAMsgr/dd-<task>-{ios,mac}`; macOS adds `CODE_SIGNING_ALLOWED=NO`.
 - **Disk:** the disk filled earlier. Delete your own scratch and derived-data dirs when you finish.
-- **Shell:** one command per Bash call, with no pipes, `&&`, `;` or `$(...)` (including inside commit messages). Write scripts to `/tmp/ReTiCaMsgr/`. Commit trailers per the user's rule.
+- **Shell:** one command per Bash call, with no pipes, `&&`, `;` or `$(...)` (including inside commit messages). Write scripts to `/tmp/ReTiCAMsgr/`. Commit trailers per the user's rule.
 
 ## Review Focus
 
@@ -90,19 +90,19 @@
   Every new test must fail. Revert, then confirm green.
 - [ ] **Step 6:** Commit: `fix(lxmf): drop messages not addressed to us and known-sender bad signatures`.
 
-### Task 2: App core, storing and re-checking unverified rows (parallel, worktree `ReTiCaMsgr-forgery-core`)
+### Task 2: App core, storing and re-checking unverified rows (parallel, worktree `ReTiCAMsgr-forgery-core`)
 
 **Files:**
 - Modify:
-  - `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift`: the `addUnverifiedPacked` migration, appended last; a nullable `unverifiedPacked` BLOB on `messages`.
+  - `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift`: the `addUnverifiedPacked` migration, appended last; a nullable `unverifiedPacked` BLOB on `messages`.
   - `Message.swift`: `public var unverifiedPacked: Data?`, defaulting to nil in the initialiser.
   - `AppFeature.swift`:
     - the incoming store (around 2155–2167) sets `unverifiedPacked`;
     - the `.pathLearned` handlers (around 1947 and 2869) trigger the re-check;
     - the launch effect triggers it once.
   - `UnreadCount.swift`: `AND m.validated = 1` in both queries.
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/UnverifiedRecheck.swift`.
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/UnverifiedSenderTests.swift`.
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/UnverifiedRecheck.swift`.
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/UnverifiedSenderTests.swift`.
 
 **Interfaces:**
 - Produces:
@@ -143,13 +143,13 @@
   Every new test must fail. Revert, then confirm green.
 - [ ] **Step 6:** Commit: `fix: store unverified messages for a later signature check, keep them out of unread counts`.
 
-### Task 3: App views, the "Unverified sender" marker (parallel, worktree `ReTiCaMsgr-forgery-ui`)
+### Task 3: App views, the "Unverified sender" marker (parallel, worktree `ReTiCAMsgr-forgery-ui`)
 
 **Files:**
-- `ReTiCaMsgr/ChatView.swift`: the incoming bubble.
-- `ReTiCaMsgr/ConversationListView.swift`: the row preview.
-- Either `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift`, adding `lastIsUnverified: Bool` to `Conversation`, set in `Conversation.list(from:)` from the newest message's `!isOutgoing && !validated`, or an equivalent the builder prefers.
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ConversationListUnverifiedTests.swift`.
+- `ReTiCAMsgr/ChatView.swift`: the incoming bubble.
+- `ReTiCAMsgr/ConversationListView.swift`: the row preview.
+- Either `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Conversation.swift`, adding `lastIsUnverified: Bool` to `Conversation`, set in `Conversation.list(from:)` from the newest message's `!isOutgoing && !validated`, or an equivalent the builder prefers.
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ConversationListUnverifiedTests.swift`.
 
 **Interfaces:**
 - Produces:
@@ -171,8 +171,8 @@
 
 - [ ] **Step 1:** In the app worktree (`fix/forgery`), merge `fix/forgery-core` and then `fix/forgery-ui` with `--no-ff`. Resolve conflicts by keeping both sides. `Conversation.swift` and `AppFeature.swift` may touch nearby lines.
 - [ ] **Step 2: Verify the app against the ReTiCA branch.**
-  1. Create the symlink `/tmp/ReTiCaMsgr/ReTiCA` → `/Users/ell/development/ios/pods/ReTiCA-worktrees/forgery`.
-  2. Point `ReTiCaMsgrCore/Package.swift`'s ReTiCA path at it temporarily.
+  1. Create the symlink `/tmp/ReTiCAMsgr/ReTiCA` → `/Users/ell/development/ios/pods/ReTiCA-worktrees/forgery`.
+  2. Point `ReTiCAMsgrCore/Package.swift`'s ReTiCA path at it temporarily.
   3. Run the full core suite, the iOS app suite and both builds.
   4. Restore `Package.swift` byte-identical (check with `cmp` against `git show HEAD:...`) before any commit.
 - [ ] **Step 3: Add an end-to-end app test, `forgedMessageForAnotherRecipientNeverStored`.**

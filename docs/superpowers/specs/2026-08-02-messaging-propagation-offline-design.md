@@ -1,4 +1,4 @@
-# ReTiCaMsgr Slice 3 — Propagation / Offline Delivery (Design)
+# ReTiCAMsgr Slice 3 — Propagation / Offline Delivery (Design)
 
 ## Goal
 
@@ -179,15 +179,15 @@ configured with `lxmd`'s propagation-destination address.
   test file) — the three `sendMessage` tests.
 
 **App:**
-- Modify `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift` — add
+- Modify `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift` — add
   `MessageStatus.propagated`.
-- Modify `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` — state field,
+- Modify `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` — state field,
   `sendTapped` re-route, `interfaceConnected` sync, `setPropagationNode`,
   `syncTapped`, `propagationAccepted`.
-- Modify `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` — the
+- Modify `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` — the
   five app tests.
-- Modify `ReTiCaMsgr/SettingsView.swift` — Propagation node section.
-- Modify `ReTiCaMsgr/ConversationListView.swift` — Sync toolbar button.
+- Modify `ReTiCAMsgr/SettingsView.swift` — Propagation node section.
+- Modify `ReTiCAMsgr/ConversationListView.swift` — Sync toolbar button.
 - **No change** to `Conversation.swift`, `Database.swift`, `IdentityStore.swift`,
   `Data+Hex.swift`, `ChatView.swift`, `ContentView.swift`, the DB migration, or
   either `Package.swift`.

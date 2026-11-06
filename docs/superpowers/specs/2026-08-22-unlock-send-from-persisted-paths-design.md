@@ -1,7 +1,7 @@
 # Unlock Send from persisted paths on reconnect
 
-**Written:** 2026-08-22. **Repo:** ReTiCaMsgr (`/Users/ell/development/ios/apps/ReTiCaMsgr`),
-logic in `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`. Target: `main`.
+**Written:** 2026-08-22. **Repo:** ReTiCAMsgr (`/Users/ell/development/ios/apps/ReTiCAMsgr`),
+logic in `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`. Target: `main`.
 
 ## Goal
 
@@ -39,7 +39,7 @@ means *transport-routable*, not *UI-sendable* — which is precisely the gap thi
 
 ## Change
 
-App-side only, in `AppFeature` (ReTiCaMsgrCore). **No library (ReTiCA) change. No new announce.**
+App-side only, in `AppFeature` (ReTiCAMsgrCore). **No library (ReTiCA) change. No new announce.**
 
 Make `reachablePeers` a faithful projection of "can I actually send right now," seeded from
 persisted paths at the moment they become usable.

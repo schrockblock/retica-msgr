@@ -4,26 +4,26 @@
 
 **Goal:** Long-pressing any message offers an **Info** row that opens a sheet of copyable debugging metadata (timeline, delivery method, hashes, signature, stamp, sizes, LXMF field keys). As part of the same branch, reactions move to the standard LXMF `FIELD_REACTION` (0x40).
 
-**Architecture:** One GRDB migration (`addMessageInfo`) adds nullable metadata columns to `messages`. `AppFeature` fills them in the existing insert on the receive and send paths. Each status handler also records its first milestone time. A pure `MessageInfo` builder in ReTiCaMsgrCore turns a `Message` into titled sections of `(label, display, copy)` rows. It is unit-tested and holds all formatting. The SwiftUI `MessageInfoSheet` only lays the rows out. `ReactionWire` switches its encoder to 0x40 and still decodes the legacy 0xFB/0xFC format.
+**Architecture:** One GRDB migration (`addMessageInfo`) adds nullable metadata columns to `messages`. `AppFeature` fills them in the existing insert on the receive and send paths. Each status handler also records its first milestone time. A pure `MessageInfo` builder in ReTiCAMsgrCore turns a `Message` into titled sections of `(label, display, copy)` rows. It is unit-tested and holds all formatting. The SwiftUI `MessageInfoSheet` only lays the rows out. `ReactionWire` switches its encoder to 0x40 and still decodes the legacy 0xFB/0xFC format.
 
 **Tech Stack:** Swift 6, TCA (ComposableArchitecture), SQLiteData/StructuredQueries on GRDB, Swift Testing, SwiftUI (iOS 26.4), ReTiCA (`LXMessage`, `MsgPackValue`, `LXMFRouter.DeliveryMethod`).
 
-**Spec:** `/Users/ell/development/ios/apps/ReTiCaMsgr-message-info/docs/superpowers/specs/2026-09-26-message-info-design.md`, including its "Addendum: reactions move to the standard `FIELD_REACTION` (0x40)". Read it before starting. It is binding.
+**Spec:** `/Users/ell/development/ios/apps/ReTiCAMsgr-message-info/docs/superpowers/specs/2026-09-26-message-info-design.md`, including its "Addendum: reactions move to the standard `FIELD_REACTION` (0x40)". Read it before starting. It is binding.
 
 ## Global Constraints
 
 **Where you work**
-- All work happens ONLY in the worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-message-info`, on branch `feat/message-info`.
-- Never commit in `/Users/ell/development/ios/apps/ReTiCaMsgr`.
+- All work happens ONLY in the worktree `/Users/ell/development/ios/apps/ReTiCAMsgr-message-info`, on branch `feat/message-info`.
+- Never commit in `/Users/ell/development/ios/apps/ReTiCAMsgr`.
 - Never touch `/Users/ell/development/ios/pods/ReTiCA`: no edits, no git, no builds. Another agent works there.
 
 **Shell**
 - One command per Bash call. No `|`, `&&`, `||`, `;`, `$(...)` or `xargs`.
-- No inline interpreters (`python -c`, heredocs into interpreters, and so on). Scripts go in files under `/tmp/ReTiCaMsgr/`. Create that directory once with `mkdir -p /tmp/ReTiCaMsgr`.
+- No inline interpreters (`python -c`, heredocs into interpreters, and so on). Scripts go in files under `/tmp/ReTiCAMsgr/`. Create that directory once with `mkdir -p /tmp/ReTiCAMsgr`.
 
 **Commits**
-- Stage explicit paths only: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info add <path> <path> ...`. Never use `git add -A` or `git add .`. The worktree has unrelated untracked or modified files, such as xcuserdata and other plans, that must not be staged.
-- Write the message with the **Write** tool to `/tmp/ReTiCaMsgr/commit-msg.txt`, then run `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info commit -F /tmp/ReTiCaMsgr/commit-msg.txt`.
+- Stage explicit paths only: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info add <path> <path> ...`. Never use `git add -A` or `git add .`. The worktree has unrelated untracked or modified files, such as xcuserdata and other plans, that must not be staged.
+- Write the message with the **Write** tool to `/tmp/ReTiCAMsgr/commit-msg.txt`, then run `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info commit -F /tmp/ReTiCAMsgr/commit-msg.txt`.
   - **That file may hold a stale message from earlier work. Always overwrite it with Write immediately before each commit.**
 - No semicolons anywhere in a commit message.
 - End every commit message with these two trailer lines, at column 0, after a blank line. Put the name of the model that actually wrote the commit in the first line (for example `Claude Opus 5.5`):
@@ -33,7 +33,7 @@
   ```
 
 **Tests**
-- Command: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore [--filter X]`.
+- Command: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore [--filter X]`.
 - The baseline is 166 tests green.
 - The whole package must compile at the end of every task.
 - Each task's new tests share a unique name prefix, so one `--filter` selects all of them:
@@ -66,7 +66,7 @@
 **UI rule**
 - Tappable custom rows get `.frame(maxWidth: .infinity, alignment: .leading)` + `.contentShape(Rectangle())`.
 
-**App build check:** `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build`
+**App build check:** `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build`
 
 **Values from the spec, copied verbatim**
 - Migration and columns:
@@ -106,32 +106,32 @@ These are five inputs the spec does not mention that are most likely to bite a r
 
 | File | Status | Responsibility |
 |---|---|---|
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift` | Modify | New nullable properties, init parameters defaulting to nil, `ArrivalMethod` and `StampState` namespaces |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift` | Modify | `addMessageInfo` migration |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReactionWire.swift` | Modify | Standard 0x40 encode, dual-format decode |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageMetadata.swift` | Create | Pure mapping from ReTiCA values (`LXMessage`, `DeliveryMethod`, fields) to the stored strings |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` | Modify | Receive and send inserts carry metadata, and the three status handlers record milestones |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageInfo.swift` | Create | Pure `Message` to `[Section]` builder and all formatting |
-| `ReTiCaMsgr/MessageInfoSheet.swift` | Create | SwiftUI sheet: inset-grouped list, tap to copy, "Copied" overlay |
-| `ReTiCaMsgr/ChatView.swift` | Modify | Info menu row and `sheet(item:)` |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift` | Modify | Migration tests |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReactionWireTests.swift` | Modify | Standard codec tests |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/MessageMetadataTests.swift` | Create | Pure sender-timestamp range test |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` | Modify | Reducer tests for reactions, receive, send and milestones |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/MessageInfoTests.swift` | Create | Builder and formatting tests |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift` | Modify | New nullable properties, init parameters defaulting to nil, `ArrivalMethod` and `StampState` namespaces |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift` | Modify | `addMessageInfo` migration |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReactionWire.swift` | Modify | Standard 0x40 encode, dual-format decode |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessageMetadata.swift` | Create | Pure mapping from ReTiCA values (`LXMessage`, `DeliveryMethod`, fields) to the stored strings |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` | Modify | Receive and send inserts carry metadata, and the three status handlers record milestones |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessageInfo.swift` | Create | Pure `Message` to `[Section]` builder and all formatting |
+| `ReTiCAMsgr/MessageInfoSheet.swift` | Create | SwiftUI sheet: inset-grouped list, tap to copy, "Copied" overlay |
+| `ReTiCAMsgr/ChatView.swift` | Modify | Info menu row and `sheet(item:)` |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift` | Modify | Migration tests |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReactionWireTests.swift` | Modify | Standard codec tests |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/MessageMetadataTests.swift` | Create | Pure sender-timestamp range test |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` | Modify | Reducer tests for reactions, receive, send and milestones |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/MessageInfoTests.swift` | Create | Builder and formatting tests |
 
-The app target uses file-system-synchronized groups, so a new file in `ReTiCaMsgr/` joins the target automatically. The test target picks up new files in `Tests/ReTiCaMsgrCoreTests/` automatically as well.
+The app target uses file-system-synchronized groups, so a new file in `ReTiCAMsgr/` joins the target automatically. The test target picks up new files in `Tests/ReTiCAMsgrCoreTests/` automatically as well.
 
 **`Message(` construction sites:** these are all of them, found by grep. The new init parameters default to `nil`, so each keeps compiling unchanged.
 - `Sources/.../AppFeature.swift:500` (sendTapped) and `:657` (messageReceived). Tasks 4 and 3 add arguments to these two.
 - `Tests/.../DatabaseTests.swift:10`
 - `Tests/.../AppFeatureTests.swift:72` (the `msg` helper)
 - `Tests/.../ConversationTests.swift:10`
-- There are none in `ReTiCaMsgr/`.
+- There are none in `ReTiCAMsgr/`.
 
 **Before Task 1:**
-- Confirm the branch: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info branch --show-current` should print `feat/message-info`.
-- Run `mkdir -p /tmp/ReTiCaMsgr`.
+- Confirm the branch: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info branch --show-current` should print `feat/message-info`.
+- Run `mkdir -p /tmp/ReTiCAMsgr`.
 - Run the full suite once to confirm the 166-test baseline.
 
 **Date storage note, which affects test values:**
@@ -144,9 +144,9 @@ The app target uses file-system-synchronized groups, so a new file in `ReTiCaMsg
 ### Task 1: Migration and model columns
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift` (whole file)
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift:75-87` (after the `createReactions` migration)
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift` (whole file)
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift:75-87` (after the `createReactions` migration)
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift`
 
 **Interfaces:**
 - Consumes: nothing new.
@@ -257,7 +257,7 @@ Append to `DatabaseTests.swift`:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter infoMigration`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter infoMigration`
 Expected: a compile failure. `Message` has no `senderTimestamp` (and so on), and `ArrivalMethod` / `StampState` are undefined.
 
 - [ ] **Step 3: Implement the model**
@@ -406,7 +406,7 @@ Also update the doc comment on `migrator()` (line 6) to: `/// GRDB migrator for 
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter infoMigration`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter infoMigration`
 Expected: 2 tests pass.
 
 - [ ] **Step 6: Mutation check**
@@ -419,20 +419,20 @@ The two don't mask each other:
 - M1 does not affect the round trip, which inserts 412 explicitly.
 - M2 does not affect the legacy test, which expects nil anyway.
 
-Run the filter and confirm both tests are red. Revert both by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info diff` and confirm that no mutation text remains.
+Run the filter and confirm both tests are red. Revert both by hand. Run `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info diff` and confirm that no mutation text remains.
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore`
 Expected: 168 tests pass (166 + 2), with 0 known issues.
 
 - [ ] **Step 8: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/commit-msg.txt` with the Write tool (overwrite it):
+Write `/tmp/ReTiCAMsgr/commit-msg.txt` with the Write tool (overwrite it):
 
 ```
 feat: add message Info metadata columns
@@ -445,16 +445,16 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Then run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info commit -F /tmp/ReTiCaMsgr/commit-msg.txt`
+Then run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info commit -F /tmp/ReTiCAMsgr/commit-msg.txt`
 
 ---
 
 ### Task 2: Standard-format reaction codec (`FIELD_REACTION` 0x40)
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReactionWire.swift:1-50` (the `ReactionWire` enum. Leave `QuickReactions` unchanged.)
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReactionWireTests.swift`
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append after the last test, `closeConversationClearsReactions`, at line 2226)
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReactionWire.swift:1-50` (the `ReactionWire` enum. Leave `QuickReactions` unchanged.)
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReactionWireTests.swift`
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append after the last test, `closeConversationClearsReactions`, at line 2226)
 
 **Interfaces:**
 - Consumes: `MsgPackValue` (`.intMap`, `.bin`, `.map`, `.string`) and `MsgPackValue.IntPair(_ key: Int, _ value:)`.
@@ -641,7 +641,7 @@ Append to the end of `AppFeatureTests.swift`:
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter stdReaction`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter stdReaction`
 Expected: a compile failure, because `ReactionWire.fieldReaction` is undefined. If you temporarily comment out the constant checks, the remaining tests run red: encode still emits 0xFB/0xFC and decode ignores 0x40.
 
 - [ ] **Step 4: Implement the codec**
@@ -755,7 +755,7 @@ The one required edit: change the comment line above `reactionMessage` in `AppFe
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter stdReaction`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter stdReaction`
 Expected: 10 tests pass.
 
 - [ ] **Step 6: Mutation check**
@@ -787,16 +787,16 @@ Run the filter and confirm all 10 are red. Revert by hand. Run `git diff` and co
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore`
 Expected: 178 tests pass, with 0 known issues.
 
 - [ ] **Step 8: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReactionWire.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReactionWireTests.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReactionWire.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReactionWireTests.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/commit-msg.txt` (overwrite it):
+Write `/tmp/ReTiCAMsgr/commit-msg.txt` (overwrite it):
 
 ```
 feat: send reactions as standard LXMF FIELD_REACTION
@@ -810,17 +810,17 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Then run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info commit -F /tmp/ReTiCaMsgr/commit-msg.txt`
+Then run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info commit -F /tmp/ReTiCAMsgr/commit-msg.txt`
 
 ---
 
 ### Task 3: Receive-path metadata
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageMetadata.swift`
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift:605` (the `messageReceived` case pattern) and `:657-666` (the `Message(` insert)
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/MessageMetadataTests.swift`
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append at the end)
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessageMetadata.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift:605` (the `messageReceived` case pattern) and `:657-666` (the `Message(` insert)
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/MessageMetadataTests.swift`
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append at the end)
 
 **Interfaces:**
 - Consumes: the `Message` init parameters from Task 1, `ArrivalMethod.*` and `StampState.*`.
@@ -844,7 +844,7 @@ Create `MessageMetadataTests.swift`:
 ```swift
 import Testing
 import Foundation
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 /// Review Focus 1: a peer's clock can say anything. Only values that store and read back as a
 /// Date are kept. Everything else becomes nil ("—" in Info) instead of poisoning the row.
@@ -974,7 +974,7 @@ private func receiveAndFetch(_ m: LXMessage, me: Identity,
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter infoReceive`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter infoReceive`
 Expected: a compile failure, because `MessageMetadata` is undefined.
 
 - [ ] **Step 3: Create `MessageMetadata.swift`**
@@ -1063,7 +1063,7 @@ Do not touch the DIAGNOSTIC block (lines 607–629) or its local `fieldKeys` con
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter infoReceive`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter infoReceive`
 Expected: 7 tests pass.
 
 - [ ] **Step 6: Mutation check**
@@ -1085,16 +1085,16 @@ Run the filter and confirm all 7 are red. Revert by hand. Run `git diff` and con
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore`
 Expected: 185 tests pass, with 0 known issues.
 
 - [ ] **Step 8: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageMetadata.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/MessageMetadataTests.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessageMetadata.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/MessageMetadataTests.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/commit-msg.txt` (overwrite it):
+Write `/tmp/ReTiCAMsgr/commit-msg.txt` (overwrite it):
 
 ```
 feat: record Info metadata for incoming messages
@@ -1107,15 +1107,15 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Then run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info commit -F /tmp/ReTiCaMsgr/commit-msg.txt`
+Then run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info commit -F /tmp/ReTiCAMsgr/commit-msg.txt`
 
 ---
 
 ### Task 4: Send-path metadata
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` in the `case .sendTapped:` body, lines 486–519 before Task 3. Task 3 did not touch this region, but search for `case .sendTapped:` rather than trusting the line numbers.
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append at the end)
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` in the `case .sendTapped:` body, lines 486–519 before Task 3. Task 3 did not touch this region, but search for `case .sendTapped:` rather than trusting the line numbers.
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append at the end)
 
 **Interfaces:**
 - Consumes: `MessageMetadata.fieldKeys(_:)` (Task 3) and the `Message` init parameters (Task 1).
@@ -1179,7 +1179,7 @@ private func sendAndFetch(propagationNode: String) async -> (LXMessage?, Message
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter infoSend`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter infoSend`
 Expected: both tests FAIL. `senderTimestamp`, `wireSize` and the other metadata fields are nil.
 
 - [ ] **Step 3: Implement**
@@ -1223,7 +1223,7 @@ The following `return .merge(...)` is unchanged. It still uses `alsoViaPropagati
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter infoSend`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter infoSend`
 Expected: 2 tests pass.
 
 - [ ] **Step 5: Mutation check**
@@ -1238,16 +1238,16 @@ Run the filter and confirm both are red. Revert by hand. Run `git diff` and conf
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore`
 Expected: 187 tests pass, with 0 known issues.
 
 - [ ] **Step 7: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/commit-msg.txt` (overwrite it):
+Write `/tmp/ReTiCAMsgr/commit-msg.txt` (overwrite it):
 
 ```
 feat: record Info metadata for outgoing messages
@@ -1260,20 +1260,20 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Then run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info commit -F /tmp/ReTiCaMsgr/commit-msg.txt`
+Then run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info commit -F /tmp/ReTiCAMsgr/commit-msg.txt`
 
 ---
 
 ### Task 5: Milestone timestamps
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`, in three handlers:
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`, in three handlers:
   - `case let .node(.client(.delegate(.deliveryFailed(hash)))):` (originally line 683)
   - `case let .node(.client(.delegate(.propagationAccepted(hash)))):` (originally line 797)
   - `case let .node(.client(.delegate(.deliveryConfirmed(hash)))):` (originally line 818)
 
   Tasks 3 and 4 shifted the line numbers, so search for the case patterns.
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append at the end)
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append at the end)
 
 **Interfaces:**
 - Consumes: the `storedAt`, `deliveredAt` and `failedAt` columns (Task 1), and the `\.date` dependency (`date.now`).
@@ -1425,7 +1425,7 @@ private func rowsByHashAndDirection(_ db: any DatabaseWriter) async -> [String: 
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter infoMilestone`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter infoMilestone`
 Expected: all 6 FAIL, because every milestone column stays nil.
 
 - [ ] **Step 3: Implement the three handlers**
@@ -1525,7 +1525,7 @@ Replace the `deliveryConfirmed` case body, keeping the leading comment lines, wi
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter infoMilestone`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter infoMilestone`
 Expected: 6 tests pass. Then run the existing status tests to confirm the rewrites kept them green:
 - `--filter deliveryFailed`
 - `--filter propagationAccepted`
@@ -1548,16 +1548,16 @@ Run the filter and confirm all 6 are red. Revert by hand. Run `git diff` and con
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore`
 Expected: 193 tests pass, with 0 known issues.
 
 - [ ] **Step 7: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/commit-msg.txt` (overwrite it):
+Write `/tmp/ReTiCAMsgr/commit-msg.txt` (overwrite it):
 
 ```
 feat: record first stored, delivered and failed times
@@ -1570,15 +1570,15 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Then run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info commit -F /tmp/ReTiCaMsgr/commit-msg.txt`
+Then run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info commit -F /tmp/ReTiCAMsgr/commit-msg.txt`
 
 ---
 
 ### Task 6: The `MessageInfo` builder
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageInfo.swift`
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/MessageInfoTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessageInfo.swift`
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/MessageInfoTests.swift`
 
 **Interfaces:**
 - Consumes: `Message` with its metadata (Task 1), `ArrivalMethod.*`, `StampState.*` and `MessageStatus.*`.
@@ -1633,7 +1633,7 @@ Create `MessageInfoTests.swift`:
 ```swift
 import Testing
 import Foundation
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private let utc = TimeZone(identifier: "UTC")!
 private let t0 = Date(timeIntervalSince1970: 1700000000)          // 2023-11-14 22:13:20 UTC
@@ -1817,7 +1817,7 @@ private func missingRow(_ label: String) -> MessageInfo.Row {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter infoSections`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter infoSections`
 Expected: a compile failure, because `MessageInfo` is undefined.
 
 - [ ] **Step 3: Implement `MessageInfo.swift`**
@@ -2038,7 +2038,7 @@ public enum MessageInfo {
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore --filter infoSections`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore --filter infoSections`
 Expected: 8 tests pass.
 
 - [ ] **Step 5: Mutation check**
@@ -2057,16 +2057,16 @@ Run the filter and confirm all 8 are red. Revert by hand. Run `git diff` and con
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore`
 Expected: 201 tests pass, with 0 known issues.
 
 - [ ] **Step 7: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageInfo.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/MessageInfoTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessageInfo.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/MessageInfoTests.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/commit-msg.txt` (overwrite it):
+Write `/tmp/ReTiCAMsgr/commit-msg.txt` (overwrite it):
 
 ```
 feat: build message Info sections
@@ -2080,15 +2080,15 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Then run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info commit -F /tmp/ReTiCaMsgr/commit-msg.txt`
+Then run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info commit -F /tmp/ReTiCAMsgr/commit-msg.txt`
 
 ---
 
 ### Task 7: The Info sheet and menu row
 
 **Files:**
-- Create: `ReTiCaMsgr/MessageInfoSheet.swift`
-- Modify: `ReTiCaMsgr/ChatView.swift`:
+- Create: `ReTiCAMsgr/MessageInfoSheet.swift`
+- Modify: `ReTiCAMsgr/ChatView.swift`:
   - `:15` (state)
   - `:28-49` (the list and context menu)
   - `:71-74` (the `PickerTarget` neighbour)
@@ -2105,7 +2105,7 @@ This task is SwiftUI only and has no unit tests, so it is exempt from mutation c
 import SwiftUI
 import UIKit
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// Debugging metadata for one message. It reads the message from `store.threadMessages` by id, so
 /// a milestone that lands while the sheet is open (the thread reloads) shows up live.
@@ -2244,21 +2244,21 @@ private struct InfoTarget: Identifiable {
 
 - [ ] **Step 3: Build the app**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build`
 Expected: `** BUILD SUCCEEDED **`.
 
 - [ ] **Step 4: Run the full core suite (unchanged, sanity check)**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore`
 Expected: 201 tests pass, with 0 known issues.
 
 - [ ] **Step 5: Commit**
 
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info add ReTiCaMsgr/MessageInfoSheet.swift ReTiCaMsgr/ChatView.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info add ReTiCAMsgr/MessageInfoSheet.swift ReTiCAMsgr/ChatView.swift
 ```
 
-Write `/tmp/ReTiCaMsgr/commit-msg.txt` (overwrite it):
+Write `/tmp/ReTiCAMsgr/commit-msg.txt` (overwrite it):
 
 ```
 feat: add Info sheet to the message menu
@@ -2272,14 +2272,14 @@ Co-Authored-By: <model name> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Then run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info commit -F /tmp/ReTiCaMsgr/commit-msg.txt`
+Then run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info commit -F /tmp/ReTiCAMsgr/commit-msg.txt`
 
 ---
 
 ### Task 8: Manual simulator verification
 
 **Files:**
-- Modify TEMPORARILY: `ReTiCaMsgr/ReTiCaMsgrApp.swift`. **This is reverted by hand before the task ends and is never committed.**
+- Modify TEMPORARILY: `ReTiCAMsgr/ReTiCAMsgrApp.swift`. **This is reverted by hand before the task ends and is never committed.**
 
 **Interfaces:**
 - Consumes: everything above.
@@ -2296,7 +2296,7 @@ Check the session defaults before the first build, as the skill requires.
 
 - [ ] **Step 2: Add the temporary seed scaffold**
 
-In `ReTiCaMsgrApp.swift`, replace the `prepareDependencies { ... }` block (lines 20–29) with:
+In `ReTiCAMsgrApp.swift`, replace the `prepareDependencies { ... }` block (lines 20–29) with:
 
 ```swift
         let database = try! AppDatabase.makeOnDisk(path: dbPath)
@@ -2377,7 +2377,7 @@ The file already imports `SQLiteData`, which re-exports `DatabaseWriter`.
 
 - [ ] **Step 3: Build and run on a simulator**
 
-Use the skill's simulator build-and-run for `/Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgr.xcodeproj`, scheme `ReTiCaMsgr`. Open the conversation `5a5a…` from the Chats list. Start the next steps promptly, because the 45-second proof timer starts at launch.
+Use the skill's simulator build-and-run for `/Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgr.xcodeproj`, scheme `ReTiCAMsgr`. Open the conversation `5a5a…` from the Chats list. Start the next steps promptly, because the 45-second proof timer starts at launch.
 
 - [ ] **Step 4: Verify, taking a screenshot for each check**
 
@@ -2409,20 +2409,20 @@ If any check fails, stop. Diagnose it with superpowers:systematic-debugging, fix
 
 With the Edit tool, restore the `prepareDependencies` block and the `.task { Self.store.send(.onLaunch) }` line exactly as they were, and delete the `InfoSeed` enum. Then:
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info diff -- ReTiCaMsgr/ReTiCaMsgrApp.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info diff -- ReTiCAMsgr/ReTiCAMsgrApp.swift`
 Expected: empty output.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-message-info status --short`
-Expected: no change to `ReTiCaMsgrApp.swift`. Only the pre-existing unrelated entries remain.
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-message-info status --short`
+Expected: no change to `ReTiCAMsgrApp.swift`. Only the pre-existing unrelated entries remain.
 
 Remove the seeded rows from the simulator by uninstalling the app with the skill's simulator uninstall tool (find it with `--help`), so the fake conversation doesn't linger.
 
 - [ ] **Step 6: Final checks**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build`
 Expected: `** BUILD SUCCEEDED **` with the scaffold gone.
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-message-info/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-message-info/ReTiCAMsgrCore`
 Expected: 201 tests pass, with 0 known issues.
 
 Nothing is committed in this task. Report the seven checks, each with pass or fail and its screenshot.

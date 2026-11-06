@@ -1,8 +1,8 @@
-# Shared Reticulum Identity — Adoption in ReTiCaMsgr (with ReTiCAKeychain hardening)
+# Shared Reticulum Identity — Adoption in ReTiCAMsgr (with ReTiCAKeychain hardening)
 
 **Date:** 2026-09-29
 **Status:** Approved in brainstorming; awaiting written-spec review
-**Scope:** ReTiCA (`ReTiCAKeychain` hardening, Part A) + ReTiCaMsgr (adoption, Part B). Nbhd is out
+**Scope:** ReTiCA (`ReTiCAKeychain` hardening, Part A) + ReTiCAMsgr (adoption, Part B). Nbhd is out
 of scope except for the build note in §6.
 **Parent design:** `/Users/ell/development/ios/apps/Nbhd/docs/superpowers/specs/2026-09-26-shared-identity-design.md`
 (§7 is the adoption guidance this spec implements) and
@@ -11,17 +11,17 @@ of scope except for the build note in §6.
 
 ## 1. Intent
 
-ReTiCaMsgr and Nbhd should use **one Reticulum identity per device**, read from the shared
+ReTiCAMsgr and Nbhd should use **one Reticulum identity per device**, read from the shared
 Keychain item Nbhd already uses (service `reticulum.identity`, access group
-`HK6WSAR793.co.lithobyte.reticulum.identity`). ReTiCaMsgr owns `lxmf.delivery`; Nbhd syncs on
-`nbhd.sync`. Before ReTiCaMsgr adopts, `ReTiCAKeychain` gains the hardening Nbhd's status lists as
+`HK6WSAR793.co.lithobyte.reticulum.identity`). ReTiCAMsgr owns `lxmf.delivery`; Nbhd syncs on
+`nbhd.sync`. Before ReTiCAMsgr adopts, `ReTiCAKeychain` gains the hardening Nbhd's status lists as
 "all BEFORE the messaging app adopts".
 
 **Success:**
 - ReTiCA: two items at the shared location, or any synchronizable item, fail closed everywhere; the
   first-launch race no longer surfaces a spurious `unexpectedItem`; `legacyConflicts` reports a
   differing legacy identity without writing; a base32 codec matches Python's.
-- ReTiCaMsgr: loads the identity Nbhd wrote (the Address view shows the same hash as Nbhd's
+- ReTiCAMsgr: loads the identity Nbhd wrote (the Address view shows the same hash as Nbhd's
   identity card); a fresh install still mints silently; with messages present and no key anywhere,
   the app shows a restore screen and accepts only the expected identity; a changed shared identity
   is refused until the user accepts it explicitly. Verified on a clone simulator (§5.5).
@@ -55,16 +55,16 @@ Keychain item Nbhd already uses (service `reticulum.identity`, access group
   None of the four hardening items exists (`grep legacyConflicts|SynchronizableAny|matchLimitAll` is empty).
 - Nbhd switches exhaustively over `IdentityKeychain.Failure` at
   `Packages/NbhdKernel/Sources/NbhdStore/IdentityStore.swift:103` and `:110`.
-- ReTiCaMsgr: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/IdentityStore.swift` reads or mints via its
+- ReTiCAMsgr: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/IdentityStore.swift` reads or mints via its
   own `KeychainIdentity` (`SecItem*`, service `com.reticamsgr.identity`, account `primary`, no
-  group, delete-then-add). `ReTiCaMsgr/ReTiCaMsgrApp.swift` builds a static store at init:
+  group, delete-then-add). `ReTiCAMsgr/ReTiCAMsgrApp.swift` builds a static store at init:
   `IdentityStore.liveValue.load()`, then `prepareDependencies` (database at
   `<Documents>/reticamsgr.sqlite`, `requestResponder` answering `/publicKey`), then
   `Store(initialState: AppFeature.State(identity:))`. `RootView` is a `TabView`. The reducer never
   reads `@Dependency(\.identityStore)`; only `IdentityStoreTests` uses `testValue`.
 - No entitlements file; no `CODE_SIGN_ENTITLEMENTS`. Team `HK6WSAR793`, bundle
   `co.lithobyte.ReTiCaMsgr`, tests `co.lithobyte.ReTiCaMsgrTests`. Hosted targets:
-  `ReTiCaMsgrTests` (`QRCodeImageTests.swift`, `ReTiCaMsgrTests.swift`) and `ReTiCaMsgrUITests`.
+  `ReTiCAMsgrTests` (`QRCodeImageTests.swift`, `ReTiCAMsgrTests.swift`) and `ReTiCAMsgrUITests`.
 - Conversations are derived from messages (`Conversation.list(from:)`); there is no
   `conversations` table. "Local state tied to the identity" is therefore **any row in `messages`**.
 - `AppFeature` has `disconnectTapped` and `setNodeMode(Bool)`; there is no shutdown action and
@@ -212,14 +212,14 @@ Decode accepts each with or without padding; rejects lowercase, `MZXW6Y=` (wrong
   spec's §4 (ReTiCA's spec index stays complete).
 - Nbhd build note (§6).
 
-## 5. Part B — ReTiCaMsgr adoption
+## 5. Part B — ReTiCAMsgr adoption
 
-Work in an app worktree (`ReTiCaMsgr-shared-identity`, branch `feat/shared-identity`), after Part A
+Work in an app worktree (`ReTiCAMsgr-shared-identity`, branch `feat/shared-identity`), after Part A
 is on ReTiCA `main` (the package resolves ReTiCA by path, so no `Package.swift` path change).
 
 ### 5.1 Entitlements and project
 
-- `ReTiCaMsgr/ReTiCaMsgr.entitlements`:
+- `ReTiCAMsgr/ReTiCAMsgr.entitlements`:
   ```xml
   <?xml version="1.0" encoding="UTF-8"?>
   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -232,14 +232,14 @@ is on ReTiCA `main` (the package resolves ReTiCA by path, so no `Package.swift` 
   </dict>
   </plist>
   ```
-- `ReTiCaMsgrTests/ReTiCaMsgrTests.entitlements` with the same content (the hosted real-Keychain
+- `ReTiCAMsgrTests/ReTiCAMsgrTests.entitlements` with the same content (the hosted real-Keychain
   test needs the group).
-- `project.pbxproj`: `CODE_SIGN_ENTITLEMENTS = ReTiCaMsgr/ReTiCaMsgr.entitlements;` in both app
-  configurations; `CODE_SIGN_ENTITLEMENTS = ReTiCaMsgrTests/ReTiCaMsgrTests.entitlements;` in both
+- `project.pbxproj`: `CODE_SIGN_ENTITLEMENTS = ReTiCAMsgr/ReTiCAMsgr.entitlements;` in both app
+  configurations; `CODE_SIGN_ENTITLEMENTS = ReTiCAMsgrTests/ReTiCAMsgrTests.entitlements;` in both
   test configurations. The shared group becomes the app's default group (it has no other); every
   location still names the group explicitly.
-- `ReTiCaMsgrCore/Package.swift`: add `.product(name: "ReTiCAKeychain", package: "ReTiCA")` to
-  the `ReTiCaMsgrCore` target.
+- `ReTiCAMsgrCore/Package.swift`: add `.product(name: "ReTiCAKeychain", package: "ReTiCA")` to
+  the `ReTiCAMsgrCore` target.
 
 ### 5.2 `IdentityStore` (core) — the single seam
 
@@ -248,7 +248,7 @@ is on ReTiCA `main` (the package resolves ReTiCA by path, so no `Package.swift` 
 ```swift
 public enum SharedIdentityLocation {
     public static let service = "reticulum.identity"
-    /// Must equal `$(AppIdentifierPrefix)co.lithobyte.reticulum.identity` in ReTiCaMsgr.entitlements.
+    /// Must equal `$(AppIdentifierPrefix)co.lithobyte.reticulum.identity` in ReTiCAMsgr.entitlements.
     public static let accessGroup = "HK6WSAR793.co.lithobyte.reticulum.identity"
     public static let shared = IdentityKeychain.Location(service: service, accessGroup: accessGroup)
 }
@@ -352,9 +352,9 @@ public struct IdentityStore: Sendable {
   `ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil` or
   `environment["RETICAMSGR_TEST_HOST"] == "1"`; then: `InMemoryKeychain` pre-planted with a fixed
   identity at the shared location, an in-memory database, a suite-named UserDefaults. UI tests set
-  `RETICAMSGR_TEST_HOST=1` through one helper (`ReTiCaMsgrUITests/TestApp.swift`), and a
+  `RETICAMSGR_TEST_HOST=1` through one helper (`ReTiCAMsgrUITests/TestApp.swift`), and a
   source-scan test pins that no other file sets `launchEnvironment`.
-- `ReTiCaMsgrApp`: `@State private var runtime = AppRuntime(environment: .forProcess())`;
+- `ReTiCAMsgrApp`: `@State private var runtime = AppRuntime(environment: .forProcess())`;
   `RootView(runtime:)`; `.task { runtime.build() }` once; `scenePhase` → `.foregrounded` only when
   a store exists; `.onLaunch` sent when the store is built.
 - `RootView`: `switch runtime.state` — `.ready` with a store → today's `TabView`; `.loading` →
@@ -367,9 +367,9 @@ public struct IdentityStore: Sendable {
 | State | Message (gist) | Actions |
 |---|---|---|
 | `.unavailable(.locked)` | "Your identity is locked. Unlock your device, then tap Retry." | Retry |
-| `.unavailable(.strayItem(d))` | "Another Reticulum identity item is in an unexpected place on this device. ReTiCaMsgr won't guess which one to use." Details: `d`. | Retry, details |
+| `.unavailable(.strayItem(d))` | "Another Reticulum identity item is in an unexpected place on this device. ReTiCAMsgr won't guess which one to use." Details: `d`. | Retry, details |
 | `.unavailable(.corrupt)` | "The identity stored on this device can't be read." | Retry, details |
-| `.unavailable(.accessDenied)` | "ReTiCaMsgr isn't allowed to read the identity. This is a signing or configuration problem, not your data." | Retry, details |
+| `.unavailable(.accessDenied)` | "ReTiCAMsgr isn't allowed to read the identity. This is a signing or configuration problem, not your data." | Retry, details |
 | `.unavailable(.other(s))` | "Your identity couldn't be loaded." Details: the status. | Retry, details |
 | `.missing(expected:)` | "Your conversations are here, but your identity key isn't. This happens after restoring from an unencrypted backup. Restore it from an identity backup." + "Expected ID: <short>" IN THE MESSAGE, not behind Details (amendment 3) (or, with no anchor, "Restore isn't possible: this device has no record of which identity your conversations used.") | Restore from backup (only with an anchor), Retry; with NO anchor also "Create a new identity" → confirmation ("Your existing conversations were sent from a different identity. Peers will see you as a new address, and other Reticulum apps on this device (such as Nbhd) will use the new identity too." — amendment 3 wording) → `createNewIdentity()` (amendment 1) |
 | `.identityChanged(expected, got)` | "The identity on this device is different from the one your conversations used." + "Expected <short>, found <short>." IN THE MESSAGE (amendment 3) | Retry; "Use the new identity" → confirmation dialog ("Your existing conversations were sent from the old identity. Peers will see you as a new address.") → `acceptNewIdentity()` |
@@ -382,7 +382,7 @@ Retry is disabled while a rebuild is in flight. `RestoreIdentitySheet`: a `Paste
 → "That backup is n bytes; an identity is 64." (amendment 3: it applies to pasted text too); `mismatch(got, expected)` → "That backup is identity
 <short got>, but your conversations belong to <short expected>."; `noExpectedIdentity` → as above;
 `refused(.identityPresent)` → "Another Reticulum identity already exists on this device, so
-ReTiCaMsgr won't replace it. Nothing was changed."; `refused(.notMissing)` → dismiss;
+ReTiCAMsgr won't replace it. Nothing was changed."; `refused(.notMissing)` → dismiss;
 `failed(r)` → the recovery screen's text for `r`. Input is cleared on success, cancel, dismiss AND
 rejection. No key material is ever logged.
 
@@ -401,7 +401,7 @@ rejection. No key material is ever logged.
   → `unavailable`); `IdentityAnchor` write-once and `replace`; `IdentityRestore` (text with/without
   padding and whitespace, file form, wrong length, bad encoding, mismatch shows both hashes, no
   anchor refused); `shortID`.
-- **App target (hosted, `ReTiCaMsgrTests`):** `AppRuntime` with the in-memory environment: launch
+- **App target (hosted, `ReTiCAMsgrTests`):** `AppRuntime` with the in-memory environment: launch
   with messages and an empty Keychain → `.missing`, `addCount == 0`; without messages → `.ready`
   and one add; restore of the right key → `.ready(expected)` and a store; a wrong key → `.rejected(.mismatch)`,
   nothing added; `acceptNewIdentity` rewrites the anchor and reaches `.ready(got)`; Retry
@@ -410,7 +410,7 @@ rejection. No key material is ever logged.
   `.imported`; again → `.identityPresent`; cleanup via `KeychainOps.live.delete` through a helper
   that refuses any service not prefixed `reticamsgrtests.`; the production service is never
   touched (snapshot `read(SharedIdentityLocation.shared)` before and after and assert equal). A
-  source-scan test asserts only `ReTiCaMsgrUITests/TestApp.swift` contains `RETICAMSGR_TEST_HOST`.
+  source-scan test asserts only `ReTiCAMsgrUITests/TestApp.swift` contains `RETICAMSGR_TEST_HOST`.
 - **Mutation protocol** (the user's rule) for every new test: green → mutate production → red →
   revert by hand → green; masked mutations in separate sub-batches.
 - **Manual, on a disposable clone of a simulator that has Nbhd installed with memberships:**

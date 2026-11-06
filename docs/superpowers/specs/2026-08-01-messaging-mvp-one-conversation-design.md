@@ -1,11 +1,11 @@
-# ReTiCaMsgr MVP — One Conversation, Send + Receive — Design
+# ReTiCAMsgr MVP — One Conversation, Send + Receive — Design
 
 **Date:** 2026-08-01
 **Status:** Approved (design)
 
 ## Context
 
-`ReTiCaMsgr` is an iOS SwiftUI app (iOS 26.4, Swift) that will be a
+`ReTiCAMsgr` is an iOS SwiftUI app (iOS 26.4, Swift) that will be a
 Reticulum/LXMF messenger built on the local `ReTiCA` Swift package
 (`../../pods/ReTiCA`), whose `ReTiCANode` library provides `LXMFNode` (an
 `LXMFRouter` + `Endpoint` TCA composition for send/receive) and `PNNode`. The
@@ -81,7 +81,7 @@ an outgoing message goes `.sending → .sent` optimistically and only flips to
 
 ### Identity — `IdentityStore` (Keychain)
 
-At launch (in `ReTiCaMsgrApp`, before the `Store` is built): read the 64-byte
+At launch (in `ReTiCAMsgrApp`, before the `Store` is built): read the 64-byte
 `privateKey` from Keychain → `Identity(privateKey:)`; if absent, `Identity()`
 and store it (Security framework). The initial `AppFeature.State` is built with
 this identity + `LXMFNode.State(identity:, endpoint: Endpoint.State(host:,

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>ReTiCAMsgr uses the camera to scan QR codes and to take your profile photo.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>ReTiCAMsgr links your contacts to Reticulum addresses so chats show their names, and, if you choose, finds contacts you share with trusted friends.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+		<string>remote-notification</string>
+	</array>
+</dict>
+</plist>

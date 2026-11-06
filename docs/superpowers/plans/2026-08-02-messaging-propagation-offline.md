@@ -1,4 +1,4 @@
-# ReTiCaMsgr Slice 3 — Propagation / Offline Delivery Implementation Plan
+# ReTiCAMsgr Slice 3 — Propagation / Offline Delivery Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -12,7 +12,7 @@
 
 - **Two repos.**
   - ReTiCA package (Task 1): `/Users/ell/development/ios/pods/ReTiCA` — commit via `git -C /Users/ell/development/ios/pods/ReTiCA`.
-  - App (Tasks 2–3): `/Users/ell/development/ios/apps/ReTiCaMsgr` — commit via `git -C /Users/ell/development/ios/apps/ReTiCaMsgr`.
+  - App (Tasks 2–3): `/Users/ell/development/ios/apps/ReTiCAMsgr` — commit via `git -C /Users/ell/development/ios/apps/ReTiCAMsgr`.
   - The app depends on ReTiCA by local path, so Task 1's `sendMessage` is picked up automatically once committed — no version bump.
 - **Commit directly to `main`** in both repos.
 - **Commit message trailers, verbatim, at COLUMN 0 (no leading whitespace):**
@@ -20,13 +20,13 @@
   Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_01AtkFmSeVgRBk3zwfDCqUwy
   ```
-  Commit with `git commit -F <file>` (NEVER `-m` — trailers contain `;`). Write the message to a file under `/tmp/ReTiCaMsgr/` with an editor. After each commit verify the trailer parses in that repo: `git -C <repo> log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'` must print the URL; if empty, `git commit --amend -F <file>`.
+  Commit with `git commit -F <file>` (NEVER `-m` — trailers contain `;`). Write the message to a file under `/tmp/ReTiCAMsgr/` with an editor. After each commit verify the trailer parses in that repo: `git -C <repo> log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'` must print the URL; if empty, `git commit --amend -F <file>`.
 - **No compound shell commands:** one command per invocation; no `&&`/`||`/`;`/pipes/`xargs`/inline interpreter scripts. A single `>` redirect IS allowed. Edit files with editor tools, never `echo`/heredoc.
 - **Three-step mutation verification for every new/changed test.** Where a test set asserts *opposite* branches (present vs absent), a single mutation cannot fail all of them — use two mutation passes as the task specifies, reverting between. Confirm each test fails under the pass that targets it, then revert and confirm all pass.
 - **Test/build commands:**
   - ReTiCA package test: `swift test --package-path /Users/ell/development/ios/pods/ReTiCA --filter <name>` (large package; first build is slow).
-  - App package test: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`.
-  - App build (Task 3): `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'generic/platform=iOS Simulator' build`.
+  - App package test: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`.
+  - App build (Task 3): `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'generic/platform=iOS Simulator' build`.
 - **SQLiteData / TCA gotchas (from slices 1–2, verified):** StructuredQueries `==` is `@unavailable` → use `.eq()`. GRDB reads/writes are `try await database.read/write { }`. `TestStore.state` is **get-only** — arrange initial state via a `configure` closure passed to a `makeStore` helper, not `store.state.x = y`. Under `.off` exhaustivity, asserting an action did NOT fire is done by asserting resulting state (e.g. `store.state.node.router.outboundPropagationNode == nil`), not by scanning actions. `InterfaceID("tcp")` has no default init. The app test target already depends on `ReTiCAInterfaces` + `ReTiCATransport`.
 - **Verified APIs:**
   - `LXMFNode.Action.setPropagationNode(destinationHash: Data)`, `.syncFromPropagationNode`, `.registerDelivery`, `.send(destinationHash:title:content:method:)`, delegate `.propagationAccepted(messageHash: Data)`.
@@ -34,7 +34,7 @@
   - `LXMFPropagation.pack(message: LXMessage, recipientIdentity: Identity, timestamp: Double) -> (propagationPacked: Data, transientId: Data)`.
   - `Transport.State.learned: [Data: LearnedDestination]`; `LearnedDestination(identity:appData:ratchet:interfaceID:hops:nextHop:announceEmitted:learnedAt:)` (last arg defaults).
   - `LXMFRouter.State` (all `@testable`-visible): `public var outboundPropagationNode: Data?`, `public var knownIdentities: [Data: Identity]`, `public var knownPaths: Set<Data>`, `public var pendingDeliveries: [Data: PendingDelivery]`; `PendingDelivery.resend: ResendInfo` with cases `.opportunistic(...)`, `.direct(...)`, `.propagated(...)`.
-  - `isValidPeerAddress(_ hex: String) -> Bool` (public in ReTiCaMsgrCore) == decodes to 16 bytes.
+  - `isValidPeerAddress(_ hex: String) -> Bool` (public in ReTiCAMsgrCore) == decodes to 16 bytes.
 
 ---
 
@@ -177,10 +177,10 @@ Run once more clean: all three pass.
 
 - [ ] **Step 6: Commit (pods repo)**
 
-Write the message to `/tmp/ReTiCaMsgr/s3t1.txt`, then:
+Write the message to `/tmp/ReTiCAMsgr/s3t1.txt`, then:
 ```
 git -C /Users/ell/development/ios/pods/ReTiCA add Sources/ReTiCANode/LXMFNode.swift Tests/ReTiCANodeTests/LXMFNodeSendMessageTests.swift
-git -C /Users/ell/development/ios/pods/ReTiCA commit -F /tmp/ReTiCaMsgr/s3t1.txt
+git -C /Users/ell/development/ios/pods/ReTiCA commit -F /tmp/ReTiCAMsgr/s3t1.txt
 git -C /Users/ell/development/ios/pods/ReTiCA log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
 ```
 Message body (trailers at column 0):
@@ -201,11 +201,11 @@ Claude-Session: https://claude.ai/code/session_01AtkFmSeVgRBk3zwfDCqUwy
 
 ## Task 2: App — `AppFeature` propagation wiring + `MessageStatus.propagated`
 
-**Repo:** `/Users/ell/development/ios/apps/ReTiCaMsgr`
+**Repo:** `/Users/ell/development/ios/apps/ReTiCAMsgr`
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift`
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`
-- Modify: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`
+- Modify: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
 
 **Interfaces:**
 - Consumes: `LXMFNode.Action.sendMessage(message:alsoViaPropagation:)` (Task 1), `.setPropagationNode(destinationHash:)`, `.syncFromPropagationNode`, delegate `.propagationAccepted(messageHash:)`.
@@ -289,7 +289,7 @@ In `AppFeature.swift`:
 
 - [ ] **Step 3: Confirm it compiles**
 
-Run: `swift build --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`
+Run: `swift build --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`
 Expected: builds (tests updated next).
 
 - [ ] **Step 4: Add the reducer tests**
@@ -391,7 +391,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`
 Expected: all pass (these 8 + the existing slice-1/2 tests).
 
 - [ ] **Step 6: Mutation-verify**
@@ -406,11 +406,11 @@ Run once; confirm each listed test fails. Then revert ALL and rerun → all pass
 
 - [ ] **Step 7: Commit (app repo)**
 
-Write to `/tmp/ReTiCaMsgr/s3t2.txt`, then:
+Write to `/tmp/ReTiCAMsgr/s3t2.txt`, then:
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -F /tmp/ReTiCaMsgr/s3t2.txt
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -F /tmp/ReTiCAMsgr/s3t2.txt
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
 ```
 Message body (trailers at column 0):
 ```
@@ -430,10 +430,10 @@ Claude-Session: https://claude.ai/code/session_01AtkFmSeVgRBk3zwfDCqUwy
 
 ## Task 3: App — Settings PN field + conversation-list Sync button
 
-**Repo:** `/Users/ell/development/ios/apps/ReTiCaMsgr`
+**Repo:** `/Users/ell/development/ios/apps/ReTiCAMsgr`
 **Files:**
-- Modify: `ReTiCaMsgr/SettingsView.swift`
-- Modify: `ReTiCaMsgr/ConversationListView.swift`
+- Modify: `ReTiCAMsgr/SettingsView.swift`
+- Modify: `ReTiCAMsgr/ConversationListView.swift`
 
 **Interfaces:**
 - Consumes: `AppFeature.Action.setPropagationNode(String)`, `.syncTapped`; state `propagationNodeHex`; `isValidPeerAddress(_:)`.
@@ -446,14 +446,14 @@ Replace `SettingsView.swift` with:
 ```swift
 //
 //  SettingsView.swift
-//  ReTiCaMsgr
+//  ReTiCAMsgr
 //
 //  Created by Elliot Schrock on 8/1/26.
 //
 
 import SwiftUI
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 struct SettingsView: View {
     @Bindable var store: StoreOf<AppFeature>
@@ -510,21 +510,21 @@ In `ConversationListView.swift`, inside the `.toolbar { ... }`, add a second tra
 
 - [ ] **Step 3: Build the app**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'generic/platform=iOS Simulator' build`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'generic/platform=iOS Simulator' build`
 Expected: `BUILD SUCCEEDED`.
 
 - [ ] **Step 4: Re-run the package tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`
 Expected: all pass (UI changes must not have broken the reducer/tests).
 
 - [ ] **Step 5: Commit (app repo)**
 
-Write to `/tmp/ReTiCaMsgr/s3t3.txt`, then:
+Write to `/tmp/ReTiCAMsgr/s3t3.txt`, then:
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgr/SettingsView.swift ReTiCaMsgr/ConversationListView.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -F /tmp/ReTiCaMsgr/s3t3.txt
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgr/SettingsView.swift ReTiCAMsgr/ConversationListView.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -F /tmp/ReTiCAMsgr/s3t3.txt
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
 ```
 Message body (trailers at column 0):
 ```

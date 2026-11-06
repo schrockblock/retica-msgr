@@ -7,7 +7,7 @@
 - Badge the app icon with unread incoming messages.
 - Carry my display name on outgoing messages until each peer confirms it, the way profile photos ride.
 
-**Architecture:** three independent feature tracks (Tasks 1–3) built in parallel in sibling worktrees, then one integration task (Task 4) that merges them, wires delete into the badge, and verifies everything. Core logic lives in `ReTiCaMsgrCore` (TCA + SQLiteData), with views in `ReTiCaMsgr/` and the push counter in the `ReTiCaMsgrPushService` target.
+**Architecture:** three independent feature tracks (Tasks 1–3) built in parallel in sibling worktrees, then one integration task (Task 4) that merges them, wires delete into the badge, and verifies everything. Core logic lives in `ReTiCAMsgrCore` (TCA + SQLiteData), with views in `ReTiCAMsgr/` and the push counter in the `ReTiCAMsgrPushService` target.
 
 **Tech Stack:** Swift 6.3, SwiftUI, TCA, SQLiteData/GRDB migrations, UserNotifications, Swift Testing.
 
@@ -17,15 +17,15 @@
 
 ## Global Constraints
 
-- **Base:** branch `feat/delete-badge-names`, worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-convos`. Parallel tasks use sibling worktrees `ReTiCaMsgr-convos-<task>` (branches `feat/convos-<task>`), so the `../../../pods` paths resolve.
+- **Base:** branch `feat/delete-badge-names`, worktree `/Users/ell/development/ios/apps/ReTiCAMsgr-convos`. Parallel tasks use sibling worktrees `ReTiCAMsgr-convos-<task>` (branches `feat/convos-<task>`), so the `../../../pods` paths resolve.
 - **Conversation key:** `groupHex ?? peerHex`, lowercased, everywhere (delete, read marker, open-thread check).
-- **iOS behaviour outside these features is unchanged.** Mac-only UI goes through `#if os(macOS)` or the `ReTiCaMsgr/Platform/` helpers.
-- **Migrations:** append new `registerMigration` blocks at the END of `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift`, with these exact names:
+- **iOS behaviour outside these features is unchanged.** Mac-only UI goes through `#if os(macOS)` or the `ReTiCAMsgr/Platform/` helpers.
+- **Migrations:** append new `registerMigration` blocks at the END of `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift`, with these exact names:
   - Task 2: `createConversationReads`;
   - Task 3: `addPeerNames`, then `createProfileNameDeliveries`.
 
   The parallel merge will conflict there. Task 4 orders them Task 2 first, then Task 3.
-- **Tests:** Swift Testing and TCA `TestStore`, following `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/` patterns. Read `/Users/ell/.claude/projects/-Users-ell-development-ios-apps-ReTiCaMsgr/memory/tca-teststore-lessons.md` before writing TestStore tests.
+- **Tests:** Swift Testing and TCA `TestStore`, following `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/` patterns. Read `/Users/ell/.claude/projects/-Users-ell-development-ios-apps-ReTiCAMsgr/memory/tca-teststore-lessons.md` before writing TestStore tests.
 - **Mutation rule:** every new or changed test follows the user's three-step rule:
   - (a) the tests pass;
   - (b) one batch of meaningful production mutations makes every changed test fail;
@@ -33,9 +33,9 @@
 
   Record the evidence for each step.
 - **Commands:**
-  - core tests: `swift test --package-path ReTiCaMsgrCore --scratch-path /tmp/ReTiCaMsgr/core-<task>`
-  - app builds: the iOS and macOS `xcodebuild` commands from the macOS port, with derived data `/tmp/ReTiCaMsgr/dd-<task>-{ios,mac}`; macOS uses `CODE_SIGNING_ALLOWED=NO`.
-- **Shell rules:** one command per Bash call, with no pipes, chaining, `;`, `$(...)` or inline scripts. Temp files go in `/tmp/ReTiCaMsgr/`. Commit trailers as in the user's attribution rule.
+  - core tests: `swift test --package-path ReTiCAMsgrCore --scratch-path /tmp/ReTiCAMsgr/core-<task>`
+  - app builds: the iOS and macOS `xcodebuild` commands from the macOS port, with derived data `/tmp/ReTiCAMsgr/dd-<task>-{ios,mac}`; macOS uses `CODE_SIGNING_ALLOWED=NO`.
+- **Shell rules:** one command per Bash call, with no pipes, chaining, `;`, `$(...)` or inline scripts. Temp files go in `/tmp/ReTiCAMsgr/`. Commit trailers as in the user's attribution rule.
 
 ## Review Focus
 
@@ -50,12 +50,12 @@
 ### Task 1: Delete a conversation (parallel, worktree `-delete`)
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ConversationDeletion.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ConversationDeletion.swift`
 - Modify:
-  - `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessagePurge.swift`: extract the per-row file and reaction clean-up into a shared internal helper used by both purge and delete;
-  - `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`: the action and handler;
-  - `ReTiCaMsgr/ConversationListView.swift`: swipe action, context menu and confirmation.
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ConversationDeletionTests.swift`
+  - `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessagePurge.swift`: extract the per-row file and reaction clean-up into a shared internal helper used by both purge and delete;
+  - `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`: the action and handler;
+  - `ReTiCAMsgr/ConversationListView.swift`: swipe action, context menu and confirmation.
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ConversationDeletionTests.swift`
 
 **Interfaces:**
 - Produces:
@@ -79,7 +79,7 @@
   - `deleteGroupKeepsGroupAndMembers`: deleting the group key removes its posts. `ChatGroup` and `GroupMember` rows survive, and a peer's one-to-one messages with a group member survive.
   - `deleteCancelsInFlightSends` (TestStore on `AppFeature`): an outgoing `sending` row with hash H, then `.deleteConversation(key:)`. Expect `.node(.client(.cancelOutbound(messageHash: H)))` and an empty list for that key.
   - `deleteClearsDraft` (TestStore): a draft for the key, then delete. The draft is gone.
-- [ ] **Step 2:** Run `swift test --package-path ReTiCaMsgrCore --scratch-path /tmp/ReTiCaMsgr/core-delete --filter ConversationDeletion`. Expected: FAIL (compile: `ConversationDeletion` missing).
+- [ ] **Step 2:** Run `swift test --package-path ReTiCAMsgrCore --scratch-path /tmp/ReTiCAMsgr/core-delete --filter ConversationDeletion`. Expected: FAIL (compile: `ConversationDeletion` missing).
 - [ ] **Step 3:** Implement `ConversationDeletion.run`, the shared purge helper and the `AppFeature` action. `MessagePurge`'s existing tests must stay green.
 - [ ] **Step 4:** Run the same filter, then the full core suite. Expected: PASS.
 - [ ] **Step 5: UI** in `ConversationListView.swift`. The row's `Button` gets:
@@ -102,21 +102,21 @@
 
 **Files:**
 - Create:
-  - `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ConversationRead.swift`: a `@Table("conversationReads")` model with `key: String` (primary key) and `readAt: Date`;
-  - `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/UnreadCount.swift`;
-  - `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/BadgeClient.swift`;
-  - `ReTiCaMsgrCore/Sources/ReTiCaMsgrPushService/BadgeCounter.swift`;
-  - `ReTiCaMsgr/BadgeClient+Live.swift`.
+  - `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ConversationRead.swift`: a `@Table("conversationReads")` model with `key: String` (primary key) and `readAt: Date`;
+  - `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/UnreadCount.swift`;
+  - `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/BadgeClient.swift`;
+  - `ReTiCAMsgrCore/Sources/ReTiCAMsgrPushService/BadgeCounter.swift`;
+  - `ReTiCAMsgr/BadgeClient+Live.swift`.
 - Modify:
   - `Database.swift`: the `createConversationReads` migration;
   - `AppFeature.swift`: mark-read and recompute;
-  - `ReTiCaMsgrNotificationService/NotificationService.swift`;
-  - `ReTiCaMsgr/PushPlatform+UIKit.swift` and `ReTiCaMsgr/PushPlatform+AppKit.swift`: add `.badge` to the authorization options;
-  - `ReTiCaMsgr/AppRuntime.swift`: install the live `BadgeClient`;
-  - `ReTiCaMsgrCore/Package.swift`: add `ReTiCaMsgrPushService` to the test target's dependencies if the tests can't import it.
+  - `ReTiCAMsgrNotificationService/NotificationService.swift`;
+  - `ReTiCAMsgr/PushPlatform+UIKit.swift` and `ReTiCAMsgr/PushPlatform+AppKit.swift`: add `.badge` to the authorization options;
+  - `ReTiCAMsgr/AppRuntime.swift`: install the live `BadgeClient`;
+  - `ReTiCAMsgrCore/Package.swift`: add `ReTiCAMsgrPushService` to the test target's dependencies if the tests can't import it.
 - Test:
-  - `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/UnreadBadgeTests.swift`;
-  - `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/BadgeCounterTests.swift`.
+  - `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/UnreadBadgeTests.swift`;
+  - `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/BadgeCounterTests.swift`.
 
 **Interfaces:**
 - Produces:
@@ -129,7 +129,7 @@
     - `testValue` is `unimplemented`, so tests must override it (it's explicit, like `backgroundTask`).
     - `\.badge` on `DependencyValues`.
   - **`AppFeature.recomputeBadge(_ database:) -> Effect`** (internal): reads `UnreadCount.count`, then calls `badge.set(n)`.
-  - **`BadgeCounter`** (in `ReTiCaMsgrPushService`, no TCA): wraps `UserDefaults(suiteName: ReTiCaMsgrPush.appGroupID)`, key `"badgeCount"`, with `static func increment(_ defaults: UserDefaults) -> Int` and `static func set(_ n: Int, _ defaults: UserDefaults)`.
+  - **`BadgeCounter`** (in `ReTiCAMsgrPushService`, no TCA): wraps `UserDefaults(suiteName: ReTiCAMsgrPush.appGroupID)`, key `"badgeCount"`, with `static func increment(_ defaults: UserDefaults) -> Int` and `static func set(_ n: Int, _ defaults: UserDefaults)`.
   - **The live `BadgeClient`** (app): `UNUserNotificationCenter.current().setBadgeCount(n)` plus `BadgeCounter.set(n, defaults)`.
 - **Mark-read triggers:** exactly where `stampViewed` runs today (thread open, `viewOpenThreadEffect`, an arrival with `viewedNow != nil`), mark the open key read at `now`. This happens independently of expiry: `stampViewed` is skipped for groups and non-expiring threads, and mark-read is not.
 - **Recompute triggers:**
@@ -174,9 +174,9 @@
 
 **Files:**
 - Create:
-  - `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/NameWire.swift`;
-  - `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ProfileNameOutbox.swift`;
-  - `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ProfileNameDelivery.swift`.
+  - `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/NameWire.swift`;
+  - `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ProfileNameOutbox.swift`;
+  - `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ProfileNameDelivery.swift`.
 - Modify:
   - `PeerProfile.swift`: add `name: String?` and `nameSetAt: Date?`, plus `setName(_:setAt:at:db)`, newer-wins like `isNewer`;
   - `Database.swift`: the `addPeerNames` and `createProfileNameDeliveries` migrations;
@@ -185,7 +185,7 @@
     - settle `ProfileNameDelivery` wherever `ProfilePhotoDelivery.applyOutcome` / `clearAllPending` / `markPending` is called;
     - decode on validated receive next to `ProfileWire.decode`;
     - display precedence in `peerDisplayName`.
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/NameInMessagesTests.swift`
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/NameInMessagesTests.swift`
 
 **Interfaces:**
 - Produces:
@@ -234,7 +234,7 @@
 - [ ] **Step 3:** Run:
   - the full core suite;
   - the iOS app suite;
-  - the macOS app tests (`-only-testing:ReTiCaMsgrTests`, `arch=arm64`);
+  - the macOS app tests (`-only-testing:ReTiCAMsgrTests`, `arch=arm64`);
   - both app builds.
 
   All must be green.

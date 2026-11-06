@@ -7,7 +7,7 @@ design direction below, so a later brainstorm can start from it rather than from
 
 ## What was asked
 
-The user (ReTiCaMsgr's developer) asked which is the better next step. The first recommendation
+The user (ReTiCAMsgr's developer) asked which is the better next step. The first recommendation
 was disappearing messages, on the grounds that LXMF offers nothing for groups beyond a reserved
 field number, while disappearing messages are self-contained. The user found that reasonable but
 asked for web research first, having seen that NomadNet has "channels" and that Retichat has
@@ -49,7 +49,7 @@ repo root.
 ## Design direction if groups come back
 
 Fan-out of ordinary LXMF messages, one per member, is the only design that keeps everything
-ReTiCaMsgr already has: per-recipient single-packet proofs, pairwise forward secrecy,
+ReTiCAMsgr already has: per-recipient single-packet proofs, pairwise forward secrecy,
 propagation-node offline delivery, and no servers. Its costs are N−1 frames per post and no shared
 history for late joiners. The one decision with network effects is the field layout:
 
@@ -65,7 +65,7 @@ failure, which is the opposite of the push design's "the hub never sees content"
 
 ## Why disappearing messages first
 
-- Self-contained: a custom LXMF field honoured by ReTiCaMsgr peers plus a local timer and purge.
+- Self-contained: a custom LXMF field honoured by ReTiCAMsgr peers plus a local timer and purge.
   LXMF has no expiry or TTL field (checked in the reference `LXMF.py`: the only expiries are
   router-side, 30 days for propagation stores and 21 days for tickets), so this is app-to-app
   behaviour by nature and nothing upstream is being pre-empted.

@@ -12,22 +12,22 @@
 
 ## Global Constraints
 
-- **Where:** all work happens ONLY in the app worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-attachments` on branch `feat/attachments`, cut from app `main` in Task 0. `APP` below means that path; `CORE` means `APP/ReTiCaMsgrCore`. Never build, test or run git against the main checkout `/Users/ell/development/ios/apps/ReTiCaMsgr` after Task 0's `worktree add`, and never touch `/Users/ell/development/ios/pods/ReTiCA` (another agent may own it; it is only a read-only path dependency here — `CORE/Package.swift`'s `../../../pods/ReTiCA` resolves from the worktree unchanged).
-- **Task 0 is a gate:** the baseline core suite `swift test --package-path CORE` must be green (currently **238 tests**) and `xcodebuild -project APP/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build` must succeed before Task 1.
-- **Commits** go on `feat/attachments` only. Stage explicit paths (`git -C APP add <path> ...`, never `-A`/`.`). Never stage `ReTiCaMsgr.xcodeproj/xcuserdata/**`, `ReTiCaMsgrCore/.swiftpm/**`, `Package.resolved` or anything under `docs/superpowers/plans/2026-08-16-display-name.md` (pre-existing drift). Each task writes its message to its OWN file `/tmp/ReTiCaMsgr/msg-att-task-N.txt` with the Write tool, then `git -C APP commit -F /tmp/ReTiCaMsgr/msg-att-task-N.txt`. Message = `feat:`/`fix:`/`test:`/`docs:` subject, blank line, body, blank line, then exactly these two lines at column 0 (the first names the model that wrote the commit):
+- **Where:** all work happens ONLY in the app worktree `/Users/ell/development/ios/apps/ReTiCAMsgr-attachments` on branch `feat/attachments`, cut from app `main` in Task 0. `APP` below means that path; `CORE` means `APP/ReTiCAMsgrCore`. Never build, test or run git against the main checkout `/Users/ell/development/ios/apps/ReTiCAMsgr` after Task 0's `worktree add`, and never touch `/Users/ell/development/ios/pods/ReTiCA` (another agent may own it; it is only a read-only path dependency here — `CORE/Package.swift`'s `../../../pods/ReTiCA` resolves from the worktree unchanged).
+- **Task 0 is a gate:** the baseline core suite `swift test --package-path CORE` must be green (currently **238 tests**) and `xcodebuild -project APP/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build` must succeed before Task 1.
+- **Commits** go on `feat/attachments` only. Stage explicit paths (`git -C APP add <path> ...`, never `-A`/`.`). Never stage `ReTiCAMsgr.xcodeproj/xcuserdata/**`, `ReTiCAMsgrCore/.swiftpm/**`, `Package.resolved` or anything under `docs/superpowers/plans/2026-08-16-display-name.md` (pre-existing drift). Each task writes its message to its OWN file `/tmp/ReTiCAMsgr/msg-att-task-N.txt` with the Write tool, then `git -C APP commit -F /tmp/ReTiCAMsgr/msg-att-task-N.txt`. Message = `feat:`/`fix:`/`test:`/`docs:` subject, blank line, body, blank line, then exactly these two lines at column 0 (the first names the model that wrote the commit):
   `Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>`
   `Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1`
   No semicolons anywhere in a commit message.
-- **Shell:** one command per Bash call. No `|`, `&&`, `||`, `;`, `$(...)`, `xargs`, no inline interpreters (`python -c`, heredocs into an interpreter). Scripts and sed scripts go in files under `/tmp/ReTiCaMsgr/` (`mkdir -p /tmp/ReTiCaMsgr` if missing). Redirecting one command's output to a file (`cmd > /tmp/ReTiCaMsgr/x.log 2>&1`) is allowed.
+- **Shell:** one command per Bash call. No `|`, `&&`, `||`, `;`, `$(...)`, `xargs`, no inline interpreters (`python -c`, heredocs into an interpreter). Scripts and sed scripts go in files under `/tmp/ReTiCAMsgr/` (`mkdir -p /tmp/ReTiCAMsgr` if missing). Redirecting one command's output to a file (`cmd > /tmp/ReTiCAMsgr/x.log 2>&1`) is allowed.
 - **Tests:** `swift test --package-path CORE --filter <prefix>` (`--filter` is repeatable) runs one task's tests; the full core suite is `swift test --package-path CORE` (no `--no-parallel` needed here). Known flake: `deliveryFailedMarksFailedAndReloads` can fail when run ALONE via `--filter`; it passes in a full run. Filtering still compiles every target, so the whole package must compile at the end of every task. Every new test name starts with its task's prefix — `attachTable` (T1), `attachStore` (T2), `attachWire` (T3), `imageEncoder` (T4), `attachInfo` (T5), `attachReceive` (T6), `attachSend` (T7), `attachTransfer` (T8) — so `--filter <prefix>` selects exactly that task's tests. None of these prefixes matches an existing test name (checked: no test contains "attach" or "imageEncoder" today).
 - **Mutation verification is mandatory** for every task with tests: (a) run the task's filter, all GREEN; (b) apply the task's listed mutation batch to production code, run the filter once, confirm EVERY listed test is RED — where the batch says "sub-batch", run the sub-batches separately so no mutation masks another; (c) revert every mutation BY HAND with the Edit tool (never `git checkout -- <file>`), confirm `git -C APP diff` shows only the task's intended changes, run again, all GREEN. If a test survives its mutation, fix the test and restart at (a). Tests edited only mechanically to compile against a new shape are exempt.
 - **TCA TestStore facts these tests rely on** (learned in the transfer-aware delivery run): under `exhaustivity = .off`, `store.state` reflects effect-delivered actions only after `receive` or `await store.skipReceivedActions(strict: false)`; every `send` clears not-yet-received actions, so a `receive` for something an earlier `send` produced must come before the next `send`; absence claims go `.on` + an exhaustive no-op probe send (never `skipInFlightEffects` while `.on`); a state closure on a pure `RingSet` insert asserts nothing; file-scope `let` constants of TCA `Action` types need `@MainActor`. The full suite must end with no new "Skipped assertions" or other known issues (today: none in this package).
 - **Test style** (match `AppFeatureTests.swift`): free `@MainActor @Test func` functions, `makeStore(db, identity:)` with `exhaustivity = .off`, `sendAndSettle` + `skipReceivedActions(strict: false)` before reading rows, `rowsByHashAndDirection(db)` for outgoing/incoming disambiguation, `#expect` with literals. No tuple comparisons inside `#expect` (compare `.width` and `.height`, or bind to locals).
-- **`Attachment` vs `Testing.Attachment`:** Swift Testing exports `public struct Attachment<AttachableValue>`, so a bare `Attachment` in a test file that imports `Testing` is ambiguous. The model keeps its name; every TEST file that names the type adds `private typealias Attachment = ReTiCaMsgrCore.Attachment` right after its imports — `DatabaseTests.swift` (Task 1), `AttachmentStoreTests.swift` (Task 2), `AttachmentInfoTests.swift` (Task 5), `AppFeatureTests.swift` (Task 6, once, at the top). Production code is unaffected (it does not import `Testing`).
+- **`Attachment` vs `Testing.Attachment`:** Swift Testing exports `public struct Attachment<AttachableValue>`, so a bare `Attachment` in a test file that imports `Testing` is ambiguous. The model keeps its name; every TEST file that names the type adds `private typealias Attachment = ReTiCAMsgrCore.Attachment` right after its imports — `DatabaseTests.swift` (Task 1), `AttachmentStoreTests.swift` (Task 2), `AttachmentInfoTests.swift` (Task 5), `AppFeatureTests.swift` (Task 6, once, at the top). Production code is unaffected (it does not import `Testing`).
 - **Dependencies:** the attachment store is a TCA dependency `\.attachmentStore` (live: Application Support; test: a fresh temp directory per `AttachmentStore.testValue` access — tests that need to read files back must build ONE store, inject it, and keep it). `\.date` is frozen at 1700000000 in `makeStore` (2023-11-14 22:13:20 UTC), which fixes generated image names to `IMG_20231114_221320.jpg`.
 - **Image bytes in tests** come from `TestImages` (Task 4 creates it in the test target): CoreGraphics-drawn PNG/JPEG data with known pixel sizes, EXIF orientation and a GPS tag. No fixture files.
 - **Constants (from the spec):** `ImageEncoder.standardMaxPixels = 1280`, `standardQuality = 0.75`, `originalQuality = 0.92`; `AttachmentSizeNote.propagationLimitBytes = 256_000`, `deliveryLimitBytes = 1_000_000`; `AttachmentWire.sentImageFormat = "jpeg"`; `MessageStatus.cancelled = "cancelled"`; `FailureReason.rejected = "rejected"`, `.cancelled = "cancelled"`; `PropagationRefusal.tooLargeForNode = "too large for node"`; inbound-transfer silence timeout 60 s.
-- **App target:** new SwiftUI files go in `APP/ReTiCaMsgr/` (the Xcode project uses synchronized folders, so no pbxproj edit). No `Info.plist` privacy keys are needed (`PhotosPicker` and `fileImporter` run out of process). The app-target build must succeed at the end of the one task that touches the app target (Task 9); every core task must leave the package compiling, which the filtered test runs prove.
+- **App target:** new SwiftUI files go in `APP/ReTiCAMsgr/` (the Xcode project uses synchronized folders, so no pbxproj edit). No `Info.plist` privacy keys are needed (`PhotosPicker` and `fileImporter` run out of process). The app-target build must succeed at the end of the one task that touches the app target (Task 9); every core task must leave the package compiling, which the filtered test runs prove.
 
 ## Review Focus
 
@@ -50,45 +50,45 @@ Inputs the spec implies but its own examples don't exercise, most likely to bite
 
 - [ ] **Step 1: Create the worktree from app main**
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr worktree add /Users/ell/development/ios/apps/ReTiCaMsgr-attachments -b feat/attachments main`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr worktree add /Users/ell/development/ios/apps/ReTiCAMsgr-attachments -b feat/attachments main`
 Expected: a new worktree at `APP` on `feat/attachments`, HEAD = app main (c6156ff or later).
 
 - [ ] **Step 2: Baseline core suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t0-core.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/att-t0-core.log 2>&1`
 Expected: `Test run with 238 tests in 0 suites passed` (count may be higher if main moved — record it as the baseline).
 
 - [ ] **Step 3: Baseline app build**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCaMsgr/att-t0-xcodebuild.log 2>&1`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCAMsgr/att-t0-xcodebuild.log 2>&1`
 Expected: `** BUILD SUCCEEDED **` at the end of the log.
 
 - [ ] **Step 4: Restore any files Xcode rewrote**
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments status --short`
-Expected: empty. If `xcschememanagement.plist` files show as modified, restore them: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments checkout -- ReTiCaMsgr.xcodeproj/xcuserdata/ell.xcuserdatad/xcschemes/xcschememanagement.plist` and the same for `ReTiCaMsgrCore/.swiftpm/xcode/xcuserdata/ell.xcuserdatad/xcschemes/xcschememanagement.plist` (these two files are the ONLY `git checkout --` allowed in this plan, and only in Task 0 and Task 9 Step 9, where nothing else is modified). Nothing to commit.
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments status --short`
+Expected: empty. If `xcschememanagement.plist` files show as modified, restore them: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments checkout -- ReTiCAMsgr.xcodeproj/xcuserdata/ell.xcuserdatad/xcschemes/xcschememanagement.plist` and the same for `ReTiCAMsgrCore/.swiftpm/xcode/xcuserdata/ell.xcuserdatad/xcschemes/xcschememanagement.plist` (these two files are the ONLY `git checkout --` allowed in this plan, and only in Task 0 and Task 9 Step 9, where nothing else is modified). Nothing to commit.
 
 ---
 
 ### Task 1: `Attachment` table, message columns, `cancelled` status
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/Attachment.swift`
-- Modify: `CORE/Sources/ReTiCaMsgrCore/Message.swift` (columns after `replyQuote`, `MessageStatus`, new enums)
-- Modify: `CORE/Sources/ReTiCaMsgrCore/Database.swift` (new migration after `addReplies`)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift` (append)
+- Create: `CORE/Sources/ReTiCAMsgrCore/Attachment.swift`
+- Modify: `CORE/Sources/ReTiCAMsgrCore/Message.swift` (columns after `replyQuote`, `MessageStatus`, new enums)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/Database.swift` (new migration after `addReplies`)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift` (append)
 
 **Interfaces:**
 - Produces: `Attachment` (`@Table`, `Identifiable`): `id: UUID`, `messageId: UUID`, `kind: String`, `name: String`, `format: String`, `size: Int`, `width: Int?`, `height: Int?`, `path: String` (relative; `""` = bytes unavailable); `static func byMessageId(_ rows: [Attachment]) -> [UUID: Attachment]` (first row per message wins; used by Task 6's thread and conversation loads). `AttachmentKind.image = "image"`, `.file = "file"`. `Message.failureReason: String?`, `Message.propagationRefused: String?` (init parameters with `nil` defaults, after `replyQuote`). `MessageStatus.cancelled = "cancelled"`. `FailureReason.rejected = "rejected"`, `.cancelled = "cancelled"`. `PropagationRefusal.tooLargeForNode = "too large for node"`. Migration name `createAttachments` (table + index + the two `messages` columns).
 
 - [ ] **Step 1: Write the failing tests**
 
-In `CORE/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift`, add right after the imports (after `@testable import ReTiCaMsgrCore`):
+In `CORE/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift`, add right after the imports (after `@testable import ReTiCAMsgrCore`):
 
 ```swift
 
 /// `Testing` exports its own `Attachment`; this file means the model.
-private typealias Attachment = ReTiCaMsgrCore.Attachment
+private typealias Attachment = ReTiCAMsgrCore.Attachment
 ```
 
 Then append to the end of the file:
@@ -239,12 +239,12 @@ private func attachTableMessage(_ id: String, hash: String) -> Message {
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachTable`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachTable`
 Expected: compile errors (`Attachment`, `AttachmentKind`, `failureReason` unknown).
 
 - [ ] **Step 3: `Attachment.swift`**
 
-Create `CORE/Sources/ReTiCaMsgrCore/Attachment.swift`:
+Create `CORE/Sources/ReTiCAMsgrCore/Attachment.swift`:
 
 ```swift
 import Foundation
@@ -304,7 +304,7 @@ public enum AttachmentKind {
 
 - [ ] **Step 4: `Message.swift` — columns, status, reasons**
 
-In `CORE/Sources/ReTiCaMsgrCore/Message.swift`, after the `replyQuote` property (line 45) add:
+In `CORE/Sources/ReTiCAMsgrCore/Message.swift`, after the `replyQuote` property (line 45) add:
 
 ```swift
     /// Outgoing only: why the message will not go out, beside `status` — `FailureReason.*`.
@@ -359,7 +359,7 @@ public enum PropagationRefusal {
 
 - [ ] **Step 5: Migration**
 
-In `CORE/Sources/ReTiCaMsgrCore/Database.swift`, after the `addReplies` migration (before `return m`) add:
+In `CORE/Sources/ReTiCAMsgrCore/Database.swift`, after the `addReplies` migration (before `return m`) add:
 
 ```swift
         m.registerMigration("createAttachments") { db in
@@ -389,7 +389,7 @@ In `CORE/Sources/ReTiCaMsgrCore/Database.swift`, after the `addReplies` migratio
 
 - [ ] **Step 6: Run the new tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachTable`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachTable`
 Expected: 6 tests PASS. If `attachTableRejectsAnOrphanRow` fails because foreign keys are off, GRDB's default `Configuration` enables them — check `AppDatabase.makeInMemory` uses a plain `DatabaseQueue()` (it does) and that the `references` call is present.
 
 - [ ] **Step 7: Mutation batch (two sub-batches)**
@@ -407,14 +407,14 @@ Every mutation names its test. Run the Step 6 command per sub-batch: listed test
 
 - [ ] **Step 8: Full suite**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t1-full.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/att-t1-full.log 2>&1`
 Expected: all pass; count = baseline + 6.
 
 - [ ] **Step 9: Commit**
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Attachment.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Attachment.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift`
 
-Write `/tmp/ReTiCaMsgr/msg-att-task-1.txt`:
+Write `/tmp/ReTiCAMsgr/msg-att-task-1.txt`:
 
 ```
 feat: attachments table, cancelled status and failure columns
@@ -428,30 +428,30 @@ Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /tmp/ReTiCaMsgr/msg-att-task-1.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments commit -F /tmp/ReTiCAMsgr/msg-att-task-1.txt`
 
 ---
 
 ### Task 2: `AttachmentStore` — bytes on disk
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/AttachmentStore.swift`
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/AttachmentStoreTests.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/AttachmentStore.swift`
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/AttachmentStoreTests.swift`
 
 **Interfaces:**
 - Produces: `public struct AttachmentStore: Sendable { public var baseDirectory: URL; public init(baseDirectory: URL) }`; `static func fileName(messageHash: String, outgoing: Bool, ext: String) -> String` (`<hash>-<in|out>[.<ext>]`); `static func sanitizedExtension(_ ext: String) -> String` (lowercase, dot stripped, `[a-z0-9]{1,8}` else `""`); `func store(_ bytes: Data, messageHash: String, outgoing: Bool, ext: String) throws -> String` (creates the directory, marks it excluded from backup, writes atomically with `.completeFileProtectionUntilFirstUserAuthentication` on iOS — the same class as the SQLite file, so an attachment received over BLE while the phone is locked can still be written — returns the RELATIVE path = file name); `func url(forRelativePath:) -> URL`; `func url(for: Attachment) -> URL?` (nil when `path` is empty); `func exists(_ relativePath: String) -> Bool`; `func delete(_ relativePath: String) throws`; `enum ExportError: Error, Equatable { case noBytes }`; `var exportDirectory: URL` (`<temporaryDirectory>/AttachmentExports`); `func exportURL(for attachment: Attachment) throws -> URL` (copies the bytes to `<exportDirectory>/<attachment.id>/<attachment.name>`, creating the directory and replacing an earlier copy, and returns that URL; throws `ExportError.noBytes` when `path` is empty — Task 9's share sheet and QuickLook use it so the recipient sees the real file name, not `<hash>-in.pdf`). The spec's `url(for:) -> URL` / `delete(_ attachment:)` become `url(for:) -> URL?` / `delete(_ relativePath:)` (see Self-review departures). TCA dependency `\.attachmentStore` (`DependencyKey` live = `<Application Support>/Attachments`, test = a unique temp directory).
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/AttachmentStoreTests.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/AttachmentStoreTests.swift`:
 
 ```swift
 import Testing
 import Foundation
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 /// `Testing` exports its own `Attachment`; this file means the model.
-private typealias Attachment = ReTiCaMsgrCore.Attachment
+private typealias Attachment = ReTiCAMsgrCore.Attachment
 
 private func tempStore() -> AttachmentStore {
     AttachmentStore(baseDirectory: FileManager.default.temporaryDirectory
@@ -540,7 +540,7 @@ private let hash64 = String(repeating: "ab", count: 32)
     let a = AttachmentStore.testValue
     let b = AttachmentStore.testValue
     #expect(a.baseDirectory != b.baseDirectory)
-    #expect(a.baseDirectory.path().contains("ReTiCaMsgrTests-Attachments"))
+    #expect(a.baseDirectory.path().contains("ReTiCAMsgrTests-Attachments"))
 }
 
 /// The share sheet and QuickLook get the attachment's real name, not the hash-named stored file,
@@ -575,12 +575,12 @@ private let hash64 = String(repeating: "ab", count: 32)
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachStore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachStore`
 Expected: compile errors (`AttachmentStore` unknown).
 
 - [ ] **Step 3: `AttachmentStore.swift`**
 
-Create `CORE/Sources/ReTiCaMsgrCore/AttachmentStore.swift`:
+Create `CORE/Sources/ReTiCAMsgrCore/AttachmentStore.swift`:
 
 ```swift
 import Foundation
@@ -702,7 +702,7 @@ extension AttachmentStore: DependencyKey {
     /// read back what a reducer wrote builds one store, injects it, and keeps the reference.
     public static var testValue: AttachmentStore {
         AttachmentStore(baseDirectory: FileManager.default.temporaryDirectory
-            .appending(path: "ReTiCaMsgrTests-Attachments-\(UUID().uuidString)"))
+            .appending(path: "ReTiCAMsgrTests-Attachments-\(UUID().uuidString)"))
     }
 }
 
@@ -716,7 +716,7 @@ extension DependencyValues {
 
 - [ ] **Step 4: Run the new tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachStore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachStore`
 Expected: 10 tests PASS. If `attachStoreCreatesTheDirectoryAndExcludesItFromBackup` fails on `isExcludedFromBackup` (macOS temp dirs can report nil), read the value with `try store.baseDirectory.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup` right after creation in the test and report; do not weaken the production code.
 
 - [ ] **Step 5: Mutation batch (three sub-batches)**
@@ -742,12 +742,12 @@ Revert by hand, check the diff, run again: all PASS.
 
 - [ ] **Step 6: Full suite, commit**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t2-full.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/att-t2-full.log 2>&1`
 Expected: all pass; count = Task 1 count + 10.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AttachmentStore.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AttachmentStoreTests.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AttachmentStore.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AttachmentStoreTests.swift`
 
-Write `/tmp/ReTiCaMsgr/msg-att-task-2.txt`:
+Write `/tmp/ReTiCAMsgr/msg-att-task-2.txt`:
 
 ```
 feat: attachment bytes live on disk behind AttachmentStore
@@ -763,14 +763,14 @@ Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /tmp/ReTiCaMsgr/msg-att-task-2.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments commit -F /tmp/ReTiCAMsgr/msg-att-task-2.txt`
 
 ---
 ### Task 3: `AttachmentWire` — the LXMF 0x05 / 0x06 codec
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/AttachmentWire.swift`
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/AttachmentWireTests.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/AttachmentWire.swift`
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/AttachmentWireTests.swift`
 
 **Interfaces:**
 - Consumes (Task 1–2): `AttachmentKind`, `AttachmentStore.sanitizedExtension`.
@@ -779,13 +779,13 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/AttachmentWireTests.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/AttachmentWireTests.swift`:
 
 ```swift
 import Testing
 import Foundation
 import ReTiCA
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private let imageBytes = Data([0x01, 0x02])
 private let fileBytes = Data("hi".utf8)
@@ -955,12 +955,12 @@ private func fileField(_ entries: [MsgPackValue]) -> [MsgPackValue.IntPair] {
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachWire`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachWire`
 Expected: compile errors (`AttachmentWire` unknown).
 
 - [ ] **Step 3: `AttachmentWire.swift`**
 
-Create `CORE/Sources/ReTiCaMsgrCore/AttachmentWire.swift`:
+Create `CORE/Sources/ReTiCAMsgrCore/AttachmentWire.swift`:
 
 ```swift
 import Foundation
@@ -1107,8 +1107,8 @@ public enum AttachmentWire {
 
 - [ ] **Step 4: Run the new tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachWire`
-Expected: 11 tests PASS. If `attachWireEncodeFileMatchesReferenceUmsgpackBytes` fails, compare against the reference: write `/tmp/ReTiCaMsgr/attach_fields_reference.py` containing `import umsgpack; print(umsgpack.packb({0x05: [["a.txt", b"hi"]]}).hex()); print(umsgpack.packb({0x06: ["jpeg", b"\x01\x02"]}).hex())` and run it with `/Users/ell/opt/anaconda3/envs/rns/bin/python /tmp/ReTiCaMsgr/attach_fields_reference.py`; fix the TEST's hex if the reference differs, never the encoder (ReTiCA's `MsgPack.encode` follows umsgpack).
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachWire`
+Expected: 11 tests PASS. If `attachWireEncodeFileMatchesReferenceUmsgpackBytes` fails, compare against the reference: write `/tmp/ReTiCAMsgr/attach_fields_reference.py` containing `import umsgpack; print(umsgpack.packb({0x05: [["a.txt", b"hi"]]}).hex()); print(umsgpack.packb({0x06: ["jpeg", b"\x01\x02"]}).hex())` and run it with `/Users/ell/opt/anaconda3/envs/rns/bin/python /tmp/ReTiCAMsgr/attach_fields_reference.py`; fix the TEST's hex if the reference differs, never the encoder (ReTiCA's `MsgPack.encode` follows umsgpack).
 
 - [ ] **Step 5: Mutation batch**
 
@@ -1137,12 +1137,12 @@ Revert by hand, check the diff, run again: all PASS.
 
 - [ ] **Step 6: Full suite, commit**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t3-full.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/att-t3-full.log 2>&1`
 Expected: all pass; count = Task 2 count + 11.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AttachmentWire.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AttachmentWireTests.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AttachmentWire.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AttachmentWireTests.swift`
 
-Write `/tmp/ReTiCaMsgr/msg-att-task-3.txt`:
+Write `/tmp/ReTiCAMsgr/msg-att-task-3.txt`:
 
 ```
 feat: LXMF image and file attachment fields codec
@@ -1157,16 +1157,16 @@ Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /tmp/ReTiCaMsgr/msg-att-task-3.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments commit -F /tmp/ReTiCAMsgr/msg-att-task-3.txt`
 
 ---
 
 ### Task 4: `ImageEncoder` — JPEG out, orientation baked, metadata stripped
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/ImageEncoder.swift`
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/TestImages.swift` (test helper, shared with Tasks 6–7)
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/ImageEncoderTests.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/ImageEncoder.swift`
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/TestImages.swift` (test helper, shared with Tasks 6–7)
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/ImageEncoderTests.swift`
 
 **Interfaces:**
 - Produces: `public enum ImageEncoder` with `Preset { standard, original }`, `standardMaxPixels = 1280`, `standardQuality = 0.75`, `originalQuality = 0.92`, `struct Encoded { data, width, height }`, `enum Failure: Error { undecodable, encodingFailed }`, `encodeJPEG(_ source: Data, preset:) throws -> Encoded`, `dimensions(of: Data) -> (width: Int, height: Int)?` (oriented, no pixel decode), `isDecodable(_:)`, `containerType(of:) -> String?` (UTType identifier), `hasLocationOrOrientationMetadata(_:) -> Bool`.
@@ -1175,7 +1175,7 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 
 - [ ] **Step 1: Test helper**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/TestImages.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/TestImages.swift`:
 
 ```swift
 import Foundation
@@ -1262,12 +1262,12 @@ enum TestImages {
 
 - [ ] **Step 2: Write the failing tests**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/ImageEncoderTests.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/ImageEncoderTests.swift`:
 
 ```swift
 import Testing
 import Foundation
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private func isRed(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.r ?? 0) > 200 && (p?.b ?? 255) < 60 }
 private func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.b ?? 0) > 200 && (p?.r ?? 255) < 60 }
@@ -1393,12 +1393,12 @@ private func isBlue(_ p: (r: UInt8, g: UInt8, b: UInt8)?) -> Bool { (p?.b ?? 0) 
 
 - [ ] **Step 3: Run to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter imageEncoder`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter imageEncoder`
 Expected: compile errors (`ImageEncoder` unknown).
 
 - [ ] **Step 4: `ImageEncoder.swift`**
 
-Create `CORE/Sources/ReTiCaMsgrCore/ImageEncoder.swift`:
+Create `CORE/Sources/ReTiCAMsgrCore/ImageEncoder.swift`:
 
 ```swift
 import Foundation
@@ -1513,7 +1513,7 @@ public enum ImageEncoder {
 
 - [ ] **Step 5: Run the new tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter imageEncoder`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter imageEncoder`
 Expected: 9 tests PASS. If ImageIO rounds 2000/3000×1280 to 854 rather than 853 on this macOS, change the `853` expectations (downscale and orientation tests) to the observed value and note it in the report (the rounding is ImageIO's, not ours). If `imageEncoderBakesOrientationIntoPixels` fails on its first two expectations (the SOURCE self-check), the helper is wrong, not the encoder: `TestImages.pixel` indexes `(y * w + x) * 4` because a bitmap context's memory row 0 is the top of the image — check that first. If `imageEncoderOriginalKeepsDimensions`'s byte comparison fails, report the two sizes; do not weaken the check.
 
 - [ ] **Step 6: Mutation batch (six sub-batches — run each alone, revert and re-green between them)**
@@ -1541,12 +1541,12 @@ Revert by hand, check the diff, run again: all PASS.
 
 - [ ] **Step 7: Full suite, commit**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t4-full.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/att-t4-full.log 2>&1`
 Expected: all pass; count = Task 3 count + 9.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ImageEncoder.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/TestImages.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ImageEncoderTests.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ImageEncoder.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/TestImages.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ImageEncoderTests.swift`
 
-Write `/tmp/ReTiCaMsgr/msg-att-task-4.txt`:
+Write `/tmp/ReTiCAMsgr/msg-att-task-4.txt`:
 
 ```
 feat: ImageEncoder scales photos to JPEG with orientation baked in
@@ -1560,17 +1560,17 @@ Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /tmp/ReTiCaMsgr/msg-att-task-4.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments commit -F /tmp/ReTiCAMsgr/msg-att-task-4.txt`
 
 ---
 ### Task 5: Info sheet section, placeholders, conversation preview
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/AttachmentPlaceholder.swift`
-- Modify: `CORE/Sources/ReTiCaMsgrCore/MessageInfo.swift` (`sections(for:attachment:timeZone:)`, timeline reason row, delivery refusal row, new `attachment` section, name helpers)
-- Modify: `CORE/Sources/ReTiCaMsgrCore/Conversation.swift` (`list(from:attachments:)`)
-- Modify: `CORE/Sources/ReTiCaMsgrCore/ReplyPreview.swift` (`resolve(for:in:peerName:attachments:)`)
-- Create: `CORE/Tests/ReTiCaMsgrCoreTests/AttachmentInfoTests.swift`
+- Create: `CORE/Sources/ReTiCAMsgrCore/AttachmentPlaceholder.swift`
+- Modify: `CORE/Sources/ReTiCAMsgrCore/MessageInfo.swift` (`sections(for:attachment:timeZone:)`, timeline reason row, delivery refusal row, new `attachment` section, name helpers)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/Conversation.swift` (`list(from:attachments:)`)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/ReplyPreview.swift` (`resolve(for:in:peerName:attachments:)`)
+- Create: `CORE/Tests/ReTiCAMsgrCoreTests/AttachmentInfoTests.swift`
 
 **Interfaces:**
 - Produces: `public enum AttachmentPlaceholder { static let photo = "📷 Photo"; static func text(for: Attachment) -> String; static func preview(body: String, attachment: Attachment?) -> String }`. `MessageInfo.sections(for message: Message, attachment: Attachment? = nil, timeZone: TimeZone = .current)` — existing callers keep compiling. `Conversation.list(from messages: [Message], attachments: [UUID: Attachment] = [:])`. `ReplyPreview.resolve(for message: Message, in thread: [Message], peerName: String?, attachments: [UUID: Attachment] = [:])` — a reply to a caption-less photo or file IN the thread quotes its placeholder instead of "Original message not available" (spec §4); existing callers keep compiling, Task 9's `ChatView` passes `store.attachmentsByMessageId`.
@@ -1578,15 +1578,15 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `CORE/Tests/ReTiCaMsgrCoreTests/AttachmentInfoTests.swift`:
+Create `CORE/Tests/ReTiCAMsgrCoreTests/AttachmentInfoTests.swift`:
 
 ```swift
 import Testing
 import Foundation
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 /// `Testing` exports its own `Attachment`; this file means the model.
-private typealias Attachment = ReTiCaMsgrCore.Attachment
+private typealias Attachment = ReTiCAMsgrCore.Attachment
 
 private let utc = TimeZone(identifier: "UTC")!
 private let t0 = Date(timeIntervalSince1970: 1700000000)
@@ -1714,12 +1714,12 @@ private func file(name: String = "notes.pdf", format: String = "pdf") -> Attachm
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachInfo`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachInfo`
 Expected: compile errors (`AttachmentPlaceholder` unknown, `sections(for:attachment:timeZone:)` unknown).
 
 - [ ] **Step 3: `AttachmentPlaceholder.swift`**
 
-Create `CORE/Sources/ReTiCaMsgrCore/AttachmentPlaceholder.swift`:
+Create `CORE/Sources/ReTiCAMsgrCore/AttachmentPlaceholder.swift`:
 
 ```swift
 import Foundation
@@ -1875,7 +1875,7 @@ Replace `resolve(for:in:peerName:)` with:
 
 - [ ] **Step 7: Run the new tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachInfo --filter infoSections --filter conversation --filter replyPreview`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachInfo --filter infoSections --filter conversation --filter replyPreview`
 Expected: the 7 new tests PASS and every existing `infoSections*` / conversation / `replyPreview*` test still passes (their expectations are untouched: no reason/refusal/attachment rows appear for messages without those fields, and `resolve` without `attachments:` behaves as before).
 
 - [ ] **Step 8: Mutation batch (three sub-batches)**
@@ -1897,12 +1897,12 @@ Revert by hand, check the diff, run again: all PASS.
 
 - [ ] **Step 9: Full suite, commit**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t5-full.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/att-t5-full.log 2>&1`
 Expected: all pass; count = Task 4 count + 7.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AttachmentPlaceholder.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/MessageInfo.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReplyPreview.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AttachmentInfoTests.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AttachmentPlaceholder.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/MessageInfo.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Conversation.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReplyPreview.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AttachmentInfoTests.swift`
 
-Write `/tmp/ReTiCaMsgr/msg-att-task-5.txt`:
+Write `/tmp/ReTiCAMsgr/msg-att-task-5.txt`:
 
 ```
 feat: attachment section, failure reason and refusal in the Info sheet
@@ -1917,15 +1917,15 @@ Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /tmp/ReTiCaMsgr/msg-att-task-5.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments commit -F /tmp/ReTiCAMsgr/msg-att-task-5.txt`
 
 ---
 
 ### Task 6: Receiving an attachment
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (dependency; `State.attachmentsByMessageId`; `threadLoaded` shape; `openConversation`/`closeConversation`; `messageReceived`; `reloadThread`; `reloadConversations`; `replyTapped` quote text)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (`makeStore` gains an `attachmentStore:` parameter; tests appended at the end)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (dependency; `State.attachmentsByMessageId`; `threadLoaded` shape; `openConversation`/`closeConversation`; `messageReceived`; `reloadThread`; `reloadConversations`; `replyTapped` quote text)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (`makeStore` gains an `attachmentStore:` parameter; tests appended at the end)
 
 **Interfaces:**
 - Consumes: T1 `Attachment.byMessageId(_:)`, T2 `\.attachmentStore`, T3 `AttachmentWire.decode` (and `Decoded.droppedFileCount`, logged as `inbound.notice` when > 0), T4 `ImageEncoder.dimensions(of:)`/`isDecodable`, T5 `AttachmentPlaceholder`, `Conversation.list(from:attachments:)`.
@@ -1934,12 +1934,12 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 
 - [ ] **Step 1: `makeStore` accepts a store; the `Attachment` alias**
 
-In `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`, add right after the imports (after `@testable import ReTiCaMsgrCore`), once for Tasks 6–8:
+In `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`, add right after the imports (after `@testable import ReTiCAMsgrCore`), once for Tasks 6–8:
 
 ```swift
 
 /// `Testing` exports its own `Attachment`; this file means the model.
-private typealias Attachment = ReTiCaMsgrCore.Attachment
+private typealias Attachment = ReTiCAMsgrCore.Attachment
 ```
 
 Then change the `makeStore` signature and body:
@@ -1961,7 +1961,7 @@ Every existing call site (`makeStore(db, identity: x)` and `makeStore(db, identi
 
 - [ ] **Step 2: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`:
 
 ```swift
 
@@ -2111,7 +2111,7 @@ private func attachReceiveAndFetch(_ m: LXMessage, me: Identity, store attachmen
 
 - [ ] **Step 3: Run to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachReceive`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachReceive`
 Expected: compile errors (`attachmentsByMessageId` unknown, `makeStore(attachmentStore:)` unknown until Step 1 — do Step 1 first, then the tests fail on the state property).
 
 - [ ] **Step 4: `AppFeature.swift` — state, action, dependency**
@@ -2250,7 +2250,7 @@ private func reloadThread(_ database: any DatabaseWriter, _ peerHex: String, _ s
 
 - [ ] **Step 7: Run the new tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachReceive`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachReceive`
 Expected: 7 tests PASS.
 
 - [ ] **Step 8: Mutation batch**
@@ -2275,12 +2275,12 @@ Revert by hand, check the diff, run again: all PASS.
 
 - [ ] **Step 9: Full suite, commit**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t6-full.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/att-t6-full.log 2>&1`
 Expected: all pass; count = Task 5 count + 7. Existing `threadLoaded` receives (`if case .threadLoaded = $0`) still match.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
 
-Write `/tmp/ReTiCaMsgr/msg-att-task-6.txt`:
+Write `/tmp/ReTiCAMsgr/msg-att-task-6.txt`:
 
 ```
 feat: store received image and file attachments
@@ -2296,15 +2296,15 @@ Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /tmp/ReTiCaMsgr/msg-att-task-6.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments commit -F /tmp/ReTiCAMsgr/msg-att-task-6.txt`
 
 ---
 ### Task 7: Sending an attachment — picking, preparing, the send
 
 **Files:**
-- Create: `CORE/Sources/ReTiCaMsgrCore/PendingAttachment.swift`
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (state, actions, `CancelID.attachmentPreparation`, `prepareEffect`, `openConversation`/`startConversation`/`closeConversation`, `sendTapped`, new cases)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (append)
+- Create: `CORE/Sources/ReTiCAMsgrCore/PendingAttachment.swift`
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (state, actions, `CancelID.attachmentPreparation`, `prepareEffect`, `openConversation`/`startConversation`/`closeConversation`, `sendTapped`, new cases)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (append)
 
 **Interfaces:**
 - Consumes: T2 `\.attachmentStore`, T3 `AttachmentWire.encodeImage/encodeFile`, T4 `ImageEncoder`.
@@ -2313,7 +2313,7 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`:
 
 ```swift
 
@@ -2591,12 +2591,12 @@ private func pendingFile(name: String = "Trail map.pdf", data: Data = Data("%PDF
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachSend`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachSend`
 Expected: compile errors (`PickedItem`, `PendingAttachment`, the new actions unknown).
 
 - [ ] **Step 3: `PendingAttachment.swift`**
 
-Create `CORE/Sources/ReTiCaMsgrCore/PendingAttachment.swift`:
+Create `CORE/Sources/ReTiCAMsgrCore/PendingAttachment.swift`:
 
 ```swift
 import Foundation
@@ -2971,7 +2971,7 @@ Replace the `.sendTapped` case with:
 
 - [ ] **Step 6: Run the new tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachSend`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachSend`
 Expected: 12 tests PASS. `attachSendStoreFailureSendsNothing` is exhaustive: if it reports an unexpected state change, match the closure to exactly what `sendTapped` and `attachmentSendFailed` mutate (draft cleared then restored, replyTarget stays nil, pendingAttachment, attachmentError) — do not loosen to `.off`. If `attachSendRemoveCancelsAPendingPreparation` fails with an unhandled `attachmentPrepared`, the preparation is not cancellable — fix the reducer, not the test.
 
 - [ ] **Step 7: Mutation batch (five sub-batches)**
@@ -3003,12 +3003,12 @@ Revert by hand, check the diff, run again: all PASS.
 
 - [ ] **Step 8: Full suite, commit**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t7-full.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/att-t7-full.log 2>&1`
 Expected: all pass; count = Task 6 count + 12. The existing send tests (`deliveryFailedMarksFailedAndReloads`, `replySendAndFetch`-based tests) are unaffected: the text-only path is the old one plus a `.cancel` effect, which emits no action and changes no state.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/PendingAttachment.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/PendingAttachment.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
 
-Write `/tmp/ReTiCaMsgr/msg-att-task-7.txt`:
+Write `/tmp/ReTiCAMsgr/msg-att-task-7.txt`:
 
 ```
 feat: send a photo or a file with a message
@@ -3025,15 +3025,15 @@ Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /tmp/ReTiCaMsgr/msg-att-task-7.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments commit -F /tmp/ReTiCAMsgr/msg-att-task-7.txt`
 
 ---
 
 ### Task 8: Transfer state — progress, cancel, rejected/cancelled, refusal, inbound
 
 **Files:**
-- Modify: `CORE/Sources/ReTiCaMsgrCore/AppFeature.swift` (state, actions, `CancelID`, the delivery-outcome cases, new delegate cases, `linkClosed`, helpers)
-- Modify: `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` (`makeStore` gains `clock:`; two `tadCompat` expectations change to `cancelled`; tests appended)
+- Modify: `CORE/Sources/ReTiCAMsgrCore/AppFeature.swift` (state, actions, `CancelID`, the delivery-outcome cases, new delegate cases, `linkClosed`, helpers)
+- Modify: `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` (`makeStore` gains `clock:`; two `tadCompat` expectations change to `cancelled`; tests appended)
 
 **Interfaces:**
 - Consumes: ReTiCA `LXMFNode.Action.Delegate.deliveryProgress(messageHash:fraction:)`, `.inboundTransferProgress(sourceHash:linkID:fraction:)`, `.propagationRefused(messageHash:reason:)`, `.deliveryRejected`, `.deliveryCancelled`, `LXMFNode.Action.cancelOutbound(messageHash:)`, `TransportEndpoint.Action.Delegate.linkClosed(linkID:reason:)`; T1 `MessageStatus.cancelled`, `FailureReason`, `PropagationRefusal`.
@@ -3067,7 +3067,7 @@ Update the doc comments to match:
 
 - [ ] **Step 2: Write the failing tests**
 
-Append to `CORE/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`:
+Append to `CORE/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`:
 
 ```swift
 
@@ -3254,7 +3254,7 @@ private func inbound(_ link: Data, _ fraction: Double, source: Data? = nil) -> A
 
 - [ ] **Step 3: Run to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachTransfer`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachTransfer`
 Expected: compile errors (`outgoingProgress`, `InboundTransfer`, `cancelSendTapped` unknown).
 
 - [ ] **Step 4: State, actions, cancel id**
@@ -3457,7 +3457,7 @@ Replace the existing `linkClosed` case with:
 
 - [ ] **Step 7: Run the new tests**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore --filter attachTransfer --filter tadCompat --filter linkClosed --filter PublicKey`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore --filter attachTransfer --filter tadCompat --filter linkClosed --filter PublicKey`
 Expected: the 8 new tests PASS, the two edited `tadCompat` tests PASS, and the existing link-close and public-key tests (`linkClosedMarksInFlightRequestFailed` and the `*PublicKey*` tests — the filter is case-sensitive) still pass (the `linkClosed` restructure is behaviour-preserving for them).
 
 - [ ] **Step 8: Mutation batch (six sub-batches)**
@@ -3490,12 +3490,12 @@ Run A to F in order, reverting and re-greening between them. Revert by hand, che
 
 - [ ] **Step 9: Full suite, commit**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t8-full.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/att-t8-full.log 2>&1`
 Expected: all pass; count = Task 7 count + 8.
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
 
-Write `/tmp/ReTiCaMsgr/msg-att-task-8.txt`:
+Write `/tmp/ReTiCAMsgr/msg-att-task-8.txt`:
 
 ```
 feat: transfer progress, cancel, and the rejected and cancelled outcomes
@@ -3511,12 +3511,12 @@ Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /tmp/ReTiCaMsgr/msg-att-task-8.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments commit -F /tmp/ReTiCAMsgr/msg-att-task-8.txt`
 
 ---
 ### Task 9: The views — composer, bubbles, viewer, QuickLook, progress, capsule
 
-**Files (app target `APP/ReTiCaMsgr/`, synchronized folder — no pbxproj edit):**
+**Files (app target `APP/ReTiCAMsgr/`, synchronized folder — no pbxproj edit):**
 - Create: `AttachmentPicker.swift`
 - Create: `AttachmentViews.swift`
 - Modify: `ChatView.swift` (composer, bubble slot, context menu, capsule, sheets)
@@ -3530,19 +3530,19 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 
 - [ ] **Step 1: `AttachmentPicker.swift`**
 
-Create `APP/ReTiCaMsgr/AttachmentPicker.swift`:
+Create `APP/ReTiCAMsgr/AttachmentPicker.swift`:
 
 ```swift
 //
 //  AttachmentPicker.swift
-//  ReTiCaMsgr
+//  ReTiCAMsgr
 //
 
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import os
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// The paperclip beside the text field: Photo Library (one image) or Document (one file). Reads
 /// the picker's bytes here — `fileImporter` hands over a security-scoped URL only the view can
@@ -3617,18 +3617,18 @@ struct AttachmentPickerButton: View {
 
 - [ ] **Step 2: `AttachmentViews.swift`**
 
-Create `APP/ReTiCaMsgr/AttachmentViews.swift`:
+Create `APP/ReTiCAMsgr/AttachmentViews.swift`:
 
 ```swift
 //
 //  AttachmentViews.swift
-//  ReTiCaMsgr
+//  ReTiCAMsgr
 //
 
 import SwiftUI
 import UIKit
 import ImageIO
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 // MARK: - Thumbnails
 
@@ -4005,7 +4005,7 @@ Replace the whole file with:
 ```swift
 //
 //  ChatView.swift
-//  ReTiCaMsgr
+//  ReTiCAMsgr
 //
 //  Created by Elliot Schrock on 8/1/26.
 //
@@ -4015,7 +4015,7 @@ import UIKit
 import QuickLook
 import os
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 struct ChatView: View {
     private static let log = Logger(subsystem: "com.reticamsgr", category: "attachments")
@@ -4348,12 +4348,12 @@ In the `.toolbar`, after the connection-circle `ToolbarItem`, add:
 
 - [ ] **Step 6: Build the app target**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCaMsgr/att-t9-xcodebuild.log 2>&1`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build > /tmp/ReTiCAMsgr/att-t9-xcodebuild.log 2>&1`
 Expected: `** BUILD SUCCEEDED **`. Fix compile errors in the view code (typical: `MagnifyGesture` is iOS 17+, fine; `.photosPicker(isPresented:selection:matching:)` is iOS 17+; `@Dependency` in a `View` needs `import ComposableArchitecture`, already there). Never change core code from this task — if a core signature is wrong, STOP and report.
 
 - [ ] **Step 7: Core suite unchanged**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-attachments/ReTiCaMsgrCore > /tmp/ReTiCaMsgr/att-t9-full.log 2>&1`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr-attachments/ReTiCAMsgrCore > /tmp/ReTiCAMsgr/att-t9-full.log 2>&1`
 Expected: same count and result as Task 8 (no core files changed).
 
 - [ ] **Step 8: Manual checklist (record in the report as "not run" if no device/simulator session is available)**
@@ -4369,12 +4369,12 @@ Expected: same count and result as Task 8 (no core files changed).
 
 - [ ] **Step 9: Restore Xcode's user-data drift, commit**
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments status --short`
-Expected: exactly the five intended files (two new, three modified). If either `xcschememanagement.plist` shows as modified, restore it with `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments checkout -- <that path>` (allowed here only, see Task 0).
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments status --short`
+Expected: exactly the five intended files (two new, three modified). If either `xcschememanagement.plist` shows as modified, restore it with `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments checkout -- <that path>` (allowed here only, see Task 0).
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments add ReTiCaMsgr/AttachmentPicker.swift ReTiCaMsgr/AttachmentViews.swift ReTiCaMsgr/ChatView.swift ReTiCaMsgr/MessageInfoSheet.swift ReTiCaMsgr/ConversationListView.swift`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments add ReTiCAMsgr/AttachmentPicker.swift ReTiCAMsgr/AttachmentViews.swift ReTiCAMsgr/ChatView.swift ReTiCAMsgr/MessageInfoSheet.swift ReTiCAMsgr/ConversationListView.swift`
 
-Write `/tmp/ReTiCaMsgr/msg-att-task-9.txt`:
+Write `/tmp/ReTiCAMsgr/msg-att-task-9.txt`:
 
 ```
 feat: attachment composer, bubbles, viewer, QuickLook and progress
@@ -4391,7 +4391,7 @@ Co-Authored-By: <model that wrote the commit> <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_016gVnRKKggZdh6nzoKCGxb1
 ```
 
-Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /tmp/ReTiCaMsgr/msg-att-task-9.txt`
+Run: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr-attachments commit -F /tmp/ReTiCAMsgr/msg-att-task-9.txt`
 
 ---
 
@@ -4400,7 +4400,7 @@ Run: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr-attachments commit -F /t
 **Spec coverage.** §1 data model and storage → Tasks 1, 2, 5 (Info section), 6 (thread/list loading), 8 (transfer state). §2 wire format and image pipeline → Tasks 3, 4; the composer's size notes → Task 7 (`AttachmentSizeNote`) and Task 9. §3 send flow → Task 7 (state, preparation, send), Task 8 (progress, cancel, `cancelled` status, refusal), Task 9 (composer, Cancel Send). §4 receive flow and display → Task 6 (receive), Task 5 (placeholders, preview), Task 8 (inbound capsule state), Task 9 (bubbles, viewer, QuickLook, capsule). §4 errors → Tasks 6, 7, 9. §5 testing → the core tests in Tasks 1–8; `ImageEncoder` moved INTO the core package (ImageIO is available on macOS) so it is covered by `swift test` rather than an app-target XCTest — a deliberate improvement on the spec's "app target" placement; the views remain untested as the spec allows; the manual checks are Task 9 Step 8.
 
 **Where the plan departs from the spec's wording, and why.**
-1. `ImageEncoder` lives in `ReTiCaMsgrCore`, not the app target (above).
+1. `ImageEncoder` lives in `ReTiCAMsgrCore`, not the app target (above).
 2. A store write failure on RECEIVE inserts the attachment row with `path == ""` (spec: "attachment dropped with a bubble note") — the row is what carries the note and the Info sheet's "Stored: No"; nothing else is stored.
 3. `PickedItem` is read by the view (security-scoped URLs), not by the reducer — the spec's "`.attachmentPicked` reads the bytes" is split into view read + reducer prepare, keeping the core free of PhotosUI.
 4. Generated photo names use UTC so tests are deterministic and the name is the same wherever the phone is.

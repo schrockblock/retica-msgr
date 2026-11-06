@@ -49,7 +49,7 @@ The review found two ways for a remote party to make a message appear to come fr
   - a direct or propagated message to us still works;
   - an unknown sender is delivered unvalidated.
 
-### App (`ReTiCaMsgrCore`)
+### App (`ReTiCAMsgrCore`)
 
 - **Migration `addUnverifiedPacked`:** a nullable BLOB column on `messages` holding the packed bytes. It is set only for incoming rows stored with `validated = false`.
 - **Re-check:** on `.pathLearned` (or the existing learned-peer update) for a hash with stored unverified rows, look up the identity in `endpoint.learned`. For each row, unpack and validate:
@@ -90,7 +90,7 @@ The review found two ways for a remote party to make a message appear to come fr
 ## Constraints
 
 - ReTiCA work goes in a worktree at `/Users/ell/development/ios/pods/ReTiCA-worktrees/forgery` (branch `fix/forgery`), never in the shared checkout. Another agent works there. The worktree needs the `FCB` symlink, per the existing convention.
-- App work goes in a worktree `ReTiCaMsgr-forgery` off main. For app-side verification against the unmerged ReTiCA branch, point `ReTiCaMsgrCore/Package.swift` at a `/tmp/ReTiCaMsgr/ReTiCA` symlink temporarily, and restore it byte-identical before committing (the existing convention).
+- App work goes in a worktree `ReTiCAMsgr-forgery` off main. For app-side verification against the unmerged ReTiCA branch, point `ReTiCAMsgrCore/Package.swift` at a `/tmp/ReTiCAMsgr/ReTiCA` symlink temporarily, and restore it byte-identical before committing (the existing convention).
 - **Merge order:** ReTiCA first, then the app. Breaking API changes need the matching app commit.
 - iOS and macOS behaviour outside these changes is unchanged.
 - The user's three-step mutation rule applies to every new test.

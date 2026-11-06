@@ -2,17 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The existing `ReTiCaMsgr` app target builds, launches and messages on macOS, sharing every view with iOS, with iOS behaviour unchanged.
+**Goal:** The existing `ReTiCAMsgr` app target builds, launches and messages on macOS, sharing every view with iOS, with iOS behaviour unchanged.
 
-**Architecture:** One multiplatform app target (iOS + native macOS, not Catalyst). iOS-only APIs are either wrapped in small cross-platform helpers in `ReTiCaMsgr/Platform/` or fenced with `#if os(iOS)`, with a Mac equivalent where one is cheap. No Mac-specific layout yet: that comes in later UI iterations.
+**Architecture:** One multiplatform app target (iOS + native macOS, not Catalyst). iOS-only APIs are either wrapped in small cross-platform helpers in `ReTiCAMsgr/Platform/` or fenced with `#if os(iOS)`, with a Mac equivalent where one is cheap. No Mac-specific layout yet: that comes in later UI iterations.
 
-**Tech Stack:** SwiftUI, AppKit (only where SwiftUI has no equivalent), TCA, Xcode 26 file-system-synchronized groups (new files under `ReTiCaMsgr/` join the app target automatically; no pbxproj edits beyond Task 1).
+**Tech Stack:** SwiftUI, AppKit (only where SwiftUI has no equivalent), TCA, Xcode 26 file-system-synchronized groups (new files under `ReTiCAMsgr/` join the app target automatically; no pbxproj edits beyond Task 1).
 
 **Spec:** none. The user skipped the design conversation ("mechanical port, UI iterations later"); the decisions are recorded in Global Constraints below.
 
 ## Global Constraints
 
-- Worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-macos`, branch `feat/macos`. Parallel tasks use sibling worktrees `ReTiCaMsgr-macos-<task>` (branches `feat/macos-<task>`) so the `../../../pods` path dependencies still resolve.
+- Worktree `/Users/ell/development/ios/apps/ReTiCAMsgr-macos`, branch `feat/macos`. Parallel tasks use sibling worktrees `ReTiCAMsgr-macos-<task>` (branches `feat/macos-<task>`) so the `../../../pods` path dependencies still resolve.
 - `MACOSX_DEPLOYMENT_TARGET = 26.4` (matches `IPHONEOS_DEPLOYMENT_TARGET`), so there are no availability checks.
 - Native macOS: `SUPPORTS_MACCATALYST = NO`, `SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO`.
 - iOS behaviour and visuals must not change. Every `#if os(iOS)` branch keeps the existing code verbatim.
@@ -21,9 +21,9 @@
 - Push on macOS: register through `NSApplication` with the same bundle id `co.lithobyte.ReTiCaMsgr`. Push also owns the notification permission prompt, which local notifications depend on.
 - iOS-only features with no cheap Mac equivalent are hidden on macOS, not reimplemented: camera QR scanning (`DataScannerViewController`), the camera avatar capture (`UIImagePickerController`), and the in-app mail composer (Mac uses the existing `mailto:` fallback).
 - Fence modules with `#if canImport(UIKit)` (UIKit, MessageUI) and `#if os(iOS)` (iOS-only APIs).
-- Temporary files go in `/tmp/ReTiCaMsgr/`. One shell command per Bash call: no pipes, no `&&`, no inline scripts.
-- iOS build command: `xcodebuild -project ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/ReTiCaMsgr/dd-<task>-ios build -quiet`
-- macOS build command: `xcodebuild -project ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination platform=macOS -derivedDataPath /tmp/ReTiCaMsgr/dd-<task>-mac CODE_SIGNING_ALLOWED=NO build -quiet`
+- Temporary files go in `/tmp/ReTiCAMsgr/`. One shell command per Bash call: no pipes, no `&&`, no inline scripts.
+- iOS build command: `xcodebuild -project ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/ReTiCAMsgr/dd-<task>-ios build -quiet`
+- macOS build command: `xcodebuild -project ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination platform=macOS -derivedDataPath /tmp/ReTiCAMsgr/dd-<task>-mac CODE_SIGNING_ALLOWED=NO build -quiet`
 
 ## Review Focus
 
@@ -38,13 +38,13 @@
 ### Task 1: Foundation — multiplatform target, entitlements, platform helpers (sequential, before all others)
 
 **Files:**
-- Modify: `ReTiCaMsgr.xcodeproj/project.pbxproj`. The app target settings and the extension `platformFilter` were already applied by `/tmp/ReTiCaMsgr/macos_pbx.py` during recon, so verify them. Then add the same `SDKROOT = auto; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx"; MACOSX_DEPLOYMENT_TARGET = 26.4;` to the **ReTiCaMsgrTests** Debug and Release configs, plus `CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = ReTiCaMsgr/ReTiCaMsgr-macOS.entitlements;` on both app configs.
-- Create: `ReTiCaMsgr/ReTiCaMsgr-macOS.entitlements` containing `com.apple.security.app-sandbox`, `com.apple.security.network.client`, `com.apple.security.network.server`, `com.apple.security.device.bluetooth`, `com.apple.security.files.user-selected.read-write`, `com.apple.security.personal-information.addressbook` (all true), `com.apple.developer.aps-environment = development`, `com.apple.security.application-groups = [group.co.lithobyte.ReTiCaMsgr]`, and `keychain-access-groups = [$(AppIdentifierPrefix)co.lithobyte.reticulum.identity]`.
-- Create: `ReTiCaMsgr/Platform/PlatformImage.swift`
-- Create: `ReTiCaMsgr/Platform/PlatformModifiers.swift`
-- Create: `ReTiCaMsgr/Platform/Pasteboard.swift`
+- Modify: `ReTiCAMsgr.xcodeproj/project.pbxproj`. The app target settings and the extension `platformFilter` were already applied by `/tmp/ReTiCAMsgr/macos_pbx.py` during recon, so verify them. Then add the same `SDKROOT = auto; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx"; MACOSX_DEPLOYMENT_TARGET = 26.4;` to the **ReTiCAMsgrTests** Debug and Release configs, plus `CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = ReTiCAMsgr/ReTiCAMsgr-macOS.entitlements;` on both app configs.
+- Create: `ReTiCAMsgr/ReTiCAMsgr-macOS.entitlements` containing `com.apple.security.app-sandbox`, `com.apple.security.network.client`, `com.apple.security.network.server`, `com.apple.security.device.bluetooth`, `com.apple.security.files.user-selected.read-write`, `com.apple.security.personal-information.addressbook` (all true), `com.apple.developer.aps-environment = development`, `com.apple.security.application-groups = [group.co.lithobyte.ReTiCaMsgr]`, and `keychain-access-groups = [$(AppIdentifierPrefix)co.lithobyte.reticulum.identity]`.
+- Create: `ReTiCAMsgr/Platform/PlatformImage.swift`
+- Create: `ReTiCAMsgr/Platform/PlatformModifiers.swift`
+- Create: `ReTiCAMsgr/Platform/Pasteboard.swift`
 - Modify: every app file with `import UIKit` or `import MessageUI` (AppDelegate, AttachmentViews, AvatarCropView, AvatarView, BackgroundTask+UIKit, BlockingViews, ChatView, PushPlatform+UIKit, QRCodeImage, ReactionPaletteMenu, SettingsView, PeerInfoView, MessageInfoSheet, DiagnosticsView, QRScannerView) so that each such import is wrapped in `#if canImport(UIKit)` / `#if canImport(MessageUI)`. This is the only change those files get in this task, so the macOS build gets past module resolution and reports per-file errors.
-- Test: `ReTiCaMsgrTests/PlatformImageTests.swift`
+- Test: `ReTiCAMsgrTests/PlatformImageTests.swift`
 
 **Interfaces (Produces, used by Tasks 2–5):**
 - `typealias PlatformImage = UIImage` (iOS) / `NSImage` (macOS).
@@ -60,16 +60,16 @@
 - `enum Pasteboard { static func copy(_ string: String) }`: `UIPasteboard.general.string` on iOS; `NSPasteboard.general.clearContents()` + `setString(_:forType: .string)` on macOS.
 - `enum SystemSettings { static var url: URL? }`: `UIApplication.openSettingsURLString` on iOS; `x-apple.systempreferences:com.apple.preference.security?Privacy` on macOS. Callers open it with `openURL`.
 
-- [ ] **Step 1: Write the failing tests** in `ReTiCaMsgrTests/PlatformImageTests.swift` (Swift Testing, `@MainActor` struct, matching `QRCodeImageTests.swift`):
+- [ ] **Step 1: Write the failing tests** in `ReTiCAMsgrTests/PlatformImageTests.swift` (Swift Testing, `@MainActor` struct, matching `QRCodeImageTests.swift`):
   - `cgImageRoundTripKeepsPixelSize`: build a 40×20 solid-red `CGImage` with `CGContext`; `PlatformImage(cgImage:)`; `#expect(image.cgImage?.width == 40)` and `#expect(image.cgImage?.height == 20)`.
   - `jpegDataDecodesBackToSameSize`: same image, `jpegData(compressionQuality: 0.9)` is non-nil; decoding it with `CGImageSourceCreateWithData` gives a 40×20 image.
   - `pasteboardCopyIsReadBack`: `Pasteboard.copy("abc123")`, then read back through `UIPasteboard.general.string` / `NSPasteboard.general.string(forType: .string)`, and `#expect(== "abc123")`.
-- [ ] **Step 2: Run on iOS and confirm they fail** (the helpers don't exist yet): `xcodebuild test -project ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath /tmp/ReTiCaMsgr/dd-t1-ios -only-testing:ReTiCaMsgrTests/PlatformImageTests`. Expected: a compile failure on `PlatformImage`.
+- [ ] **Step 2: Run on iOS and confirm they fail** (the helpers don't exist yet): `xcodebuild test -project ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath /tmp/ReTiCAMsgr/dd-t1-ios -only-testing:ReTiCAMsgrTests/PlatformImageTests`. Expected: a compile failure on `PlatformImage`.
 - [ ] **Step 3: Implement** the entitlements file, the pbxproj additions, the three `Platform/` files, and the import fences.
 - [ ] **Step 4: Run the tests on iOS and confirm they pass**, using the same command.
 - [ ] **Step 5: Mutation check (CLAUDE.md).** In one batch: make macOS `cgImage` return nil, make `jpegData` return `Data()`, and make the iOS `Pasteboard.copy` write `string + "x"`. Run on iOS, and confirm the pasteboard test fails; the image tests exercise the macOS code, so re-run them after Task 6 on macOS with the same mutation batch. Revert, then run again and confirm green.
-- [ ] **Step 6: Verify the iOS build is green, and verify the macOS build now gets past dependency scanning.** Run the macOS build command: it should report per-file type errors only, with no `unable to resolve module dependency`. Save the error list to `/tmp/ReTiCaMsgr/mac-errors-baseline.txt` (with `-quiet`, xcodebuild output redirected through the Bash tool's output file is fine).
-- [ ] **Step 7: Commit** `feat(macos): multiplatform app target, Mac entitlements, platform helpers`. Then create the four sibling worktrees from this commit: `git worktree add -b feat/macos-<task> ../ReTiCaMsgr-macos-<task> feat/macos`, for task in `app`, `images`, `settings`, `chat`.
+- [ ] **Step 6: Verify the iOS build is green, and verify the macOS build now gets past dependency scanning.** Run the macOS build command: it should report per-file type errors only, with no `unable to resolve module dependency`. Save the error list to `/tmp/ReTiCAMsgr/mac-errors-baseline.txt` (with `-quiet`, xcodebuild output redirected through the Bash tool's output file is fine).
+- [ ] **Step 7: Commit** `feat(macos): multiplatform app target, Mac entitlements, platform helpers`. Then create the four sibling worktrees from this commit: `git worktree add -b feat/macos-<task> ../ReTiCAMsgr-macos-<task> feat/macos`, for task in `app`, `images`, `settings`, `chat`.
 
 ---
 
@@ -80,9 +80,9 @@ Tasks 2–5 run **in parallel**, one subagent per sibling worktree. Each touches
 
 ### Task 2: App lifecycle, push and background (worktree `-app`)
 
-**Files:** `ReTiCaMsgr/ReTiCaMsgrApp.swift`, `ReTiCaMsgr/AppDelegate.swift`, `ReTiCaMsgr/PushPlatform+UIKit.swift`, `ReTiCaMsgr/BackgroundTask+UIKit.swift`, `ReTiCaMsgr/AppRuntime.swift`; Create `ReTiCaMsgr/PushPlatform+AppKit.swift`.
+**Files:** `ReTiCAMsgr/ReTiCAMsgrApp.swift`, `ReTiCAMsgr/AppDelegate.swift`, `ReTiCAMsgr/PushPlatform+UIKit.swift`, `ReTiCAMsgr/BackgroundTask+UIKit.swift`, `ReTiCAMsgr/AppRuntime.swift`; Create `ReTiCAMsgr/PushPlatform+AppKit.swift`.
 
-- `ReTiCaMsgrApp`:
+- `ReTiCAMsgrApp`:
   - `@UIApplicationDelegateAdaptor` on iOS, `@NSApplicationDelegateAdaptor(AppDelegate.self)` on macOS.
   - In the `scenePhase` handler, `.background → backgrounded()` stays iOS-only. On macOS `.active → foregrounded()` still runs, which is harmless.
 - `AppDelegate`:
@@ -98,11 +98,11 @@ Tasks 2–5 run **in parallel**, one subagent per sibling worktree. Each touches
 - `PushPlatform+AppKit.swift` (`#if os(macOS)`): `static let appKit`, with the same `requestAuthorization` body and `NSApplication.shared.registerForRemoteNotifications()` / `unregisterForRemoteNotifications()`.
 - In `AppRuntime`, choose `.uiKit` / `.appKit` for `pushPlatform` with `#if`. `backgroundTask = .uiKit` becomes iOS-only; macOS leaves it at `BackgroundTaskClient.liveValue`, which must be set explicitly for the hosted-XCTest reason in the existing comment.
 
-No new tests. This is glue with no logic beyond what iOS already runs. `AppRuntimeTests`/`PushRuntimeTests` must stay green on iOS: run `-only-testing:ReTiCaMsgrTests/AppRuntimeTests -only-testing:ReTiCaMsgrTests/PushRuntimeTests`.
+No new tests. This is glue with no logic beyond what iOS already runs. `AppRuntimeTests`/`PushRuntimeTests` must stay green on iOS: run `-only-testing:ReTiCAMsgrTests/AppRuntimeTests -only-testing:ReTiCAMsgrTests/PushRuntimeTests`.
 
 ### Task 3: Images (worktree `-images`)
 
-**Files:** `ReTiCaMsgr/AttachmentViews.swift`, `ReTiCaMsgr/AvatarView.swift`, `ReTiCaMsgr/AvatarCropView.swift`, `ReTiCaMsgr/QRCodeImage.swift`, `ReTiCaMsgr/ReactionPaletteMenu.swift`, `ReTiCaMsgrTests/QRCodeImageTests.swift`; Test: `ReTiCaMsgrTests/AvatarCropRenderTests.swift`.
+**Files:** `ReTiCAMsgr/AttachmentViews.swift`, `ReTiCAMsgr/AvatarView.swift`, `ReTiCAMsgr/AvatarCropView.swift`, `ReTiCAMsgr/QRCodeImage.swift`, `ReTiCAMsgr/ReactionPaletteMenu.swift`, `ReTiCAMsgrTests/QRCodeImageTests.swift`; Test: `ReTiCAMsgrTests/AvatarCropRenderTests.swift`.
 
 - Replace `UIImage` with `PlatformImage` and `Image(uiImage:)` with `Image(platformImage:)` throughout. `NSCache<NSString, PlatformImage>` works on both.
 - `AvatarCropView.render(side:)`:
@@ -120,7 +120,7 @@ No new tests. This is glue with no logic beyond what iOS already runs. `AppRunti
 
 ### Task 4: Settings, contacts and forms (worktree `-settings`)
 
-**Files:** `ReTiCaMsgr/SettingsView.swift`, `ReTiCaMsgr/PeerInfoView.swift`, `ReTiCaMsgr/ContactPicker.swift`, `ReTiCaMsgr/NodeFormView.swift`, `ReTiCaMsgr/GroupViews.swift`, `ReTiCaMsgr/ConversationListView.swift`.
+**Files:** `ReTiCAMsgr/SettingsView.swift`, `ReTiCAMsgr/PeerInfoView.swift`, `ReTiCAMsgr/ContactPicker.swift`, `ReTiCAMsgr/NodeFormView.swift`, `ReTiCAMsgr/GroupViews.swift`, `ReTiCAMsgr/ConversationListView.swift`.
 
 - Replace the modifiers with the Task 1 helpers:
   - `.inlineNavigationTitle()`
@@ -140,7 +140,7 @@ No new tests. This is glue with no logic beyond what iOS already runs. `AppRunti
 
 ### Task 5: Chat and sheets (worktree `-chat`)
 
-**Files:** `ReTiCaMsgr/ChatView.swift`, `ReTiCaMsgr/MessageInfoSheet.swift`, `ReTiCaMsgr/DiagnosticsView.swift`, `ReTiCaMsgr/EmojiPickerSheet.swift`, `ReTiCaMsgr/AnnounceListView.swift`, `ReTiCaMsgr/RadioPickerView.swift`, `ReTiCaMsgr/AddressView.swift`, `ReTiCaMsgr/QRScannerView.swift`, `ReTiCaMsgr/BlockingViews.swift`, and whichever view presents `QRScannerView` (find with grep; it gets its entry point fenced).
+**Files:** `ReTiCAMsgr/ChatView.swift`, `ReTiCAMsgr/MessageInfoSheet.swift`, `ReTiCAMsgr/DiagnosticsView.swift`, `ReTiCAMsgr/EmojiPickerSheet.swift`, `ReTiCAMsgr/AnnounceListView.swift`, `ReTiCAMsgr/RadioPickerView.swift`, `ReTiCAMsgr/AddressView.swift`, `ReTiCAMsgr/QRScannerView.swift`, `ReTiCAMsgr/BlockingViews.swift`, and whichever view presents `QRScannerView` (find with grep; it gets its entry point fenced).
 
 - Modifier swaps as in Task 4:
   - `UIPasteboard.general.string = x` becomes `Pasteboard.copy(x)`
@@ -159,7 +159,7 @@ No new tests. This is glue with no logic beyond what iOS already runs. `AppRunti
 - [ ] **Step 1:** Merge `feat/macos-app`, `-images`, `-settings` and `-chat` into `feat/macos` with `git merge --no-ff`, one at a time. The file sets are disjoint, so there should be no conflicts; if one appears, stop and diagnose.
 - [ ] **Step 2:** Run the macOS build command and fix every remaining error. Expect stragglers in files no task owned (grep found none, but the compiler is authoritative). Then run the iOS build and make it green.
 - [ ] **Step 3:** Run the full app test suite on the iOS simulator; all tests must pass. Then run it on macOS: `xcodebuild test ... -destination platform=macOS`. Tests that need iOS-only state (UIKit pasteboard, the shared keychain entitlement on the hosted test bundle) get `#if os(iOS)` fences, with a comment saying why. Re-run the Task 1 mutation batch on macOS to prove `PlatformImageTests` exercises the NSImage code, then revert and confirm green.
-- [ ] **Step 4:** Run `swift test --package-path ReTiCaMsgrCore` (macOS). It must be as green as on main; the known baseline flakes are in memory.
+- [ ] **Step 4:** Run `swift test --package-path ReTiCAMsgrCore` (macOS). It must be as green as on main; the known baseline flakes are in memory.
 - [ ] **Step 5:** Run a signed launch: build with automatic signing (`-allowProvisioningUpdates`), launch the `.app`, and confirm that:
   - the identity is created or loaded, with no keychain error in the log;
   - the database and push storage open (app group);

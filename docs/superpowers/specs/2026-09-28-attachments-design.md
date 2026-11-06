@@ -1,6 +1,6 @@
 # Attachments (images and files) — design
 
-**Date:** 2026-09-28. **Scope:** ReTiCaMsgr app only (the ReTiCA prerequisite, transfer-aware
+**Date:** 2026-09-28. **Scope:** ReTiCAMsgr app only (the ReTiCA prerequisite, transfer-aware
 delivery, merged 2026-09-28 at ReTiCA main b6a53bf). **Depends on:** ReTiCA delegates
 `deliveryProgress`, `propagationProgress`, `inboundTransferProgress`, `propagationRefused`,
 `deliveryRejected`, `deliveryCancelled` and the action `cancelOutbound`.
@@ -8,7 +8,7 @@ delivery, merged 2026-09-28 at ReTiCA main b6a53bf). **Depends on:** ReTiCA dele
 ## Goal
 
 Send one photo (from the photo library) or one file (from Files) per message, receive both from
-ReTiCaMsgr and Sideband peers, show images inline and files as an openable/shareable row, and show
+ReTiCAMsgr and Sideband peers, show images inline and files as an openable/shareable row, and show
 transfer progress with a cancel, using LXMF's standard attachment fields so other clients
 interoperate.
 
@@ -25,7 +25,7 @@ interoperate.
   `delivery_limit` (default 1 000 KB, LXMRouter.py:1979, not announced) and propagation nodes
   accept ≤ `PROPAGATION_LIMIT` 256 KB by default (announced, and ReTiCA now refuses an oversize
   propagated copy up front). ReTiCA's own receiver accepts any size (LinkSession.swift:639-658),
-  so ReTiCaMsgr↔ReTiCaMsgr has no ceiling beyond transfer time and memory.
+  so ReTiCAMsgr↔ReTiCAMsgr has no ceiling beyond transfer time and memory.
 - **Storage model B:** a normalised `attachments` table plus bytes on disk (chosen over columns on
   `messages` and over SQLite blobs).
 
@@ -49,7 +49,7 @@ interoperate.
 The same migration adds two nullable columns to `messages`: `failureReason` (`"rejected"` /
 `"cancelled"` / NULL) and `propagationRefused` (`"too large for node"` / NULL).
 
-### Bytes on disk — `AttachmentStore` (in `ReTiCaMsgrCore`)
+### Bytes on disk — `AttachmentStore` (in `ReTiCAMsgrCore`)
 
 - Directory: `<Application Support>/Attachments/`, created lazily, excluded from iCloud backup,
   `.completeFileProtection`.
@@ -252,9 +252,9 @@ override the text above where they conflict.
 9. **`AttachmentStore`'s API** is `store(_:messageHash:outgoing:ext:) -> String`,
    `url(forRelativePath:)`, `url(for:) -> URL?`, `exists(_:)`, `delete(_:)`, `exportURL(for:)`.
 10. **Test files disambiguate the model with a scoped import:** Swift Testing exports its own
-    generic `Attachment<AttachableValue>`, and a `typealias Attachment = ReTiCaMsgrCore.Attachment`
-    does not compile (the module also exposes `public enum ReTiCaMsgrCore`), so a test file that
-    names the type adds `import struct ReTiCaMsgrCore.Attachment`. The model keeps its name.
+    generic `Attachment<AttachableValue>`, and a `typealias Attachment = ReTiCAMsgrCore.Attachment`
+    does not compile (the module also exposes `public enum ReTiCAMsgrCore`), so a test file that
+    names the type adds `import struct ReTiCAMsgrCore.Attachment`. The model keeps its name.
 
 ## Out of scope
 

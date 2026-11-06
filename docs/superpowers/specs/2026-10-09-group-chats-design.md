@@ -1,6 +1,6 @@
 # Group chats — design
 
-**Date:** 2026-10-09. **Scope:** ReTiCaMsgr app only (Core package plus app UI); no ReTiCA
+**Date:** 2026-10-09. **Scope:** ReTiCAMsgr app only (Core package plus app UI); no ReTiCA
 changes. **Follows:** the decision record `docs/superpowers/2026-10-02-groups-vs-disappearing-messages.md`
 and the two research reports under `reports/` ("Reticulum group chat and channel designs",
 2026-10-02, and "Reticulum group chat cross client support", 2026-10-07).
@@ -61,7 +61,7 @@ Four message kinds:
   "m": [member bin16, …], "r": revision uint }`, always the full roster including the creator, at
   most 12 entries. The same message is the invite: a recipient with no record of the group treats
   it as one. `title` is the group name and `content` a readable sentence for other clients, e.g.
-  `Alice invited you to the group Mutual Aid in ReTiCaMsgr`. This app ignores the body and renders
+  `Alice invited you to the group Mutual Aid in ReTiCAMsgr`. This app ignores the body and renders
   its own line from the diff against the stored roster (as timer-change lines do, amendment A13 of
   the disappearing-messages spec).
 - **Leave.** Any member, to every member; a declined invite is a leave sent to the creator only.
@@ -292,7 +292,7 @@ while turning §1–§5 into code. Where they differ from the text above, these 
   row and the group's current state. A rebuilt copy uses the dispatch time as its LXMF timestamp,
   so every attempt has a fresh hash.
 - **A4. Wire bodies.** Every roster message carries `<inviter> invited you to the group <name> in
-  ReTiCaMsgr`; a delete carries `<who> deleted the group <name>`; a leave `<who> left the group
+  ReTiCAMsgr`; a delete carries `<who> deleted the group <name>`; a leave `<who> left the group
   <name>`.
 - **A5. Stale rosters.** A roster from the stored creator whose revision is not higher is dropped
   silently (seen hash only). A roster for a known group from anyone else, a roster that does not

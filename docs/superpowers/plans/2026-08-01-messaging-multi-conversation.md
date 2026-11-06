@@ -1,25 +1,25 @@
-# ReTiCaMsgr Slice 2 — Multiple Conversations Implementation Plan
+# ReTiCAMsgr Slice 2 — Multiple Conversations Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn the one-conversation MVP into a multi-conversation messenger — a conversation list, per-peer threads, and a compose entry point to start a conversation by peer address — keeping delivery opportunistic.
 
-**Architecture:** All logic stays in the single `AppFeature` reducer (in local SPM package `ReTiCaMsgrCore`) scoping `LXMFNode`. Conversations are *derived* from the distinct `peerHex` values in the existing `messages` table (no `Contact` table, no DB migration). Reachability is session-only in-memory state. Three SwiftUI screens in a TabView, with the Chat tab now a `NavigationStack` (list → thread).
+**Architecture:** All logic stays in the single `AppFeature` reducer (in local SPM package `ReTiCAMsgrCore`) scoping `LXMFNode`. Conversations are *derived* from the distinct `peerHex` values in the existing `messages` table (no `Contact` table, no DB migration). Reachability is session-only in-memory state. Three SwiftUI screens in a TabView, with the Chat tab now a `NavigationStack` (list → thread).
 
 **Tech Stack:** Swift 6, TCA (ComposableArchitecture), SQLiteData (`@Table`/StructuredQueries) + GRDB, ReTiCANode/ReTiCA (LXMF), SwiftUI.
 
 ## Global Constraints
 
-- **Code repo = `/Users/ell/development/ios/apps/ReTiCaMsgr`** (the app repo, NOT the ReTiCA pods repo). Commit via `git -C /Users/ell/development/ios/apps/ReTiCaMsgr`.
+- **Code repo = `/Users/ell/development/ios/apps/ReTiCAMsgr`** (the app repo, NOT the ReTiCA pods repo). Commit via `git -C /Users/ell/development/ios/apps/ReTiCAMsgr`.
 - **Commit directly to `main`.**
 - **Commit message trailers, verbatim, at COLUMN 0 (no leading whitespace):**
   ```
   Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_01AtkFmSeVgRBk3zwfDCqUwy
   ```
-  Commit with `git commit -F <file>` (NEVER `-m` — the trailers contain `;`). After each commit verify the trailer parses: `git -C /Users/ell/development/ios/apps/ReTiCaMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'` must print the URL. Indented trailers are silently unparsed — if it prints empty, `git commit --amend -F <file>` to fix.
+  Commit with `git commit -F <file>` (NEVER `-m` — the trailers contain `;`). After each commit verify the trailer parses: `git -C /Users/ell/development/ios/apps/ReTiCAMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'` must print the URL. Indented trailers are silently unparsed — if it prints empty, `git commit --amend -F <file>` to fix.
 - **No compound shell commands:** one command per invocation; no `&&`/`||`/`;`/pipes/`xargs`/inline interpreter scripts. A single `>` redirect of a real command's output IS allowed. Write files with editor tools, never `echo`/heredoc.
-- **Temp files** under `/tmp/ReTiCaMsgr/` (create if missing).
+- **Temp files** under `/tmp/ReTiCAMsgr/` (create if missing).
 - **Three-step mutation verification for every new/changed test** (per the user's global instruction): (a) run the changed tests, confirm all pass; (b) in one batch, mutate the production code each test exercises so it *should* fail (invert a return, drop a guard, wrong constant — not a syntax break), run once, confirm each fails; (c) revert all mutations, run again, confirm all pass. Only then commit.
 - **SQLiteData API gotchas (verified in slice 1):** StructuredQueries `==` is `@unavailable` → use `.eq()` in predicates. `UUID(0)` is not re-exported → use `UUID(uuidString:)!` for deterministic ids in tests. `@FetchAll` captures `\.defaultDatabase` at struct-init before TestStore's `withDependencies` → do NOT use it in TCA state; use plain arrays reloaded via a `.run` `database.read` effect. GRDB reads/writes are `try await database.read/write { ... }`. Query forms: `Message.insert { row }.execute($0)`, `Message.where { $0.col.eq(x) }.order(by: \.timestamp).fetchAll($0)`, `Message.where { … }.update { $0.status = MessageStatus.failed }.execute($0)`.
 - **Test target already depends on** `ReTiCAInterfaces` (for `TCPConnection`) and `ReTiCATransport`. `InterfaceID("tcp")` has no default init. Standard test dependency block (copy verbatim into each new test):
@@ -35,20 +35,20 @@
   )
   ```
 - **Verified delegate/action signatures** (from ReTiCANode): `LXMFNode.Action.send(destinationHash: Data, title: Data, content: Data, method: LXMFRouter.DeliveryMethod)`; `.node(.delegate(.messageReceived(message: LXMessage, signatureValidated: Bool)))`; `.node(.delegate(.deliveryFailed(messageHash: Data)))`; `.node(.endpoint(.delegate(.pathLearned(destinationHash: Data, hops: UInt8))))`; `.node(.endpoint(.transport(.interfaceConnected(InterfaceID))))` / `.interfaceDisconnected(InterfaceID)`; `.node(.endpoint(.connect))` / `.disconnect`; `.node(.registerDelivery)`.
-- **Test/build commands:** package tests — `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore` (run ONE test with `--filter <name>`). App build (Task 3 only) — `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'generic/platform=iOS Simulator' build`.
+- **Test/build commands:** package tests — `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore` (run ONE test with `--filter <name>`). App build (Task 3 only) — `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'generic/platform=iOS Simulator' build`.
 - **`Message.sourceHash` note:** `LXMessage.sourceHash` is the sender's **lxmf.delivery** hash, so an incoming message's `m.sourceHash.hexString` matches the `peerHex` used when sending to that peer — conversations group correctly.
 
 ---
 
 ## File Structure
 
-- **Create** `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift` — derived `Conversation` struct + `Conversation.list(from:)` latest-per-peer helper.
-- **Modify** `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` — state, actions, wiring.
-- **Rewrite** `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` — 1 conversation-helper test + 8 reducer tests.
-- **Create** `ReTiCaMsgr/ConversationListView.swift` — list + compose sheet.
-- **Modify** `ReTiCaMsgr/ChatView.swift` — render `threadMessages`, per-peer Send gate.
-- **Modify** `ReTiCaMsgr/SettingsView.swift` — remove the peer-address section.
-- **Modify** `ReTiCaMsgr/ContentView.swift` (`RootView`) — Chat tab hosts `ConversationListView`.
+- **Create** `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Conversation.swift` — derived `Conversation` struct + `Conversation.list(from:)` latest-per-peer helper.
+- **Modify** `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` — state, actions, wiring.
+- **Rewrite** `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` — 1 conversation-helper test + 8 reducer tests.
+- **Create** `ReTiCAMsgr/ConversationListView.swift` — list + compose sheet.
+- **Modify** `ReTiCAMsgr/ChatView.swift` — render `threadMessages`, per-peer Send gate.
+- **Modify** `ReTiCAMsgr/SettingsView.swift` — remove the peer-address section.
+- **Modify** `ReTiCAMsgr/ContentView.swift` (`RootView`) — Chat tab hosts `ConversationListView`.
 - **No change** to `Message.swift`, `Database.swift`, `IdentityStore.swift`, `Data+Hex.swift`, `Package.swift`, the DB migration.
 
 ---
@@ -56,8 +56,8 @@
 ## Task 1: `Conversation` derived type + latest-per-peer helper
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift`
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ConversationTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Conversation.swift`
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ConversationTests.swift`
 
 **Interfaces:**
 - Consumes: `Message` (existing `@Table`: `id, peerHex, isOutgoing, body, timestamp, status, validated, messageHash`).
@@ -67,12 +67,12 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Create `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ConversationTests.swift`:
+Create `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ConversationTests.swift`:
 
 ```swift
 import Testing
 import Foundation
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 @Test func conversationListKeepsNewestPerPeerMostRecentFirst() {
     let t0 = Date(timeIntervalSince1970: 1000)
@@ -98,12 +98,12 @@ import Foundation
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter conversationListKeepsNewestPerPeerMostRecentFirst`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter conversationListKeepsNewestPerPeerMostRecentFirst`
 Expected: FAIL to build — `Conversation` is undefined.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift`:
+Create `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Conversation.swift`:
 
 ```swift
 import Foundation
@@ -144,18 +144,18 @@ public extension Conversation {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter conversationListKeepsNewestPerPeerMostRecentFirst`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter conversationListKeepsNewestPerPeerMostRecentFirst`
 Expected: PASS.
 
 - [ ] **Step 5: Mutation-verify** (per Global Constraints). Batch-mutate `Conversation.list(from:)`: change the sort comparator `>` to `<`. Run the test → it must FAIL (order flips: `bb` would sort before `aa`… actually assert the specific failure). Also try replacing the newest-row guard `if m.timestamp > existing.timestamp` with `if false` → `lastBody` would be `a-old` → FAIL. Revert both, rerun → PASS.
 
 - [ ] **Step 6: Commit**
 
-Write the message to `/tmp/ReTiCaMsgr/t1.txt` (editor tool), then:
+Write the message to `/tmp/ReTiCAMsgr/t1.txt` (editor tool), then:
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ConversationTests.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -F /tmp/ReTiCaMsgr/t1.txt
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Conversation.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ConversationTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -F /tmp/ReTiCAMsgr/t1.txt
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
 ```
 Message body (trailers at column 0):
 ```
@@ -173,8 +173,8 @@ Claude-Session: https://claude.ai/code/session_01AtkFmSeVgRBk3zwfDCqUwy
 ## Task 2: `AppFeature` multi-conversation refactor + reducer tests
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` (full rewrite of state/actions/body)
-- Rewrite: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` (full rewrite of state/actions/body)
+- Rewrite: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
 
 **Interfaces:**
 - Consumes: `Conversation.list(from:)` (Task 1); `Message`; `LXMFNode` action signatures (Global Constraints); `lxmfAddressHex(_:)`, `Data(hexString:)`, `Data.hexString` (existing).
@@ -184,7 +184,7 @@ Claude-Session: https://claude.ai/code/session_01AtkFmSeVgRBk3zwfDCqUwy
 
 - [ ] **Step 1: Rewrite the production reducer**
 
-Replace the entire contents of `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` with:
+Replace the entire contents of `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` with:
 
 ```swift
 import Foundation
@@ -398,12 +398,12 @@ private func reloadThread(_ database: any DatabaseWriter, _ peerHex: String, _ s
 
 - [ ] **Step 2: Confirm it compiles**
 
-Run: `swift build --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`
+Run: `swift build --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`
 Expected: builds. (Tests still reference removed API and will fail to build until Step 3 — that's next.)
 
 - [ ] **Step 3: Rewrite the reducer tests**
 
-Replace the entire contents of `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` with:
+Replace the entire contents of `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` with:
 
 ```swift
 import Testing
@@ -415,7 +415,7 @@ import ReTiCA
 import ReTiCAInterfaces
 import ReTiCANode
 import ReTiCATransport
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 // MARK: - Helpers
 
@@ -597,10 +597,10 @@ private let peerB = String(repeating: "b", count: 32)
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`
 Expected: all pass (this task's 8 + Task 1's + any older still-valid tests).
 
-Note on `Data.hexString`: it is `internal` to ReTiCaMsgrCore (defined in `Data+Hex.swift`), and the tests `@testable import ReTiCaMsgrCore`, so `h.hexString` / `Data(hexString:)` are in scope. If a test-only helper needs it and it is not visible, that is a signal something changed — do not re-add a private copy; use the existing internal one.
+Note on `Data.hexString`: it is `internal` to ReTiCAMsgrCore (defined in `Data+Hex.swift`), and the tests `@testable import ReTiCAMsgrCore`, so `h.hexString` / `Data(hexString:)` are in scope. If a test-only helper needs it and it is not visible, that is a signal something changed — do not re-add a private copy; use the existing internal one.
 
 - [ ] **Step 5: Mutation-verify** (per Global Constraints). Batch mutations, each targeting a distinct test, then run the whole suite once:
   - `openConversation`: comment out `state.openPeerHex = peerHex` → `openConversationLoadsThatPeersThread` and `startConversationRejectsInvalidHex` fail.
@@ -614,11 +614,11 @@ Note on `Data.hexString`: it is `internal` to ReTiCaMsgrCore (defined in `Data+H
 
 - [ ] **Step 6: Commit**
 
-Write the message to `/tmp/ReTiCaMsgr/t2.txt`, then:
+Write the message to `/tmp/ReTiCAMsgr/t2.txt`, then:
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -F /tmp/ReTiCaMsgr/t2.txt
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -F /tmp/ReTiCAMsgr/t2.txt
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
 ```
 Message body (trailers at column 0):
 ```
@@ -640,10 +640,10 @@ Claude-Session: https://claude.ai/code/session_01AtkFmSeVgRBk3zwfDCqUwy
 ## Task 3: SwiftUI views — conversation list, compose, per-peer thread
 
 **Files:**
-- Create: `ReTiCaMsgr/ConversationListView.swift`
-- Modify: `ReTiCaMsgr/ChatView.swift`
-- Modify: `ReTiCaMsgr/SettingsView.swift`
-- Modify: `ReTiCaMsgr/ContentView.swift`
+- Create: `ReTiCAMsgr/ConversationListView.swift`
+- Modify: `ReTiCAMsgr/ChatView.swift`
+- Modify: `ReTiCAMsgr/SettingsView.swift`
+- Modify: `ReTiCAMsgr/ContentView.swift`
 
 **Interfaces:**
 - Consumes: `AppFeature` state/actions from Task 2 (`conversations`, `openPeerHex`, `threadMessages`, `reachablePeers`, `draft`, `connection`, actions `openConversation`, `closeConversation`, `startConversation`, `sendTapped`). `Conversation` (Task 1). `Message`, `MessageStatus` (existing).
@@ -651,12 +651,12 @@ Claude-Session: https://claude.ai/code/session_01AtkFmSeVgRBk3zwfDCqUwy
 
 - [ ] **Step 1: Add a short-hex helper + `ConversationListView`**
 
-Create `ReTiCaMsgr/ConversationListView.swift`:
+Create `ReTiCAMsgr/ConversationListView.swift`:
 
 ```swift
 import SwiftUI
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// Truncate a hex address for display: first 4 + … + last 2.
 func shortHex(_ hex: String) -> String {
@@ -758,7 +758,7 @@ Note: `ConversationListView.swift` above references `isValidPeerAddress` — a p
 
 - [ ] **Step 2: Expose a public hex-validation helper from the core package**
 
-The app target cannot see `Data(hexString:)` (internal). Add a small public validator to `ReTiCaMsgrCore` so both the reducer guard and the compose sheet share one definition. In `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Conversation.swift` (or a new `HexAddress.swift`), append:
+The app target cannot see `Data(hexString:)` (internal). Add a small public validator to `ReTiCAMsgrCore` so both the reducer guard and the compose sheet share one definition. In `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Conversation.swift` (or a new `HexAddress.swift`), append:
 
 ```swift
 /// True iff `hex` decodes to a 16-byte lxmf.delivery hash.
@@ -771,12 +771,12 @@ public func isValidPeerAddress(_ hex: String) -> Bool {
 
 - [ ] **Step 3: Re-parameterize `ChatView` for the open thread**
 
-Replace the entire contents of `ReTiCaMsgr/ChatView.swift` with:
+Replace the entire contents of `ReTiCAMsgr/ChatView.swift` with:
 
 ```swift
 import SwiftUI
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 struct ChatView: View {
     @Bindable var store: StoreOf<AppFeature>
@@ -838,12 +838,12 @@ struct MessageBubble: View {
 
 - [ ] **Step 4: Remove the peer section from `SettingsView`**
 
-Edit `ReTiCaMsgr/SettingsView.swift`: delete the `@State private var peerInput` line and the entire `Section("Peer Address") { … }` block. Keep the `Section("Node Connection")` block and the `.navigationTitle("Settings")`. Result:
+Edit `ReTiCAMsgr/SettingsView.swift`: delete the `@State private var peerInput` line and the entire `Section("Peer Address") { … }` block. Keep the `Section("Node Connection")` block and the `.navigationTitle("Settings")`. Result:
 
 ```swift
 import SwiftUI
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 struct SettingsView: View {
     @Bindable var store: StoreOf<AppFeature>
@@ -874,12 +874,12 @@ struct SettingsView: View {
 
 - [ ] **Step 5: Point the Chat tab at `ConversationListView`**
 
-Edit `ReTiCaMsgr/ContentView.swift`: replace the `ChatView(store: store)` tab child with `ConversationListView(store: store)`. Result:
+Edit `ReTiCAMsgr/ContentView.swift`: replace the `ChatView(store: store)` tab child with `ConversationListView(store: store)`. Result:
 
 ```swift
 import SwiftUI
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 struct RootView: View {
     let store: StoreOf<AppFeature>
@@ -899,21 +899,21 @@ struct RootView: View {
 
 - [ ] **Step 6: Build the app**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'generic/platform=iOS Simulator' build`
-Expected: `BUILD SUCCEEDED`. (New file `ConversationListView.swift` must be added to the `ReTiCaMsgr` target. The project uses the file-system-synchronized group under `ReTiCaMsgr/`, so a new `.swift` file there is picked up automatically; if the build reports the type missing, add the file reference to the `ReTiCaMsgr` target in `project.pbxproj` alongside the sibling views.)
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'generic/platform=iOS Simulator' build`
+Expected: `BUILD SUCCEEDED`. (New file `ConversationListView.swift` must be added to the `ReTiCAMsgr` target. The project uses the file-system-synchronized group under `ReTiCAMsgr/`, so a new `.swift` file there is picked up automatically; if the build reports the type missing, add the file reference to the `ReTiCAMsgr` target in `project.pbxproj` alongside the sibling views.)
 
 - [ ] **Step 7: Run the package tests once more**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`
 Expected: all pass (the public `isValidPeerAddress` addition and view changes must not have broken the reducer/tests).
 
 - [ ] **Step 8: Commit**
 
-Write the message to `/tmp/ReTiCaMsgr/t3.txt`, then:
+Write the message to `/tmp/ReTiCAMsgr/t3.txt`, then:
 ```
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgr/ ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -F /tmp/ReTiCaMsgr/t3.txt
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgr/ ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -F /tmp/ReTiCAMsgr/t3.txt
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr log -1 --format='%(trailers:key=Claude-Session,valueonly=true)'
 ```
 Message body (trailers at column 0):
 ```

@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A read-only "Diagnostics" screen in ReTiCaMsgr Settings that answers "which layer is broken?" at a glance, and can export its state as shareable text.
+**Goal:** A read-only "Diagnostics" screen in ReTiCAMsgr Settings that answers "which layer is broken?" at a glance, and can export its state as shareable text.
 
-**Architecture:** A pure `DiagnosticsSnapshot` value type in `ReTiCaMsgrCore`, built by `init(from: AppFeature.State, at: Date)`, holding six `Layer`s each with a `Health` and rows. A dumb `DiagnosticsView` in the app target renders it and re-renders live via ordinary TCA observation. One accessor is added to ReTiCA's `TransportEndpoint.State`.
+**Architecture:** A pure `DiagnosticsSnapshot` value type in `ReTiCAMsgrCore`, built by `init(from: AppFeature.State, at: Date)`, holding six `Layer`s each with a `Health` and rows. A dumb `DiagnosticsView` in the app target renders it and re-renders live via ordinary TCA observation. One accessor is added to ReTiCA's `TransportEndpoint.State`.
 
-**Tech Stack:** Swift 6, SwiftUI, The Composable Architecture, Swift Testing (`@Test` / `#expect`), two repos — the ReTiCA library at `/Users/ell/development/ios/pods/ReTiCA` and the app at `/Users/ell/development/ios/apps/ReTiCaMsgr`.
+**Tech Stack:** Swift 6, SwiftUI, The Composable Architecture, Swift Testing (`@Test` / `#expect`), two repos — the ReTiCA library at `/Users/ell/development/ios/pods/ReTiCA` and the app at `/Users/ell/development/ios/apps/ReTiCAMsgr`.
 
 **Spec:** `docs/superpowers/specs/2026-08-21-diagnostics-page-design.md` (in the app repo). Read it before starting.
 
@@ -19,7 +19,7 @@
   Claude-Session: https://claude.ai/code/session_01119muaq7gzADhfuNznkZEd
   ```
   Verify with `git log -1 --format='%(trailers:key=Claude-Session)'` — empty output means it did not parse.
-- **Baselines that must not regress:** ReTiCA `swift test --no-parallel` = **1001 tests, 1 known issue** (`holdArmsDeferredReleaseTimerNotImmediateFireDuringFlood`, pre-existing). App core `swift test --package-path ReTiCaMsgrCore --no-parallel` = **46 tests**.
+- **Baselines that must not regress:** ReTiCA `swift test --no-parallel` = **1001 tests, 1 known issue** (`holdArmsDeferredReleaseTimerNotImmediateFireDuringFlood`, pre-existing). App core `swift test --package-path ReTiCAMsgrCore --no-parallel` = **46 tests**.
 - **Mutation-verify every test you write**, per the project's standard process: (a) run, confirm pass; (b) break the production code in a batch so the new tests should fail, run once, confirm they all fail; (c) revert, confirm green. If a test still passes under mutation, it is not testing what you think.
 - **No secrets in the snapshot.** `LinkSession.State` carries `sessionKey: Data` and `ephemeral: Identity`. Build every layer from a hand-written list of fields. Never `Mirror`, never a generic dump.
 - **Cite symbols, not line numbers**, in comments and commit messages. Line citations in these repos have drifted repeatedly.
@@ -31,10 +31,10 @@
 |---|---|---|
 | `Sources/ReTiCANode/TransportEndpoint.swift` | ReTiCA | Add an `interfaces` accessor beside the existing `learned` / `links` / `registrations` |
 | `Tests/ReTiCANodeTests/TransportEndpointTests.swift` | ReTiCA | Pin the new accessor for both transports |
-| `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/DiagnosticsSnapshot.swift` | app | The whole pure type: `Health`, `Row`, `Layer`, the six builders, and `text` |
-| `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DiagnosticsSnapshotTests.swift` | app | Health rules, cross-checks, export, and the no-secrets test |
-| `ReTiCaMsgr/DiagnosticsView.swift` | app | Rendering only — no logic |
-| `ReTiCaMsgr/SettingsView.swift` | app | One `NavigationLink` in a new final Section |
+| `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/DiagnosticsSnapshot.swift` | app | The whole pure type: `Health`, `Row`, `Layer`, the six builders, and `text` |
+| `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DiagnosticsSnapshotTests.swift` | app | Health rules, cross-checks, export, and the no-secrets test |
+| `ReTiCAMsgr/DiagnosticsView.swift` | app | Rendering only — no logic |
+| `ReTiCAMsgr/SettingsView.swift` | app | One `NavigationLink` in a new final Section |
 
 `DiagnosticsSnapshot.swift` grows across Tasks 2–5. That is deliberate: the layers share the `Layer`/`Row`/`Health` vocabulary and the same input, so splitting them across files would scatter one cohesive responsibility. It should land around 300 lines; if it passes ~450, split the layer builders into `DiagnosticsSnapshot+Layers.swift` and say so in the commit.
 
@@ -163,11 +163,11 @@ Then commit. The body should say that `interfaces` completes the unified surface
 
 ### Task 2: `DiagnosticsSnapshot` skeleton + Socket and Identity layers
 
-**Repo:** app (`/Users/ell/development/ios/apps/ReTiCaMsgr`)
+**Repo:** app (`/Users/ell/development/ios/apps/ReTiCAMsgr`)
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/DiagnosticsSnapshot.swift`
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DiagnosticsSnapshotTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/DiagnosticsSnapshot.swift`
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DiagnosticsSnapshotTests.swift`
 
 **Interfaces:**
 - Consumes: `TransportEndpoint.State.interfaces` (Task 1).
@@ -186,11 +186,11 @@ Then commit. The body should say that `interfaces` completes the unified surface
 | delivery destination | `.node.client.deliveryDestinationHash` |
 | router | `.node.client.router` |
 
-`TCPClientInterface.State.status` is `.disconnected`/`.connecting`/`.online`. `InterfaceProfile` is a struct with `.name`. `InterfaceID` has `.rawValue`. `Data.hexString` exists and is accessible inside `ReTiCaMsgrCore`.
+`TCPClientInterface.State.status` is `.disconnected`/`.connecting`/`.online`. `InterfaceProfile` is a struct with `.name`. `InterfaceID` has `.rawValue`. `Data.hexString` exists and is accessible inside `ReTiCAMsgrCore`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DiagnosticsSnapshotTests.swift`:
+Create `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DiagnosticsSnapshotTests.swift`:
 
 ```swift
 import Testing
@@ -200,7 +200,7 @@ import ReTiCA
 import ReTiCAInterfaces
 import ReTiCANode
 import ReTiCATransport
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 // MARK: - Fixtures
 
@@ -297,13 +297,13 @@ private func layer(_ snapshot: DiagnosticsSnapshot, _ title: String) -> Diagnost
 - [ ] **Step 2: Run the tests and verify they fail**
 
 ```bash
-swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --no-parallel --filter DiagnosticsSnapshot
+swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --no-parallel --filter DiagnosticsSnapshot
 ```
 Expected: compile error — `cannot find 'DiagnosticsSnapshot' in scope`.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/DiagnosticsSnapshot.swift`:
+Create `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/DiagnosticsSnapshot.swift`:
 
 ```swift
 import Foundation
@@ -446,7 +446,7 @@ If `AppFeature.Connection` or `deliveryDestinationHash` is not settable/visible 
 - [ ] **Step 4: Run the tests and verify they pass**
 
 ```bash
-swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --no-parallel --filter DiagnosticsSnapshot
+swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --no-parallel --filter DiagnosticsSnapshot
 ```
 Expected: 6 tests PASS.
 
@@ -462,12 +462,12 @@ Then revert all three and re-run: 6 PASS. If any test survived its mutation, fix
 - [ ] **Step 6: Run the full app-core suite and commit**
 
 ```bash
-swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --no-parallel
+swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --no-parallel
 ```
 Expected: **52 tests** (46 + 6), no failures.
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/DiagnosticsSnapshot.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DiagnosticsSnapshotTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/DiagnosticsSnapshot.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DiagnosticsSnapshotTests.swift
 ```
 
 Commit. Explain in the body why the socket rules are ORDERED, and that app-connection and interface-status are separate rows because they disagreed throughout the stale-callback reconnect bug. Trailers at column 0.
@@ -479,8 +479,8 @@ Commit. Explain in the body why the socket rules are ORDERED, and that app-conne
 **Repo:** app
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/DiagnosticsSnapshot.swift` (add two builders; append both to the `layers` array in `init`)
-- Modify: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DiagnosticsSnapshotTests.swift` (append)
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/DiagnosticsSnapshot.swift` (add two builders; append both to the `layers` array in `init`)
+- Modify: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DiagnosticsSnapshotTests.swift` (append)
 
 **Interfaces:**
 - Consumes: `Layer`, `Row`, `Health`, the fixtures from Task 2.
@@ -563,7 +563,7 @@ private let peerHash = Data(repeating: 0xBB, count: 16)
 - [ ] **Step 2: Run and verify they fail**
 
 ```bash
-swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --no-parallel --filter DiagnosticsSnapshot
+swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --no-parallel --filter DiagnosticsSnapshot
 ```
 Expected: the four new tests fail — `fatalError("no layer titled Paths")`.
 
@@ -669,8 +669,8 @@ Expected: **56 tests**. Stage the same two files as Task 2 and commit. The body 
 **Repo:** app
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/DiagnosticsSnapshot.swift`
-- Modify: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DiagnosticsSnapshotTests.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/DiagnosticsSnapshot.swift`
+- Modify: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DiagnosticsSnapshotTests.swift`
 
 **Interfaces:**
 - Consumes: everything from Tasks 2–3.
@@ -879,8 +879,8 @@ Expected: **61 tests**. Stage the same two files and commit.
 **Repo:** app
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/DiagnosticsSnapshot.swift`
-- Modify: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DiagnosticsSnapshotTests.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/DiagnosticsSnapshot.swift`
+- Modify: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DiagnosticsSnapshotTests.swift`
 
 **Interfaces:**
 - Consumes: `layers`, `generatedAt`.
@@ -900,7 +900,7 @@ Append:
     withTCP(&state) { $0.interface.status = .connecting }
     let text = DiagnosticsSnapshot(from: state, at: fixedDate).text
 
-    #expect(text.contains("ReTiCaMsgr diagnostics"))
+    #expect(text.contains("ReTiCAMsgr diagnostics"))
     #expect(text.contains("2023-11-14"))              // fixedDate in ISO 8601
     #expect(text.contains("SOCKET  [problem]"))
     #expect(text.contains("app reports connected, interface reports connecting"))
@@ -978,7 +978,7 @@ extension DiagnosticsSnapshot {
     /// truncates for legibility, but a pasted dump gets correlated against rnsd logs and the
     /// other end's client, so it needs the whole hash.
     public var text: String {
-        var out = "ReTiCaMsgr diagnostics — \(Self.timestamp.string(from: generatedAt))\n"
+        var out = "ReTiCAMsgr diagnostics — \(Self.timestamp.string(from: generatedAt))\n"
         for layer in layers {
             let marker: String
             switch layer.health {
@@ -1029,14 +1029,14 @@ Expected: **64 tests**. Stage and commit; the body should record that the secret
 **Repo:** app
 
 **Files:**
-- Create: `ReTiCaMsgr/DiagnosticsView.swift`
-- Modify: `ReTiCaMsgr/SettingsView.swift` (add a final Section inside the existing `Form`, after "Propagation Node")
+- Create: `ReTiCAMsgr/DiagnosticsView.swift`
+- Modify: `ReTiCAMsgr/SettingsView.swift` (add a final Section inside the existing `Form`, after "Propagation Node")
 
 **Interfaces:**
 - Consumes: `DiagnosticsSnapshot(from:at:)`, `.layers`, `.text`, `Layer.title/health/reason/rows`, `Row.label/value`.
 - Produces: nothing consumed elsewhere.
 
-**Context:** `SettingsView` is `struct SettingsView: View` with `@Bindable var store: StoreOf<AppFeature>` and a `NavigationStack { Form { ... } }`. Add the new Section as the last child of that `Form`. The new file must be added to the Xcode project target — if `xcodebuild` reports it missing, add it to `ReTiCaMsgr.xcodeproj` in the `ReTiCaMsgr` target's Sources build phase.
+**Context:** `SettingsView` is `struct SettingsView: View` with `@Bindable var store: StoreOf<AppFeature>` and a `NavigationStack { Form { ... } }`. Add the new Section as the last child of that `Form`. The new file must be added to the Xcode project target — if `xcodebuild` reports it missing, add it to `ReTiCAMsgr.xcodeproj` in the `ReTiCAMsgr` target's Sources build phase.
 
 There are no unit tests here — the view holds no logic, which is the whole point of Tasks 2–5. The gate is that the app builds and the screen renders.
 
@@ -1045,7 +1045,7 @@ There are no unit tests here — the view holds no logic, which is the whole poi
 ```swift
 import SwiftUI
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// Read-only triage. All derivation lives in `DiagnosticsSnapshot`; this file renders and
 /// nothing else. Rebuilding the snapshot inside `body` is what makes the screen live — TCA
@@ -1136,7 +1136,7 @@ struct DiagnosticsView: View {
 
 - [ ] **Step 2: Add the Settings link**
 
-In `ReTiCaMsgr/SettingsView.swift`, after the `Section("Propagation Node") { ... }` block and still inside the `Form`:
+In `ReTiCAMsgr/SettingsView.swift`, after the `Section("Propagation Node") { ... }` block and still inside the `Form`:
 
 ```swift
                 Section {
@@ -1152,24 +1152,24 @@ In `ReTiCaMsgr/SettingsView.swift`, after the `Section("Propagation Node") { ...
 - [ ] **Step 3: Build the app**
 
 ```bash
-xcodebuild build -project /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'generic/platform=iOS Simulator' 2>&1 | grep -E "BUILD SUCCEEDED|BUILD FAILED|error:"
+xcodebuild build -project /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'generic/platform=iOS Simulator' 2>&1 | grep -E "BUILD SUCCEEDED|BUILD FAILED|error:"
 ```
 Expected: `** BUILD SUCCEEDED **`. Pre-existing deprecation warnings about `$store.host` / `$store.port` in SettingsView are not yours — leave them.
 
 - [ ] **Step 4: Re-run the app-core suite**
 
 ```bash
-swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --no-parallel
+swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --no-parallel
 ```
 Expected: **64 tests**, unchanged — this task adds no logic.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgr/DiagnosticsView.swift ReTiCaMsgr/SettingsView.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgr/DiagnosticsView.swift ReTiCAMsgr/SettingsView.swift
 ```
 
-If the Xcode project file changed to include the new source file, add `ReTiCaMsgr.xcodeproj/project.pbxproj` too. **Do not stage anything else** — the working tree has unrelated in-progress work.
+If the Xcode project file changed to include the new source file, add `ReTiCAMsgr.xcodeproj/project.pbxproj` too. **Do not stage anything else** — the working tree has unrelated in-progress work.
 
 Commit noting that the view holds no logic by design, and that truncation lives here while the export keeps full identifiers.
 
@@ -1180,7 +1180,7 @@ Commit noting that the view holds no logic by design, and that truncation lives 
 After Task 6:
 
 - ReTiCA: `swift test --package-path /Users/ell/development/ios/pods/ReTiCA --no-parallel` → **1003 tests, 1 known issue**.
-- App core: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --no-parallel` → **64 tests**.
+- App core: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --no-parallel` → **64 tests**.
 - App builds for the simulator.
 - Both repos: `git log -1 --format='%(trailers:key=Claude-Session)'` returns the URL, not empty.
-- `git -C /Users/ell/development/ios/apps/ReTiCaMsgr status --short` still shows the pre-existing uncommitted work (AnnounceListView, QRCodeImage, AddressView, AppFeature, ContentView, AppFeatureTests) — those must NOT have been swept into a commit.
+- `git -C /Users/ell/development/ios/apps/ReTiCAMsgr status --short` still shows the pre-existing uncommitted work (AnnounceListView, QRCodeImage, AddressView, AppFeature, ContentView, AppFeatureTests) — those must NOT have been swept into a commit.

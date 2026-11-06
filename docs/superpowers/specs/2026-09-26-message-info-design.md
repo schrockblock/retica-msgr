@@ -1,8 +1,8 @@
 # Message Info sheet
 
-**Written:** 2026-09-26. **Repo:** ReTiCaMsgr (`/Users/ell/development/ios/apps/ReTiCaMsgr`). The logic
-is in `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/` and the UI in `ReTiCaMsgr/`. Implementation happens in
-the worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-message-info` on branch `feat/message-info`,
+**Written:** 2026-09-26. **Repo:** ReTiCAMsgr (`/Users/ell/development/ios/apps/ReTiCAMsgr`). The logic
+is in `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/` and the UI in `ReTiCAMsgr/`. Implementation happens in
+the worktree `/Users/ell/development/ios/apps/ReTiCAMsgr-message-info` on branch `feat/message-info`,
 which merges to `main`.
 
 ## Goal
@@ -137,7 +137,7 @@ This is where all formatting happens:
 
 ## Testing
 
-Swift Testing in `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/`. Every new test goes through
+Swift Testing in `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/`. Every new test goes through
 mutate → red → revert → green. Absence claims use exhaustive stores. The full core suite stays
 green with no new known issues.
 

@@ -1,0 +1,816 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AA000003301E7A55003D6278 /* ReTiCAMsgrCore in Frameworks */ = {isa = PBXBuildFile; productRef = AA000002301E7A55003D6278 /* ReTiCAMsgrCore */; };
+		BB000003301E7A55003D6278 /* ReTiCAMsgrNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = BB000002301E7A55003D6278 /* ReTiCAMsgrNotificationService.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		BB000005301E7A55003D6278 /* ReTiCAMsgrPushService in Frameworks */ = {isa = PBXBuildFile; productRef = BB000004301E7A55003D6278 /* ReTiCAMsgrPushService */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		49C3993D301E7A5B003D6278 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 49C39927301E7A55003D6278 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 49C3992E301E7A55003D6278;
+			remoteInfo = ReTiCAMsgr;
+		};
+		49C39947301E7A5B003D6278 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 49C39927301E7A55003D6278 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 49C3992E301E7A55003D6278;
+			remoteInfo = ReTiCAMsgr;
+		};
+		BB000006301E7A55003D6278 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 49C39927301E7A55003D6278 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB000001301E7A55003D6278;
+			remoteInfo = ReTiCAMsgrNotificationService;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		BB000007301E7A55003D6278 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				BB000003301E7A55003D6278 /* ReTiCAMsgrNotificationService.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		49C3992F301E7A55003D6278 /* ReTiCAMsgr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ReTiCAMsgr.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		49C3993C301E7A5B003D6278 /* ReTiCAMsgrTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ReTiCAMsgrTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		49C39946301E7A5B003D6278 /* ReTiCAMsgrUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ReTiCAMsgrUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB000002301E7A55003D6278 /* ReTiCAMsgrNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ReTiCAMsgrNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AAAAAAAA0000000000FF0001 /* Exceptions for "ReTiCAMsgr" folder in "ReTiCAMsgr" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 49C3992E301E7A55003D6278 /* ReTiCAMsgr */;
+		};
+		BB000008301E7A55003D6278 /* Exceptions for "ReTiCAMsgrNotificationService" folder in "ReTiCAMsgrNotificationService" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = BB000001301E7A55003D6278 /* ReTiCAMsgrNotificationService */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		49C39931301E7A55003D6278 /* ReTiCAMsgr */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AAAAAAAA0000000000FF0001 /* Exceptions for "ReTiCAMsgr" folder in "ReTiCAMsgr" target */,
+			);
+			path = ReTiCAMsgr;
+			sourceTree = "<group>";
+		};
+		49C3993F301E7A5B003D6278 /* ReTiCAMsgrTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ReTiCAMsgrTests;
+			sourceTree = "<group>";
+		};
+		49C39949301E7A5B003D6278 /* ReTiCAMsgrUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ReTiCAMsgrUITests;
+			sourceTree = "<group>";
+		};
+		BB000009301E7A55003D6278 /* ReTiCAMsgrNotificationService */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				BB000008301E7A55003D6278 /* Exceptions for "ReTiCAMsgrNotificationService" folder in "ReTiCAMsgrNotificationService" target */,
+			);
+			path = ReTiCAMsgrNotificationService;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		49C3992C301E7A55003D6278 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA000003301E7A55003D6278 /* ReTiCAMsgrCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		49C39939301E7A5B003D6278 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		49C39943301E7A5B003D6278 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB00000A301E7A55003D6278 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB000005301E7A55003D6278 /* ReTiCAMsgrPushService in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		49C39926301E7A55003D6278 = {
+			isa = PBXGroup;
+			children = (
+				49C39931301E7A55003D6278 /* ReTiCAMsgr */,
+				49C3993F301E7A5B003D6278 /* ReTiCAMsgrTests */,
+				49C39949301E7A5B003D6278 /* ReTiCAMsgrUITests */,
+				BB000009301E7A55003D6278 /* ReTiCAMsgrNotificationService */,
+				49C39930301E7A55003D6278 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		49C39930301E7A55003D6278 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				49C3992F301E7A55003D6278 /* ReTiCAMsgr.app */,
+				49C3993C301E7A5B003D6278 /* ReTiCAMsgrTests.xctest */,
+				49C39946301E7A5B003D6278 /* ReTiCAMsgrUITests.xctest */,
+				BB000002301E7A55003D6278 /* ReTiCAMsgrNotificationService.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		49C3992E301E7A55003D6278 /* ReTiCAMsgr */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 49C39950301E7A5B003D6278 /* Build configuration list for PBXNativeTarget "ReTiCAMsgr" */;
+			buildPhases = (
+				49C3992B301E7A55003D6278 /* Sources */,
+				49C3992C301E7A55003D6278 /* Frameworks */,
+				49C3992D301E7A55003D6278 /* Resources */,
+				BB000007301E7A55003D6278 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB00000B301E7A55003D6278 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				49C39931301E7A55003D6278 /* ReTiCAMsgr */,
+			);
+			name = ReTiCAMsgr;
+			packageProductDependencies = (
+				AA000002301E7A55003D6278 /* ReTiCAMsgrCore */,
+			);
+			productName = ReTiCAMsgr;
+			productReference = 49C3992F301E7A55003D6278 /* ReTiCAMsgr.app */;
+			productType = "com.apple.product-type.application";
+		};
+		49C3993B301E7A5B003D6278 /* ReTiCAMsgrTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 49C39953301E7A5B003D6278 /* Build configuration list for PBXNativeTarget "ReTiCAMsgrTests" */;
+			buildPhases = (
+				49C39938301E7A5B003D6278 /* Sources */,
+				49C39939301E7A5B003D6278 /* Frameworks */,
+				49C3993A301E7A5B003D6278 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				49C3993E301E7A5B003D6278 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				49C3993F301E7A5B003D6278 /* ReTiCAMsgrTests */,
+			);
+			name = ReTiCAMsgrTests;
+			packageProductDependencies = (
+			);
+			productName = ReTiCAMsgrTests;
+			productReference = 49C3993C301E7A5B003D6278 /* ReTiCAMsgrTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		49C39945301E7A5B003D6278 /* ReTiCAMsgrUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 49C39956301E7A5B003D6278 /* Build configuration list for PBXNativeTarget "ReTiCAMsgrUITests" */;
+			buildPhases = (
+				49C39942301E7A5B003D6278 /* Sources */,
+				49C39943301E7A5B003D6278 /* Frameworks */,
+				49C39944301E7A5B003D6278 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				49C39948301E7A5B003D6278 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				49C39949301E7A5B003D6278 /* ReTiCAMsgrUITests */,
+			);
+			name = ReTiCAMsgrUITests;
+			packageProductDependencies = (
+			);
+			productName = ReTiCAMsgrUITests;
+			productReference = 49C39946301E7A5B003D6278 /* ReTiCAMsgrUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		BB000001301E7A55003D6278 /* ReTiCAMsgrNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB00000E301E7A55003D6278 /* Build configuration list for PBXNativeTarget "ReTiCAMsgrNotificationService" */;
+			buildPhases = (
+				BB00000C301E7A55003D6278 /* Sources */,
+				BB00000A301E7A55003D6278 /* Frameworks */,
+				BB00000D301E7A55003D6278 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				BB000009301E7A55003D6278 /* ReTiCAMsgrNotificationService */,
+			);
+			name = ReTiCAMsgrNotificationService;
+			packageProductDependencies = (
+				BB000004301E7A55003D6278 /* ReTiCAMsgrPushService */,
+			);
+			productName = ReTiCAMsgrNotificationService;
+			productReference = BB000002301E7A55003D6278 /* ReTiCAMsgrNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		49C39927301E7A55003D6278 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2640;
+				LastUpgradeCheck = 2640;
+				TargetAttributes = {
+					49C3992E301E7A55003D6278 = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+					49C3993B301E7A5B003D6278 = {
+						CreatedOnToolsVersion = 26.4.1;
+						TestTargetID = 49C3992E301E7A55003D6278;
+					};
+					49C39945301E7A5B003D6278 = {
+						CreatedOnToolsVersion = 26.4.1;
+						TestTargetID = 49C3992E301E7A55003D6278;
+					};
+					BB000001301E7A55003D6278 = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+				};
+			};
+			buildConfigurationList = 49C3992A301E7A55003D6278 /* Build configuration list for PBXProject "ReTiCAMsgr" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 49C39926301E7A55003D6278;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AA000001301E7A55003D6278 /* XCLocalSwiftPackageReference "ReTiCAMsgrCore" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 49C39930301E7A55003D6278 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				49C3992E301E7A55003D6278 /* ReTiCAMsgr */,
+				49C3993B301E7A5B003D6278 /* ReTiCAMsgrTests */,
+				49C39945301E7A5B003D6278 /* ReTiCAMsgrUITests */,
+				BB000001301E7A55003D6278 /* ReTiCAMsgrNotificationService */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		49C3992D301E7A55003D6278 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		49C3993A301E7A5B003D6278 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		49C39944301E7A5B003D6278 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB00000D301E7A55003D6278 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		49C3992B301E7A55003D6278 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		49C39938301E7A5B003D6278 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		49C39942301E7A5B003D6278 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB00000C301E7A55003D6278 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		49C3993E301E7A5B003D6278 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 49C3992E301E7A55003D6278 /* ReTiCAMsgr */;
+			targetProxy = 49C3993D301E7A5B003D6278 /* PBXContainerItemProxy */;
+		};
+		49C39948301E7A5B003D6278 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 49C3992E301E7A55003D6278 /* ReTiCAMsgr */;
+			targetProxy = 49C39947301E7A5B003D6278 /* PBXContainerItemProxy */;
+		};
+		BB00000B301E7A55003D6278 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = ios;
+			target = BB000001301E7A55003D6278 /* ReTiCAMsgrNotificationService */;
+			targetProxy = BB000006301E7A55003D6278 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		49C3994E301E7A5B003D6278 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = HK6WSAR793;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		49C3994F301E7A5B003D6278 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = HK6WSAR793;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		49C39951301E7A5B003D6278 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = ReTiCAMsgr/ReTiCAMsgr.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "ReTiCAMsgr/ReTiCAMsgr-macOS.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = HK6WSAR793;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ReTiCAMsgr/Info.plist;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Uses Bluetooth to connect directly to nearby Reticulum devices and relay messages.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgr;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		49C39952301E7A5B003D6278 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = ReTiCAMsgr/ReTiCAMsgr.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "ReTiCAMsgr/ReTiCAMsgr-macOS.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = HK6WSAR793;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ReTiCAMsgr/Info.plist;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Uses Bluetooth to connect directly to nearby Reticulum devices and relay messages.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgr;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		49C39954301E7A5B003D6278 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_ENTITLEMENTS = ReTiCAMsgrTests/ReTiCAMsgrTests.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK6WSAR793;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgrTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ReTiCAMsgr.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ReTiCAMsgr";
+			};
+			name = Debug;
+		};
+		49C39955301E7A5B003D6278 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_ENTITLEMENTS = ReTiCAMsgrTests/ReTiCAMsgrTests.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK6WSAR793;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgrTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ReTiCAMsgr.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ReTiCAMsgr";
+			};
+			name = Release;
+		};
+		49C39957301E7A5B003D6278 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK6WSAR793;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgrUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = ReTiCAMsgr;
+			};
+			name = Debug;
+		};
+		49C39958301E7A5B003D6278 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK6WSAR793;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgrUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = ReTiCAMsgr;
+			};
+			name = Release;
+		};
+		BB00000F301E7A55003D6278 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ReTiCAMsgrNotificationService/ReTiCAMsgrNotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK6WSAR793;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ReTiCAMsgrNotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = ReTiCAMsgrNotificationService;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgr.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		BB000010301E7A55003D6278 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ReTiCAMsgrNotificationService/ReTiCAMsgrNotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK6WSAR793;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ReTiCAMsgrNotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = ReTiCAMsgrNotificationService;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgr.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		49C3992A301E7A55003D6278 /* Build configuration list for PBXProject "ReTiCAMsgr" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				49C3994E301E7A5B003D6278 /* Debug */,
+				49C3994F301E7A5B003D6278 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		49C39950301E7A5B003D6278 /* Build configuration list for PBXNativeTarget "ReTiCAMsgr" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				49C39951301E7A5B003D6278 /* Debug */,
+				49C39952301E7A5B003D6278 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		49C39953301E7A5B003D6278 /* Build configuration list for PBXNativeTarget "ReTiCAMsgrTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				49C39954301E7A5B003D6278 /* Debug */,
+				49C39955301E7A5B003D6278 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		49C39956301E7A5B003D6278 /* Build configuration list for PBXNativeTarget "ReTiCAMsgrUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				49C39957301E7A5B003D6278 /* Debug */,
+				49C39958301E7A5B003D6278 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BB00000E301E7A55003D6278 /* Build configuration list for PBXNativeTarget "ReTiCAMsgrNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB00000F301E7A55003D6278 /* Debug */,
+				BB000010301E7A55003D6278 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		AA000001301E7A55003D6278 /* XCLocalSwiftPackageReference "ReTiCAMsgrCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ReTiCAMsgrCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA000002301E7A55003D6278 /* ReTiCAMsgrCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA000001301E7A55003D6278 /* XCLocalSwiftPackageReference "ReTiCAMsgrCore" */;
+			productName = ReTiCAMsgrCore;
+		};
+		BB000004301E7A55003D6278 /* ReTiCAMsgrPushService */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA000001301E7A55003D6278 /* XCLocalSwiftPackageReference "ReTiCAMsgrCore" */;
+			productName = ReTiCAMsgrPushService;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 49C39927301E7A55003D6278 /* Project object */;
+}

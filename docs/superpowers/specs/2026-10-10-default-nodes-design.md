@@ -1,7 +1,7 @@
 # Default node, multiple nodes, and the push identity — design
 
 **Date:** 2026-10-10. **Scope:** a ReTiCA change (the endpoint grows from one TCP client slot to a
-set) merged first, then the ReTiCaMsgr app (Core package plus SwiftUI), then Nbhd's mechanical
+set) merged first, then the ReTiCAMsgr app (Core package plus SwiftUI), then Nbhd's mechanical
 switch updates. **Follows:** the push-relay spec `2026-10-01-push-relay-design.md` (the push hub
 contract) and the group-chats work merged 2026-10-10 (main 74d9cb9).
 

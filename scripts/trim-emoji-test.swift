@@ -1,4 +1,4 @@
-// Trims Unicode's emoji-test.txt into ReTiCaMsgrCore's bundled emoji.tsv.
+// Trims Unicode's emoji-test.txt into ReTiCAMsgrCore's bundled emoji.tsv.
 // Keeps fully-qualified entries only, drops skin-tone variants and the "Component" group.
 // Usage: swift scripts/trim-emoji-test.swift <emoji-test.txt> <out.tsv>
 import Foundation

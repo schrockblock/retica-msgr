@@ -120,7 +120,7 @@ Shipped app-side with no ReTiCA changes. Known limits, all documented in the spe
   registration happens over the hub's Reticulum link (not HTTP). **Verified 2026-10-01**: extension
   not observed on the Simulator; device run outstanding. Built and installed on the booted iPhone 17
   Simulator (confirmed `UIBackgroundModes` includes `remote-notification` and the embedded
-  `ReTiCaMsgrNotificationService.appex`'s `NSExtensionPointIdentifier` is
+  `ReTiCAMsgrNotificationService.appex`'s `NSExtensionPointIdentifier` is
   `com.apple.usernotifications.service`), enabled the push toggle, backgrounded the app, and sent
   `xcrun simctl push` with the spec's `rns.packets: ["AAABAgM="]` payload. `usernotificationsd`
   processed and queued the notification (full `NotificationsPipeline` trace ending "Request:
@@ -142,7 +142,7 @@ debugging" for the recipes):
   NomadNet all deliver over Links (LXMF DIRECT)**. The extension cannot answer a handshake and the
   app cannot answer it late, so "banner, tap, no message, sender shows failure" is the documented
   limit, not a drain bug. Push wake-ups deliver the message itself only for single-packet
-  (OPPORTUNISTIC) senders such as another ReTiCaMsgr.
+  (OPPORTUNISTIC) senders such as another ReTiCAMsgr.
 - **Fix shipped:** the scene's `.background` phase now sends `.backgrounded`, which closes the hub
   socket (`.endpoint(.tcpClient(.disconnect))`). A suspended app's socket otherwise stays alive to
   the hub for 2–15 minutes on cellular (the kernel keeps answering keepalives), the hub writes into
@@ -156,12 +156,12 @@ debugging" for the recipes):
   hold ends and iOS suspends the process again, reopening the no-push window. Closing it when the
   hold ends and the app is still in the background would need an `applicationState` probe in
   `AppRuntime.pushWake`.
-- **Open (product):** link-based senders need a propagation node to reach a suspended ReTiCaMsgr.
+- **Open (product):** link-based senders need a propagation node to reach a suspended ReTiCAMsgr.
   The app already syncs from its configured propagation node on every reconnect, including the
   one a push wake triggers, so the push from a failed link request can be the wake that fetches
   the message from the PN. Documenting this for users (and considering a PN on the hub) is the
   remaining work.
-- Two apps on one phone (ReTiCaMsgr and Retichat both on Atli) can never complete a Link through
+- Two apps on one phone (ReTiCAMsgr and Retichat both on Atli) can never complete a Link through
   the hub: the foreground app suspends the other. Only propagation bridges that case.
 - `rnpath`/`rnprobe` against the hub report "not found"/"timed out" even when the path exists,
   because the shared instance answers local path requests only from its announce cache, which
@@ -177,7 +177,7 @@ Follow-ups noticed while implementing:
   with a new name does not rewrite earlier lines.
 - `isForeground` starts true, so a push-wake launch counts as foreground until the first
   `.backgrounded`; harmless today because no thread can be open then.
-- The Simulator cannot reach a peer, so the toolbar menu, the system line after choosing a preset, the title subtitle and the bubble glyph after a send were only code-reviewed, never seen. Check them on a device with a reachable ReTiCaMsgr peer, and check ChatTitle for clipping with a long title plus "4 weeks".
+- The Simulator cannot reach a peer, so the toolbar menu, the system line after choosing a preset, the title subtitle and the bubble glyph after a send were only code-reviewed, never seen. Check them on a device with a reachable ReTiCAMsgr peer, and check ChatTitle for clipping with a long title plus "4 weeks".
 - Test-helper duplication left by the plan: MessageInfoTests' expiryInfo helpers duplicate the file's info(_:)/utc/peer32/hash64; ExpiryPreset.swift has an unused import Foundation and rebuilds its units array per call.
 - Fixed on 2026-10-05 (spec amendments A15–A17, branch `fix/disappearing-followups`): the
   out-of-order purge-completion race, the purge's full-row scan, the send-before-setting-loaded

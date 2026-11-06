@@ -2,11 +2,11 @@
 
 **Date:** 2026-08-03
 **Status:** Approved (design); implementation plan to follow
-**Repos:** library changes → `pods/ReTiCA`; app changes → `apps/ReTiCaMsgr`
+**Repos:** library changes → `pods/ReTiCA`; app changes → `apps/ReTiCAMsgr`
 
 ## Goal
 
-Let ReTiCaMsgr act as an LXMF **propagation node**: while the app runs with
+Let ReTiCAMsgr act as an LXMF **propagation node**: while the app runs with
 node-mode enabled, it registers `lxmf.propagation`, accepts store-and-forward
 offers from real LXMF clients, persists them across restarts, and serves those
 clients' two-phase `/get` downloads.
@@ -44,7 +44,7 @@ tests; nothing in `Sources/` or the app runs a node.
 
 | Decision | Choice | Why |
 | --- | --- | --- |
-| Host | iOS node-mode in ReTiCaMsgr | Demonstrable on-device; foreground-only is acceptable for this slice |
+| Host | iOS node-mode in ReTiCAMsgr | Demonstrable on-device; foreground-only is acceptable for this slice |
 | Scope | Serve-only to clients | Leanest thing that is a real node; mesh peering is a separate subsystem |
 | Architecture | Unified combined node (one endpoint) | Matches reference LXMF: one identity, one connection, both destinations |
 

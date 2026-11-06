@@ -1,18 +1,18 @@
-# ReTiCaMsgr MVP — One Conversation — Implementation Plan
+# ReTiCAMsgr MVP — One Conversation — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** An iOS app where two devices, each connected to the same Reticulum TCP hub, add each other by LXMF address and exchange opportunistic messages in a single chat screen, with a persistent identity and message history.
 
-**Architecture:** All logic lives in a local SPM package `ReTiCaMsgrCore` (an `AppFeature` TCA `@Reducer` scoping `LXMFNode` from the `ReTiCA` package, `Message` persistence via SharingGRDB, an `IdentityStore` Keychain client). The Xcode app target links only `ReTiCaMsgrCore` and holds the SwiftUI views + `App` entry. Tasks 1–4 are verified headlessly with `swift test`; Task 5 wires the Xcode shell (verified with `xcodebuild`).
+**Architecture:** All logic lives in a local SPM package `ReTiCAMsgrCore` (an `AppFeature` TCA `@Reducer` scoping `LXMFNode` from the `ReTiCA` package, `Message` persistence via SharingGRDB, an `IdentityStore` Keychain client). The Xcode app target links only `ReTiCAMsgrCore` and holds the SwiftUI views + `App` entry. Tasks 1–4 are verified headlessly with `swift test`; Task 5 wires the Xcode shell (verified with `xcodebuild`).
 
 **Tech Stack:** Swift, Point-Free Composable Architecture (TCA), SharingGRDB (`pointfreeco/sharing-grdb`), the local `ReTiCA` package (`ReTiCANode`), SwiftUI, iOS 26.4.
 
 ## Global Constraints
 
-- **App repo:** `/Users/ell/development/ios/apps/ReTiCaMsgr`. Commit to its `main` branch. (This is NOT the ReTiCA repo.)
+- **App repo:** `/Users/ell/development/ios/apps/ReTiCAMsgr`. Commit to its `main` branch. (This is NOT the ReTiCA repo.)
 - **No compound shell commands** — one command per invocation; no `&&`/`||`/`;`/`|`-chains/`xargs`/inline interpreter scripts. A single `>` redirect is allowed. Write files with the editor, not echo/heredoc.
-- **Temp files** go in `/tmp/ReTiCaMsgr/`.
+- **Temp files** go in `/tmp/ReTiCAMsgr/`.
 - **Commit trailers, verbatim, at COLUMN 0 (no leading whitespace)**, via `git commit -F <file>` (never `-m`):
   ```
   Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
@@ -27,17 +27,17 @@
 
 ---
 
-### Task 1: Scaffold the `ReTiCaMsgrCore` SPM package
+### Task 1: Scaffold the `ReTiCAMsgrCore` SPM package
 
 Create the local package and confirm all three external dependencies resolve and a trivial test runs. This de-risks the dependency graph before any logic.
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Package.swift`
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReTiCaMsgrCore.swift`
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/SmokeTests.swift`
+- Create: `ReTiCAMsgrCore/Package.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReTiCAMsgrCore.swift`
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/SmokeTests.swift`
 
 **Interfaces:**
-- Produces: the `ReTiCaMsgrCore` library target (depends on `ReTiCANode` + `ComposableArchitecture` + `SharingGRDB`), usable by the Xcode app.
+- Produces: the `ReTiCAMsgrCore` library target (depends on `ReTiCANode` + `ComposableArchitecture` + `SharingGRDB`), usable by the Xcode app.
 
 - [ ] **Step 1: Write `Package.swift`.**
 
@@ -46,10 +46,10 @@ Create the local package and confirm all three external dependencies resolve and
 import PackageDescription
 
 let package = Package(
-    name: "ReTiCaMsgrCore",
+    name: "ReTiCAMsgrCore",
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
-        .library(name: "ReTiCaMsgrCore", targets: ["ReTiCaMsgrCore"]),
+        .library(name: "ReTiCAMsgrCore", targets: ["ReTiCAMsgrCore"]),
     ],
     dependencies: [
         .package(path: "../../../pods/ReTiCA"),
@@ -57,43 +57,43 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "ReTiCaMsgrCore",
+            name: "ReTiCAMsgrCore",
             dependencies: [
                 .product(name: "ReTiCANode", package: "ReTiCA"),
                 .product(name: "SharingGRDB", package: "sharing-grdb"),
             ]
         ),
         .testTarget(
-            name: "ReTiCaMsgrCoreTests",
-            dependencies: ["ReTiCaMsgrCore"]
+            name: "ReTiCAMsgrCoreTests",
+            dependencies: ["ReTiCAMsgrCore"]
         ),
     ]
 )
 ```
 
-NOTE: `.macOS(.v14)` lets tests run headlessly on the Mac. The `from:` version for `sharing-grdb` is a floor — if resolution reports a different available version, use the latest resolved; do NOT pin to an unavailable version. `.package(path:)` is relative to `ReTiCaMsgrCore/` so `../../../pods/ReTiCA` reaches `/Users/ell/development/ios/pods/ReTiCA`.
+NOTE: `.macOS(.v14)` lets tests run headlessly on the Mac. The `from:` version for `sharing-grdb` is a floor — if resolution reports a different available version, use the latest resolved; do NOT pin to an unavailable version. `.package(path:)` is relative to `ReTiCAMsgrCore/` so `../../../pods/ReTiCA` reaches `/Users/ell/development/ios/pods/ReTiCA`.
 
 - [ ] **Step 2: Write a placeholder source + a smoke test.**
 
-`Sources/ReTiCaMsgrCore/ReTiCaMsgrCore.swift`:
+`Sources/ReTiCAMsgrCore/ReTiCAMsgrCore.swift`:
 ```swift
-public enum ReTiCaMsgrCore {
+public enum ReTiCAMsgrCore {
     public static let version = "0.1.0"
 }
 ```
-`Tests/ReTiCaMsgrCoreTests/SmokeTests.swift`:
+`Tests/ReTiCAMsgrCoreTests/SmokeTests.swift`:
 ```swift
 import Testing
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 @Test func coreVersionIsSet() {
-    #expect(ReTiCaMsgrCore.version == "0.1.0")
+    #expect(ReTiCAMsgrCore.version == "0.1.0")
 }
 ```
 
 - [ ] **Step 3: Resolve + build + test.**
 
-Run (each its own command, from `/Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore`):
+Run (each its own command, from `/Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore`):
 - `swift package resolve`
 - `swift build`
 - `swift test --filter coreVersionIsSet`
@@ -102,12 +102,12 @@ Expected: dependencies resolve (ReTiCA + SharingGRDB + their transitive deps inc
 
 - [ ] **Step 4: Commit.** (column-0 trailers; verify parse after)
 
-Write `/tmp/ReTiCaMsgr/commit-msg-t1.txt`, then:
+Write `/tmp/ReTiCAMsgr/commit-msg-t1.txt`, then:
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -F /tmp/ReTiCaMsgr/commit-msg-t1.txt
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -F /tmp/ReTiCAMsgr/commit-msg-t1.txt
 ```
-Subject: `feat: scaffold ReTiCaMsgrCore package (ReTiCANode + SharingGRDB)`
+Subject: `feat: scaffold ReTiCAMsgrCore package (ReTiCANode + SharingGRDB)`
 
 ---
 
@@ -116,9 +116,9 @@ Subject: `feat: scaffold ReTiCaMsgrCore package (ReTiCANode + SharingGRDB)`
 Define the persisted message model and a database factory (a shared in-memory maker for tests, a file-backed maker for the app), and prove insert/fetch.
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift`
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift`
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift`
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift`
 
 **Interfaces:**
 - Consumes: `SharingGRDB` (`@Table`, `@FetchAll`, `defaultDatabase` dependency, GRDB `DatabaseQueue`/migrator).
@@ -206,7 +206,7 @@ import Testing
 import Foundation
 import GRDB
 import SharingGRDB
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 @Test func messageInsertAndFetchByPeer() throws {
     let db = try AppDatabase.makeInMemory()
@@ -231,8 +231,8 @@ Expected: PASS after the model + DB compile.
 
 - [ ] **Step 6: Commit.** (column-0 trailers)
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/DatabaseTests.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -F /tmp/ReTiCaMsgr/commit-msg-t2.txt
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/DatabaseTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -F /tmp/ReTiCAMsgr/commit-msg-t2.txt
 ```
 Subject: `feat: Message @Table + GRDB database factory`
 
@@ -243,8 +243,8 @@ Subject: `feat: Message @Table + GRDB database factory`
 A dependency that loads/persists the user's `Identity` (Keychain live, in-memory for tests), plus the LXMF address helper.
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/IdentityStore.swift`
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/IdentityStoreTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/IdentityStore.swift`
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/IdentityStoreTests.swift`
 
 **Interfaces:**
 - Consumes: `ReTiCA.Identity` (`init()`, `init?(privateKey:)`, `.privateKey: Data?`, `.hash`), `LXMessage.deliveryHash(identityHash:)`, TCA `@Dependency`/`DependencyKey`.
@@ -330,7 +330,7 @@ import Testing
 import Foundation
 import Dependencies
 import ReTiCA
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 @Test func identityStoreTestValueIsStableAndAddressIsDeliveryHash() {
     let store = IdentityStore.testValue
@@ -360,8 +360,8 @@ Expected: PASS. Mutation: make `lxmfAddressHex` return `identity.hash.hexString`
 The composed reducer wiring `LXMFNode` to connection/send/receive/persistence, with `TestStore` tests.
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`
-- Create: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`
+- Create: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift`
 
 **Interfaces:**
 - Consumes: `LXMFNode` (`.State(identity:endpoint:)`, actions `.registerDelivery`, `.send(destinationHash:title:content:method:)`, `.endpoint(Endpoint.Action)`, delegates `.messageReceived(message:signatureValidated:)`, `.deliveryFailed(messageHash:)`); `Endpoint.State(host:port:reconnectOnDrop:)`, `Endpoint.Action.connect`/`.disconnect`, `.transport(.interfaceConnected(_))`/`.transport(.interfaceDisconnected(_))`, `.delegate(.pathLearned(destinationHash:hops:))`; `LXMFRouter.DeliveryMethod.opportunistic`; `LXMessage.create`/`.deliveryHash`/`.hash`; `Message`, `MessageStatus`, `AppDatabase`, `IdentityStore`, `lxmfAddressHex`.
@@ -512,7 +512,7 @@ import SharingGRDB
 import ReTiCA
 import ReTiCANode
 import ReTiCATransport
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 @MainActor
 @Test func onLaunchConnectsThenRegistersOnInterfaceUp() async {
@@ -601,35 +601,35 @@ Run: `swift test --filter AppFeature`
 
 ### Task 5: Xcode app shell (link core, App entry, SwiftUI views)
 
-Wire the Xcode app target to `ReTiCaMsgrCore`, add the `App` entry (identity load + database + Store) and the three SwiftUI screens, and verify the app builds.
+Wire the Xcode app target to `ReTiCAMsgrCore`, add the `App` entry (identity load + database + Store) and the three SwiftUI screens, and verify the app builds.
 
 **Files:**
-- Modify: `ReTiCaMsgr.xcodeproj/project.pbxproj` (add a local-package dependency on `ReTiCaMsgrCore` + link its product to the app target)
-- Modify: `ReTiCaMsgr/ReTiCaMsgrApp.swift`
-- Replace: `ReTiCaMsgr/ContentView.swift` → chat + address + settings views
-- Create: `ReTiCaMsgr/ChatView.swift`, `ReTiCaMsgr/SettingsView.swift`, `ReTiCaMsgr/AddressView.swift`
+- Modify: `ReTiCAMsgr.xcodeproj/project.pbxproj` (add a local-package dependency on `ReTiCAMsgrCore` + link its product to the app target)
+- Modify: `ReTiCAMsgr/ReTiCAMsgrApp.swift`
+- Replace: `ReTiCAMsgr/ContentView.swift` → chat + address + settings views
+- Create: `ReTiCAMsgr/ChatView.swift`, `ReTiCAMsgr/SettingsView.swift`, `ReTiCAMsgr/AddressView.swift`
 
 **Interfaces:**
-- Consumes: `ReTiCaMsgrCore.AppFeature`, `AppDatabase`, `IdentityStore`, `Message`, `MessageStatus`, `lxmfAddressHex`, SharingGRDB `prepareDependencies`/`defaultDatabase`, `@FetchAll`.
+- Consumes: `ReTiCAMsgrCore.AppFeature`, `AppDatabase`, `IdentityStore`, `Message`, `MessageStatus`, `lxmfAddressHex`, SharingGRDB `prepareDependencies`/`defaultDatabase`, `@FetchAll`.
 
-- [ ] **Step 1: Link `ReTiCaMsgrCore` to the app target.**
+- [ ] **Step 1: Link `ReTiCAMsgrCore` to the app target.**
 
-Add `ReTiCaMsgrCore` as a local Swift package to `ReTiCaMsgr.xcodeproj` and link its `ReTiCaMsgrCore` product to the `ReTiCaMsgr` app target. Prefer editing `project.pbxproj` to add: an `XCLocalSwiftPackageReference` with `relativePath = ReTiCaMsgrCore;`, an `XCSwiftPackageProductDependency` (`productName = ReTiCaMsgrCore`), a `PBXBuildFile` referencing it, its inclusion in the target's `Frameworks` build phase, and the `packageReferences`/`packageProductDependencies` arrays.
+Add `ReTiCAMsgrCore` as a local Swift package to `ReTiCAMsgr.xcodeproj` and link its `ReTiCAMsgrCore` product to the `ReTiCAMsgr` app target. Prefer editing `project.pbxproj` to add: an `XCLocalSwiftPackageReference` with `relativePath = ReTiCAMsgrCore;`, an `XCSwiftPackageProductDependency` (`productName = ReTiCAMsgrCore`), a `PBXBuildFile` referencing it, its inclusion in the target's `Frameworks` build phase, and the `packageReferences`/`packageProductDependencies` arrays.
 
-IF hand-editing `project.pbxproj` is not reliably achievable (the file does not round-trip cleanly), STOP and report NEEDS_CONTEXT with a one-line instruction for the human to add it in Xcode: *File ▸ Add Package Dependencies… ▸ Add Local… ▸ select `ReTiCaMsgrCore`, then add the `ReTiCaMsgrCore` library to the `ReTiCaMsgr` target.* Do not fake the linkage.
+IF hand-editing `project.pbxproj` is not reliably achievable (the file does not round-trip cleanly), STOP and report NEEDS_CONTEXT with a one-line instruction for the human to add it in Xcode: *File ▸ Add Package Dependencies… ▸ Add Local… ▸ select `ReTiCAMsgrCore`, then add the `ReTiCAMsgrCore` library to the `ReTiCAMsgr` target.* Do not fake the linkage.
 
 - [ ] **Step 2: App entry.**
 
-`ReTiCaMsgrApp.swift`:
+`ReTiCAMsgrApp.swift`:
 ```swift
 import SwiftUI
 import ComposableArchitecture
 import SharingGRDB
 import ReTiCA
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 @main
-struct ReTiCaMsgrApp: App {
+struct ReTiCAMsgrApp: App {
     static let store: StoreOf<AppFeature> = {
         let identity = IdentityStore.liveValue.load()
         let dbPath = URL.documentsDirectory.appending(path: "reticamsgr.sqlite").path()
@@ -653,13 +653,13 @@ Keep views minimal — plain SwiftUI, no design system. (Concrete view code is l
 
 - [ ] **Step 4: Build the app.**
 
-Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'generic/platform=iOS' build`
+Run: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'generic/platform=iOS' build`
 Expected: BUILD SUCCEEDED. (First build resolves packages; may be slow.) If the scheme name differs, list schemes with `xcodebuild -list -project …` and use the app scheme. If the build fails on the package link, revisit Step 1.
 
 - [ ] **Step 5: Commit.** (column-0 trailers)
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add -A
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -F /tmp/ReTiCaMsgr/commit-msg-t5.txt
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add -A
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -F /tmp/ReTiCAMsgr/commit-msg-t5.txt
 ```
 Subject: `feat: Xcode app shell — link core, App entry, chat/address/settings views`
 

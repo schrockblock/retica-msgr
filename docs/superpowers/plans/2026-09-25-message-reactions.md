@@ -4,23 +4,23 @@
 
 **Goal:** Long-press a chat bubble to get the system context-menu highlight with a palette of quick emoji reactions (❤️ 👍 👎 😂 😮 😢), a ＋ that opens a searchable full-emoji picker, and Copy; reactions are sent to the peer over LXMF and shown as badges on the bubble.
 
-**Architecture:** A reaction is a standalone LXMF message whose `fields` carry `FIELD_CUSTOM_TYPE = "reticamsgr.reaction"` and `FIELD_CUSTOM_DATA = {target, emoji}`. Pure codec (`ReactionWire`) + a `reactions` table with last-writer-wins upsert (`Reaction.apply`) + a pure badge builder (`ReactionSummary`) live in `ReTiCaMsgrCore`; `AppFeature` routes incoming reaction messages away from the bubble path, and gains a `.reactionSelected` action. The app target adds a `.contextMenu` with a palette row, a badge view, and an `EmojiPickerSheet` backed by a bundled trimmed Unicode `emoji-test.txt` (`EmojiCatalog`).
+**Architecture:** A reaction is a standalone LXMF message whose `fields` carry `FIELD_CUSTOM_TYPE = "reticamsgr.reaction"` and `FIELD_CUSTOM_DATA = {target, emoji}`. Pure codec (`ReactionWire`) + a `reactions` table with last-writer-wins upsert (`Reaction.apply`) + a pure badge builder (`ReactionSummary`) live in `ReTiCAMsgrCore`; `AppFeature` routes incoming reaction messages away from the bubble path, and gains a `.reactionSelected` action. The app target adds a `.contextMenu` with a palette row, a badge view, and an `EmojiPickerSheet` backed by a bundled trimmed Unicode `emoji-test.txt` (`EmojiCatalog`).
 
-**Tech Stack:** Swift 6, SwiftUI (iOS 26.4 app target), The Composable Architecture (TCA), swift-testing, GRDB via SQLiteData (`@Table`, structured queries). Package: `ReTiCaMsgrCore` (local SPM package inside the app repo).
+**Tech Stack:** Swift 6, SwiftUI (iOS 26.4 app target), The Composable Architecture (TCA), swift-testing, GRDB via SQLiteData (`@Table`, structured queries). Package: `ReTiCAMsgrCore` (local SPM package inside the app repo).
 
 **Spec:** `docs/superpowers/specs/2026-09-25-message-reactions-design.md`
 
 ## Global Constraints
 
-- Repo: `/Users/ell/development/ios/apps/ReTiCaMsgr`. Core edits in `ReTiCaMsgrCore`; UI edits in `ReTiCaMsgr/`. **No edits to the ReTiCA library** (`/Users/ell/development/ios/pods/ReTiCA`).
+- Repo: `/Users/ell/development/ios/apps/ReTiCAMsgr`. Core edits in `ReTiCAMsgrCore`; UI edits in `ReTiCAMsgr/`. **No edits to the ReTiCA library** (`/Users/ell/development/ios/pods/ReTiCA`).
 - Commit directly to `main`. No feature branch.
 - Commit trailers start at **column 0**. Every commit message ends with exactly:
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
   ```
-- **One command per shell invocation.** No `|`, `&&`, `||`, `;`, `$(...)`, `xargs`, and no inline scripts (`python -c`, `swift -e`, heredocs into interpreters). Write scripts to a file, then run the file. Temp files go in `/tmp/ReTiCaMsgr/`.
-- Core tests: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter <TestNameOrSuite>`; full suite without `--filter`.
-- App build: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination "generic/platform=iOS Simulator" build` (run `xcodebuild -list -project …` once if the scheme name differs). The app target uses file-system-synchronized groups: new `.swift` files under `ReTiCaMsgr/` are picked up with no `project.pbxproj` edit.
+- **One command per shell invocation.** No `|`, `&&`, `||`, `;`, `$(...)`, `xargs`, and no inline scripts (`python -c`, `swift -e`, heredocs into interpreters). Write scripts to a file, then run the file. Temp files go in `/tmp/ReTiCAMsgr/`.
+- Core tests: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter <TestNameOrSuite>`; full suite without `--filter`.
+- App build: `xcodebuild -project /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination "generic/platform=iOS Simulator" build` (run `xcodebuild -list -project …` once if the scheme name differs). The app target uses file-system-synchronized groups: new `.swift` files under `ReTiCAMsgr/` are picked up with no `project.pbxproj` edit.
 - **Mutation verification is mandatory** for every task with tests: tests green → apply the task's listed mutation(s) in one batch → run the task's tests, confirm every new test goes RED → revert → confirm GREEN → commit.
 - **Keep `store.exhaustivity = .off`** (set by `makeStore` in `AppFeatureTests.swift`). Do not flip it.
 - Wire constants (verbatim from spec): `FIELD_CUSTOM_TYPE = 0xFB`, `FIELD_CUSTOM_DATA = 0xFC`, type string `"reticamsgr.reaction"`, data keys `"target"` (bin, 16–32 bytes) and `"emoji"` (str; `""` = removal), emoji ≤ `ReactionWire.maxEmojiBytes` = 64 UTF-8 bytes.
@@ -40,8 +40,8 @@
 ### Task 1: `ReactionWire` codec + `QuickReactions`
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReactionWire.swift`
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReactionWireTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReactionWire.swift`
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReactionWireTests.swift`
 
 **Interfaces:**
 - Consumes: `MsgPackValue` (`.string`, `.bin`, `.map([Pair])`, `.intMap`), `MsgPackValue.IntPair(_ key: Int, _ value:)`, `MsgPackValue.Pair(_ key: String, _ value:)`, `LXMessage.create(source:destinationHash:timestamp:title:content:fields:)`, `LXMessage.unpack(_:) -> LXMessage?`, `LXMessage.packed` — all from ReTiCA.
@@ -54,12 +54,12 @@
 
 - [ ] **Step 1: Write the failing tests**
 
-`ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReactionWireTests.swift`:
+`ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReactionWireTests.swift`:
 ```swift
 import Testing
 import Foundation
 import ReTiCA
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private let target32 = Data(repeating: 0xAB, count: 32)
 
@@ -143,12 +143,12 @@ private let target32 = Data(repeating: 0xAB, count: 32)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter ReactionWireTests`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter ReactionWireTests`
 Expected: build FAILS — `cannot find 'ReactionWire' in scope`.
 
 - [ ] **Step 3: Implement**
 
-`ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReactionWire.swift`:
+`ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReactionWire.swift`:
 ```swift
 import Foundation
 import ReTiCA
@@ -208,7 +208,7 @@ public enum QuickReactions {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter ReactionWireTests`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter ReactionWireTests`
 Expected: all 11 PASS.
 
 - [ ] **Step 5: Mutation check**
@@ -224,8 +224,8 @@ Run the same command. Expected: all 11 RED — round-trip, removal, bad-lengths 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReactionWire.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReactionWireTests.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: ReactionWire codec for LXMF custom reaction fields" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReactionWire.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReactionWireTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -m "feat: ReactionWire codec for LXMF custom reaction fields" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 (Two separate commands.)
 
@@ -234,10 +234,10 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: ReactionWire 
 ### Task 2: `Reaction` table, LWW `apply`, and `ReactionSummary`
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Reaction.swift`
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReactionSummary.swift`
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift` — append a `createReactions` migration after `createDedupPersistence`, before `return m`.
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReactionTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Reaction.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReactionSummary.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift` — append a `createReactions` migration after `createDedupPersistence`, before `return m`.
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReactionTests.swift`
 
 **Interfaces:**
 - Consumes: `AppDatabase.makeInMemory()`.
@@ -248,13 +248,13 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: ReactionWire 
 
 - [ ] **Step 1: Write the failing tests**
 
-`ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReactionTests.swift`:
+`ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReactionTests.swift`:
 ```swift
 import Testing
 import Foundation
 import GRDB
 import SQLiteData
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 private let h1 = String(repeating: "1", count: 64)
 private let h2 = String(repeating: "2", count: 64)
@@ -339,7 +339,7 @@ private func all(_ db: any DatabaseWriter) throws -> [Reaction] {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter ReactionTests`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter ReactionTests`
 Expected: build FAILS — `cannot find 'Reaction' in scope`.
 
 - [ ] **Step 3: Implement**
@@ -360,7 +360,7 @@ Append to `AppDatabase.migrator()` in `Database.swift`, immediately before `retu
         }
 ```
 
-`ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Reaction.swift`:
+`ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Reaction.swift`:
 ```swift
 import Foundation
 import GRDB
@@ -402,7 +402,7 @@ public struct Reaction: Equatable, Sendable {
 }
 ```
 
-`ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReactionSummary.swift`:
+`ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReactionSummary.swift`:
 ```swift
 import Foundation
 
@@ -444,7 +444,7 @@ public enum ReactionSummary {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter ReactionTests`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter ReactionTests`
 Expected: all 9 PASS. Then run the full suite (no `--filter`) — the new migration must not break existing tests.
 
 - [ ] **Step 5: Mutation check**
@@ -461,8 +461,8 @@ Run `--filter ReactionTests`. Expected: all 9 RED — the five `apply` tests via
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Reaction.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/ReactionSummary.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Database.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/ReactionTests.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: reactions table with last-writer-wins apply and badge summary" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Reaction.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/ReactionSummary.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Database.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/ReactionTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -m "feat: reactions table with last-writer-wins apply and badge summary" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -470,8 +470,8 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: reactions tab
 ### Task 3: Receive path — store incoming hash, route reaction messages
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` — the `.node(.client(.delegate(.messageReceived(m, validated))))` case (currently `:558-614`) and add a file-scope `recordSeenHash` helper next to `pruneSeenHashes` (`:946`).
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` — append tests at the end of the file.
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` — the `.node(.client(.delegate(.messageReceived(m, validated))))` case (currently `:558-614`) and add a file-scope `recordSeenHash` helper next to `pruneSeenHashes` (`:946`).
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` — append tests at the end of the file.
 
 **Interfaces:**
 - Consumes: `ReactionWire.decode`, `Reaction`, `Reaction.apply` (Tasks 1–2); existing `reloadThread`, `reloadConversations`, `pruneSeenHashes`, `SeenHashRow`.
@@ -581,7 +581,7 @@ private func reactionMessage(from sender: Identity, to me: Identity, target: Dat
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter "incomingTextMessageStoresItsHash|incomingReactionIsStoredAndNotABubble|reactionWithFallbackContentIsNotABubble|unvalidatedReactionIsDropped|malformedReactionIsDroppedNotABubble"`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter "incomingTextMessageStoresItsHash|incomingReactionIsStoredAndNotABubble|reactionWithFallbackContentIsNotABubble|unvalidatedReactionIsDropped|malformedReactionIsDroppedNotABubble"`
 Expected: all 5 FAIL (hash is `""`; reactions become bubbles; `reactions` table empty).
 
 - [ ] **Step 3: Implement**
@@ -645,8 +645,8 @@ Run the Step 2 command. Expected: all 5 RED ((a) hash; (d) stored/fallback; (b) 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Message.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: route incoming reaction messages to the reactions table; store incoming hashes" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Message.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -m "feat: route incoming reaction messages to the reactions table; store incoming hashes" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -654,14 +654,14 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: route incomin
 ### Task 4: Thread reactions in state + `.reactionSelected`
 
 **Files:**
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift`:
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift`:
   - `State` (near `threadMessages`, `:60`): add `threadReactionRows` and `threadReactions`.
   - `Action` (`:138`): change `case threadLoaded([Message])` to `case threadLoaded([Message], reactions: [Reaction] = [])`; add `case reactionSelected(messageHash: String, emoji: String)`.
   - `.closeConversation` (`:462-466`): clear reactions.
   - `.threadLoaded` handler (`:640-642`).
   - New `.reactionSelected` case (place right after `.sendTapped`).
   - `reloadThread` (`:907-912`).
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift` — append.
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift` — append.
 
 **Interfaces:**
 - Consumes: `Reaction`, `Reaction.apply`, `ReactionSummary.byMessage`, `ReactionWire.encode/decode`, `state.myAddressHex` (own lxmf.delivery hex), `state.identity`, `state.propagationNodeHex`.
@@ -817,7 +817,7 @@ private func sentReaction(_ store: TestStoreOf<AppFeature>) async -> (target: Da
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter "reactionSelected|reactionFromThirdParty|peerReactionOnMyOutgoing|reactionBeforeTarget|closeConversationClearsReactions"`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter "reactionSelected|reactionFromThirdParty|peerReactionOnMyOutgoing|reactionBeforeTarget|closeConversationClearsReactions"`
 Expected: build FAILS — `reactionSelected` / `threadReactions` not found.
 
 - [ ] **Step 3: Implement**
@@ -928,8 +928,8 @@ Run the Step 2 command. Expected: all 8 RED — sets via (f); replaces via (a); 
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/AppFeatureTests.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: reactionSelected action and per-thread reaction badges" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/AppFeatureTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -m "feat: reactionSelected action and per-thread reaction badges" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -938,10 +938,10 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: reactionSelec
 
 **Files:**
 - Create: `scripts/trim-emoji-test.swift` (generator, committed)
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Resources/emoji.tsv` (generated, committed)
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/EmojiCatalog.swift`
-- Modify: `ReTiCaMsgrCore/Package.swift` — add `resources: [.process("Resources")]` to the `ReTiCaMsgrCore` target.
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/EmojiCatalogTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Resources/emoji.tsv` (generated, committed)
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/EmojiCatalog.swift`
+- Modify: `ReTiCAMsgrCore/Package.swift` — add `resources: [.process("Resources")]` to the `ReTiCAMsgrCore` target.
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/EmojiCatalogTests.swift`
 
 **Interfaces:**
 - Consumes: `ReactionWire.encode/decode`, `QuickReactions.default`.
@@ -955,7 +955,7 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: reactionSelec
 
 `scripts/trim-emoji-test.swift`:
 ```swift
-// Trims Unicode's emoji-test.txt into ReTiCaMsgrCore's bundled emoji.tsv.
+// Trims Unicode's emoji-test.txt into ReTiCAMsgrCore's bundled emoji.tsv.
 // Keeps fully-qualified entries only, drops skin-tone variants and the "Component" group.
 // Usage: swift scripts/trim-emoji-test.swift <emoji-test.txt> <out.tsv>
 import Foundation
@@ -992,27 +992,27 @@ print("wrote \(out.count) emoji")
 ```
 
 Run, one command each:
-1. `mkdir -p /tmp/ReTiCaMsgr`
-2. `curl -fsSL -o /tmp/ReTiCaMsgr/emoji-test.txt https://unicode.org/Public/emoji/16.0/emoji-test.txt` (Emoji 16.0 — fully rendered by iOS 26.4; do not use `latest`.)
-3. `mkdir -p /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Resources`
-4. `swift /Users/ell/development/ios/apps/ReTiCaMsgr/scripts/trim-emoji-test.swift /tmp/ReTiCaMsgr/emoji-test.txt /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Resources/emoji.tsv`
+1. `mkdir -p /tmp/ReTiCAMsgr`
+2. `curl -fsSL -o /tmp/ReTiCAMsgr/emoji-test.txt https://unicode.org/Public/emoji/16.0/emoji-test.txt` (Emoji 16.0 — fully rendered by iOS 26.4; do not use `latest`.)
+3. `mkdir -p /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Resources`
+4. `swift /Users/ell/development/ios/apps/ReTiCAMsgr/scripts/trim-emoji-test.swift /tmp/ReTiCAMsgr/emoji-test.txt /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Resources/emoji.tsv`
    Expected: `wrote N emoji` with N roughly 1,800–1,950.
-5. `ls -l /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Resources/emoji.tsv` — expect < 100 KB.
+5. `ls -l /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Resources/emoji.tsv` — expect < 100 KB.
 
-Add to the `ReTiCaMsgrCore` `.target(...)` in `Package.swift`, after `dependencies: [...]`:
+Add to the `ReTiCAMsgrCore` `.target(...)` in `Package.swift`, after `dependencies: [...]`:
 ```swift
             ,
             resources: [.process("Resources")]
 ```
-(i.e. the target becomes `.target(name: "ReTiCaMsgrCore", dependencies: [...], resources: [.process("Resources")])`.)
+(i.e. the target becomes `.target(name: "ReTiCAMsgrCore", dependencies: [...], resources: [.process("Resources")])`.)
 
 - [ ] **Step 2: Write the failing tests**
 
-`ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/EmojiCatalogTests.swift`:
+`ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/EmojiCatalogTests.swift`:
 ```swift
 import Testing
 import Foundation
-@testable import ReTiCaMsgrCore
+@testable import ReTiCAMsgrCore
 
 @Test func bundledCatalogLoadsWithGroups() {
     let c = EmojiCatalog.shared
@@ -1061,12 +1061,12 @@ import Foundation
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore --filter EmojiCatalogTests`
+Run: `swift test --package-path /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore --filter EmojiCatalogTests`
 Expected: build FAILS — `cannot find 'EmojiCatalog' in scope`.
 
 - [ ] **Step 4: Implement**
 
-`ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/EmojiCatalog.swift`:
+`ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/EmojiCatalog.swift`:
 ```swift
 import Foundation
 
@@ -1127,7 +1127,7 @@ Run the Step 3 command. Expected: 6 PASS. If `everyCatalogEmojiFitsWireLimit` fa
 
 - [ ] **Step 6: Mutation check**
 
-First back up the resource (it isn't committed yet): `cp /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Resources/emoji.tsv /tmp/ReTiCaMsgr/emoji.tsv.bak`.
+First back up the resource (it isn't committed yet): `cp /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Resources/emoji.tsv /tmp/ReTiCAMsgr/emoji.tsv.bak`.
 
 Apply in one batch:
 - (a) in `init(tsv:)`, `groups = order.map { … }` → `groups = order.dropFirst().map { … }` (loses the first group, "Smileys & Emotion", which holds 😂 😮 😢)
@@ -1135,13 +1135,13 @@ Apply in one batch:
 - (c) `ReactionWire.maxEmojiBytes = 64` → `= 4`
 - (d) append the line `Smileys & Emotion	👍🏽	thumbs up: medium skin tone` (real tab characters) to the end of `emoji.tsv` with the Edit tool
 
-Run the Step 3 command. Expected: all 6 RED — loads and quick via (a); parse via (a) (`["B"]`); search via (b); wire-limit via (c); no-skin-tone via (d). Revert (a)–(c) and restore the resource with `cp /tmp/ReTiCaMsgr/emoji.tsv.bak /Users/ell/development/ios/apps/ReTiCaMsgr/ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Resources/emoji.tsv`. Confirm GREEN.
+Run the Step 3 command. Expected: all 6 RED — loads and quick via (a); parse via (a) (`["B"]`); search via (b); wire-limit via (c); no-skin-tone via (d). Revert (a)–(c) and restore the resource with `cp /tmp/ReTiCAMsgr/emoji.tsv.bak /Users/ell/development/ios/apps/ReTiCAMsgr/ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Resources/emoji.tsv`. Confirm GREEN.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add scripts/trim-emoji-test.swift ReTiCaMsgrCore/Package.swift ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/Resources/emoji.tsv ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/EmojiCatalog.swift ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/EmojiCatalogTests.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: bundled EmojiCatalog (Unicode 16.0, no skin tones) with search" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add scripts/trim-emoji-test.swift ReTiCAMsgrCore/Package.swift ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/Resources/emoji.tsv ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/EmojiCatalog.swift ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/EmojiCatalogTests.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -m "feat: bundled EmojiCatalog (Unicode 16.0, no skin tones) with search" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1151,8 +1151,8 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: bundled Emoji
 Decide the palette mechanism on a real simulator, then keep only the winner.
 
 **Files:**
-- Create: `ReTiCaMsgr/ReactionPaletteMenu.swift`
-- Modify (temporarily, reverted in-task): `ReTiCaMsgr/ChatView.swift`
+- Create: `ReTiCAMsgr/ReactionPaletteMenu.swift`
+- Modify (temporarily, reverted in-task): `ReTiCAMsgr/ChatView.swift`
 
 **Interfaces:**
 - Consumes: `QuickReactions.default`.
@@ -1160,10 +1160,10 @@ Decide the palette mechanism on a real simulator, then keep only the winner.
 
 - [ ] **Step 1: Write both candidates**
 
-`ReTiCaMsgr/ReactionPaletteMenu.swift`:
+`ReTiCAMsgr/ReactionPaletteMenu.swift`:
 ```swift
 import SwiftUI
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// The quick-reaction row at the top of a message's context menu: six emoji and a ＋.
 /// `onSelect` must fire on every tap, including the currently selected emoji — the reducer
@@ -1237,14 +1237,14 @@ and re-verify.
 
 - [ ] **Step 3: Keep only the winner**
 
-Delete the losing variant (and `moreTag` if A wins) so `body` returns the winner directly; keep the doc comment accurate (drop the "Candidate" comments). Revert the temporary `ChatView.swift` change (`git -C /Users/ell/development/ios/apps/ReTiCaMsgr checkout ReTiCaMsgr/ChatView.swift`). Build the app (Global Constraints build command) — expect `BUILD SUCCEEDED`.
+Delete the losing variant (and `moreTag` if A wins) so `body` returns the winner directly; keep the doc comment accurate (drop the "Candidate" comments). Revert the temporary `ChatView.swift` change (`git -C /Users/ell/development/ios/apps/ReTiCAMsgr checkout ReTiCAMsgr/ChatView.swift`). Build the app (Global Constraints build command) — expect `BUILD SUCCEEDED`.
 
 - [ ] **Step 4: Commit**
 
 Commit message records the spike outcome, e.g. `feat: ReactionPaletteMenu (palette Picker; re-tap fires on iOS 26.4)`:
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgr/ReactionPaletteMenu.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: ReactionPaletteMenu (<winner>; <one-line finding>)" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgr/ReactionPaletteMenu.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -m "feat: ReactionPaletteMenu (<winner>; <one-line finding>)" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1252,7 +1252,7 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: ReactionPalet
 ### Task 7: `EmojiPickerSheet`
 
 **Files:**
-- Create: `ReTiCaMsgr/EmojiPickerSheet.swift`
+- Create: `ReTiCAMsgr/EmojiPickerSheet.swift`
 
 **Interfaces:**
 - Consumes: `EmojiCatalog.shared`, `EmojiCatalog.Entry`, `EmojiCatalog.Group`.
@@ -1260,10 +1260,10 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: ReactionPalet
 
 - [ ] **Step 1: Implement**
 
-`ReTiCaMsgr/EmojiPickerSheet.swift`:
+`ReTiCAMsgr/EmojiPickerSheet.swift`:
 ```swift
 import SwiftUI
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 /// Full emoji picker for reactions: grouped grid, searchable by name.
 struct EmojiPickerSheet: View {
@@ -1337,8 +1337,8 @@ Run the Global Constraints app build command. Expected: `BUILD SUCCEEDED`.
 - [ ] **Step 3: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgr/EmojiPickerSheet.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: EmojiPickerSheet — searchable grouped emoji grid" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgr/EmojiPickerSheet.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -m "feat: EmojiPickerSheet — searchable grouped emoji grid" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1346,7 +1346,7 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: EmojiPickerSh
 ### Task 8: Wire it into `ChatView` — context menu, badges, Copy, sheet; manual verification
 
 **Files:**
-- Modify: `ReTiCaMsgr/ChatView.swift` (whole file shown below)
+- Modify: `ReTiCAMsgr/ChatView.swift` (whole file shown below)
 
 **Interfaces:**
 - Consumes: `store.threadReactions`, `store.reachablePeers`, `store.openPeerHex`, `AppFeature.Action.reactionSelected(messageHash:emoji:)`, `ReactionSummary.Item`, `ReactionPaletteMenu`, `EmojiPickerSheet`.
@@ -1354,11 +1354,11 @@ git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: EmojiPickerSh
 
 - [ ] **Step 1: Implement**
 
-Replace `ReTiCaMsgr/ChatView.swift` with:
+Replace `ReTiCAMsgr/ChatView.swift` with:
 ```swift
 //
 //  ChatView.swift
-//  ReTiCaMsgr
+//  ReTiCAMsgr
 //
 //  Created by Elliot Schrock on 8/1/26.
 //
@@ -1366,7 +1366,7 @@ Replace `ReTiCaMsgr/ChatView.swift` with:
 import SwiftUI
 import UIKit
 import ComposableArchitecture
-import ReTiCaMsgrCore
+import ReTiCAMsgrCore
 
 struct ChatView: View {
     @Bindable var store: StoreOf<AppFeature>
@@ -1526,6 +1526,6 @@ Any failure: stop and diagnose (superpowers:systematic-debugging) before continu
 - [ ] **Step 4: Commit**
 
 ```bash
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr add ReTiCaMsgr/ChatView.swift
-git -C /Users/ell/development/ios/apps/ReTiCaMsgr commit -m "feat: long-press reactions in chat — palette, badges, Copy, full picker" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr add ReTiCAMsgr/ChatView.swift
+git -C /Users/ell/development/ios/apps/ReTiCAMsgr commit -m "feat: long-press reactions in chat — palette, badges, Copy, full picker" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```

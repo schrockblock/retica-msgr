@@ -1,7 +1,7 @@
 # Emoji reactions on messages
 
-**Written:** 2026-09-25. **Repo:** ReTiCaMsgr (`/Users/ell/development/ios/apps/ReTiCaMsgr`),
-logic in `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/`, UI in `ReTiCaMsgr/ChatView.swift`. Target: `main`.
+**Written:** 2026-09-25. **Repo:** ReTiCAMsgr (`/Users/ell/development/ios/apps/ReTiCAMsgr`),
+logic in `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/`, UI in `ReTiCAMsgr/ChatView.swift`. Target: `main`.
 
 ## Goal
 
@@ -93,7 +93,7 @@ row's. Removals are stored as tombstones (`emoji = ""`), never deleted, so a lat
 `reactorHex` is the local identity or that thread's `peerHex`. A third party that learns a message
 hash therefore cannot inject a reaction into someone else's conversation view.
 
-## Core components (`ReTiCaMsgrCore`)
+## Core components (`ReTiCAMsgrCore`)
 
 - **`ReactionWire`** — pure `encode(target: Data, emoji: String) -> [MsgPackValue.IntPair]` and
   `decode(_ fields: [MsgPackValue.IntPair]) -> Decoded?` where `Decoded` distinguishes
@@ -128,7 +128,7 @@ hash therefore cannot inject a reaction into someone else's conversation view.
   - *malformed reaction*: write the `SeenHashRow`, nothing else.
   - *not a reaction*: existing behavior, but `messageHash: m.hash.hexString`.
 
-## UI (`ReTiCaMsgr` app target)
+## UI (`ReTiCAMsgr` app target)
 
 - **`MessageBubble`** gets
   `.contextMenu { ReactionPaletteMenu(...) ; Button("Copy") } preview: { MessageBubble(...) }`.
@@ -155,8 +155,8 @@ hash therefore cannot inject a reaction into someone else's conversation view.
 
 ## Testing
 
-Core tests use Swift Testing in `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/`, run with
-`swift test --package-path ReTiCaMsgrCore`. Every new test goes through the mutate → red → revert →
+Core tests use Swift Testing in `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/`, run with
+`swift test --package-path ReTiCAMsgrCore`. Every new test goes through the mutate → red → revert →
 green verification.
 
 - **`ReactionWire`**: round-trip through a real `LXMessage.create` → pack → unpack; empty emoji
@@ -181,7 +181,7 @@ green verification.
 
 ## Out of scope
 
-- Text fallback in `content` for non-ReTiCaMsgr clients (phase 2). Until then, Sideband/MeshChat
+- Text fallback in `content` for non-ReTiCAMsgr clients (phase 2). Until then, Sideband/MeshChat
   users will likely see reaction messages as blank bubbles.
 - Skin-tone variants; recently-used emoji.
 - Tappable badges / "who reacted" list.
