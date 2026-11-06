@@ -257,7 +257,7 @@ private func original() -> UNNotificationContent {
 - Not the macOS entitlements (no service extension on the Mac).
 
 - [ ] **Step 1: Edit** the three files.
-- [ ] **Step 2: Build for the simulator:** `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-sender-push/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'generic/platform=iOS Simulator' build` → `** BUILD SUCCEEDED **`. Also build the Mac scheme the same way to prove `ReTiCaMsgrPushService` still compiles there.
+- [ ] **Step 2: Build for the simulator:** `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-sender-push/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'generic/platform=iOS Simulator' build` → `** BUILD SUCCEEDED **`. There is no separate Mac scheme: build the same `ReTiCaMsgr` scheme with `-destination 'generic/platform=macOS'` to prove `ReTiCaMsgrPushService` still compiles there.
 - [ ] **Step 3: Device build** with `-allowProvisioningUpdates` (signing is Automatic, so Xcode should add the capability to both App IDs). If it fails on provisioning, stop and tell the user to enable **Communication Notifications** on both App IDs in the developer portal.
 - [ ] **Step 4: Commit** `chore: Communication Notifications capability`.
 
