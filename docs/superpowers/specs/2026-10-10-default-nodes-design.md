@@ -199,3 +199,75 @@ Runs once, at launch, when `nodes.json` does not exist:
 - Discovering nodes from announces.
 - IFAC per node.
 - Removing the old `host`/`port`/`pushHubHex` storage keys (they are simply no longer read).
+
+## Amendments at planning time (2026-10-10)
+
+Found while writing `docs/superpowers/plans/2026-10-10-default-nodes.md` against the code. Each
+records a departure from, or a resolution of, the text above.
+
+- **A1. One socket per client.** `TCPConnection.liveValue` builds ONE `NWConnectionActor` and
+  captures it in `open`/`send`/`close`; `open` tears down the previous connection. Two
+  `TCPClientInterface`s sharing that value would close each other's socket and `send` to
+  whichever dialed last. ReTiCA gains a `TCPConnectionPool` dependency (`\.tcpConnectionPool`)
+  keyed by `TCPClientInterface.State.connectionKey` (`"host:port"`); the live pool memoizes one
+  live `TCPConnection` per key, and the test default forwards every key to the injected
+  `\.tcpConnection`, so every existing single-client mock keeps working unchanged.
+- **A2. Slot removal is a ReTiCA verb.** `TransportEndpoint.Action.removeTCPClient(InterfaceID)`
+  deregisters the interface from the router and link plane (when registered, with the maintenance
+  rule), removes the element (TCA 1.26's `forEach` cancels the element's effects itself: the
+  connection stream, the reconnect timer and the writer), and closes that client's socket through
+  the pool. The app's `syncEndpointNodes` sends it for every slot whose entry is gone, disabled or
+  edited, and `.concatenate`s those sends before any `.start`/`.connect`, so a removal is reduced
+  before a dial can reach the departing slot. §1's "explicit disconnect" arm stays for `.stop`
+  and `.backgrounded`.
+- **A3. `TCPEndpoint.State.init` keeps its `interfaceID: InterfaceID("tcp")` default.** Dropping
+  it would touch 57 construction sites (ReTiCA tests, Nbhd) for a nudge the app does not need:
+  the app builds every id from `host:port`, and an `IdentifiedArray` literal traps on a duplicate.
+- **A4. Test fan-out in ReTiCA.** About 140 lines in 20 ReTiCA test files match the
+  `.tcpClient(...)` action shape; they are rewritten mechanically (plan Task R2 lists the rules).
+- **A5. Migration trigger.** With `@Shared(.fileStorage)` the observable is the loaded list, so
+  the migration runs when `nodes.isEmpty`. The built-in entry is in every written list, so empty
+  means "never written".
+- **A6. Legacy keys.** `AppFeature.State.host`/`port` become internal `legacyHost`/`legacyPort`
+  (same `@Shared(.appStorage)` keys, read only by the migration); `State.init(host:port:)` loses
+  those parameters. `PushFeature.State.hubHex` stays the push feature's own storage; the migration
+  reads the legacy hex from it, and the app keeps it equal to the push node's hex through
+  `setHubHex`. A legacy hex is attached only when it is 32 hex characters.
+- **A7. Push wiring is a sync, not a diff.** After launch, connect, a re-dial and every node
+  action, the app sends `hubChanged(host:port:)` for the push node (`""`/`0` when there is none)
+  and `setHubHex` only when the push node's hex differs from what the push feature holds (every
+  `setHubHex` counts as a hub change there). With no push node the hex is cleared, so the push
+  feature fails closed ("Invalid push hub address"); the stored `pushEnabled` is left alone.
+- **A8. The endpoint starts with no TCP client.** `State.init` builds the service node over
+  `TransportEndpoint.State()`; `syncEndpointNodes` populates the set at launch, connect, foreground
+  and after node actions.
+- **A9. Default propagation hex as a dependency.** `\.defaultPropagationHex` (live value
+  `DefaultNode.propagationHex`, test value nil) feeds `State.effectivePropagationNodeHex`, so the
+  toggle rule is testable with and without a default. Turning the default off with an empty stored
+  hex leaves the router on its current node until relaunch (there is no clear verb), as today.
+- **A10. Foreground connection state.** The re-dial sets `connection = .connecting` only when no
+  interface is up, so a live node or BLE peer keeps the app "connected" while another node
+  re-dials. (§3 "any interface up" applied consistently; the old code set connecting regardless.)
+- **A11. Diagnostics socket rows.** One row per client slot, `node <host:port>` with its status,
+  `nodes (none enabled)` when the set is empty; the disagreement reason reads
+  `app reports X, nodes report host:port=status, …`.
+- **A12. Link plane on disconnect.** `LinkPlane.interfaceDisconnected` does not close links; it
+  marks that interface's links `rehomePermitted`. §1's test asserts that, per interface.
+
+## Amendments at the final review (2026-10-11)
+
+Rulings made by the executing session on the whole-branch review's two Important findings;
+the user can revert either.
+
+- **A13. The built-in entry regains its hex.** When no entry carries a push hex (the user deleted
+  their push node or cleared its hex), the app gives the built-in entry `DefaultNode.pushHubHex`
+  back. The user still never edits the built-in entry; the app restores it. A disabled entry that
+  still carries a hex counts as carrying one, so disabling one's own push node does not hand push
+  to Gaefu, deleting it does. Without this, saving a hex on any user node cleared Gaefu's hex for
+  good and there was no visible way back to the default push identity.
+- **A14. Push turns off with its node.** When the push node disappears while push is enabled, the
+  app sends `setEnabled(false)` before it clears the hub hex (§2 "with no such entry, push is
+  off"), which unregisters from APNs so wakes stop and makes a best-effort `/unregister` with the
+  old hub. The Settings toggle is disabled only when there is no push node AND push is already
+  off, so it can always be turned off. A push-node switch to another hub does not unregister from
+  the old hub; it expires on its own (deferred).
