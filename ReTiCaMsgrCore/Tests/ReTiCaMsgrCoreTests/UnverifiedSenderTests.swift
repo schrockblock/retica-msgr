@@ -489,3 +489,25 @@ private func onlyRow(_ db: any DatabaseWriter) async throws -> Message {
     #expect(row.validated == true)
     #expect(try await db.read { try PeerProfile.fetch(bobHash.hexString, $0) }?.name == "Bob")
 }
+
+/// A big restored table feeds the router in the same step, not through one chained
+/// `.learnedIdentity` send per identity. On 2026-11-01 the Mac's table held 24,603 rows: about
+/// 6,000 chained sends nested deep enough to overflow the main thread's stack at every launch.
+@MainActor @Test func rehydratingThousandsOfDestinationsFeedsTheRouterAtOnce() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeUnverifiedStore(db, identity: Identity(), badge: .ignored)
+    var table: [Data: LearnedDestination] = [:]
+    for _ in 0..<8000 {
+        let peer = Identity()
+        table[LXMessage.deliveryHash(identityHash: peer.hash)] = learned(peer)
+    }
+    // A destination that is not an lxmf.delivery hash for its identity is not fed (same check).
+    let otherHash = Data(repeating: 0x0D, count: 16)
+    table[otherHash] = learned(Identity())
+
+    await store.send(.rehydrateLearnedDestinations(table))
+    let known = store.state.node.client.router.knownIdentities
+    #expect(known.count == 8000)
+    #expect(known[otherHash] == nil)
+    await settle(store)
+}
