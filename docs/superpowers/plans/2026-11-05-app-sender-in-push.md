@@ -4,9 +4,9 @@
 
 **Goal:** The app keeps an app-group sender directory (name, public key, picture) up to date, and the Notification Service Extension uses ReTiCAPush's verified `PushOutcome` to title the banner with the sender's name and show their picture as a Communication Notification.
 
-**Architecture:** A pure builder turns app state into `[hex: SenderDirectory.Input]`. A `SenderDirectoryReducer`, composed into `AppFeature.body`, watches a cheap fingerprint of the inputs with `.onChange`, debounces 1 s, reads group members from the database and pictures from disk, and writes through a `SenderDirectoryWriter` dependency (disabled by default in tests, so existing TestStore suites see no new effects). The banner logic moves from the extension into `ReTiCaMsgrPushService` as `PushBanner`, a pure plan plus a thin Intents step.
+**Architecture:** A pure builder turns app state into `[hex: SenderDirectory.Input]`. A `SenderDirectoryReducer`, composed into `AppFeature.body`, watches a cheap fingerprint of the inputs with `.onChange`, debounces 1 s, reads group members from the database and pictures from disk, and writes through a `SenderDirectoryWriter` dependency (disabled by default in tests, so existing TestStore suites see no new effects). The banner logic moves from the extension into `ReTiCAMsgrPushService` as `PushBanner`, a pure plan plus a thin Intents step.
 
-**Tech Stack:** Swift 6, TCA, SQLiteData/GRDB, UserNotifications, Intents, swift-testing. Core tests: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-sender-push/ReTiCaMsgrCore --filter <prefix>`.
+**Tech Stack:** Swift 6, TCA, SQLiteData/GRDB, UserNotifications, Intents, swift-testing. Core tests: `swift test --package-path /Users/ell/development/ios/apps/ReTiCaMsgr-sender-push/ReTiCAMsgrCore --filter <prefix>`.
 
 **Spec:** `/Users/ell/development/ios/apps/ReTiCaMsgr-sender-push/docs/superpowers/specs/2026-11-05-sender-in-push-design.md` (§3, §4, §5, Testing).
 
@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - Worktree `/Users/ell/development/ios/apps/ReTiCaMsgr-sender-push`, branch `feat/sender-in-push` (already holds the spec).
-- `ReTiCaMsgrPushService` stays free of TCA and SQLite. It may import `UserNotifications` and `Intents`.
+- `ReTiCAMsgrPushService` stays free of TCA and SQLite. It may import `UserNotifications` and `Intents`.
 - Directory peers: conversation peers (`Conversation.kind == .peer`) ∪ contact-linked peers ∪ members of every group (`GroupMember` table) − me − blocked − peers with no known public key (`state.node.client.router.knownIdentities`). Entries with neither a name nor a picture are left out.
 - Name: `State.peerDisplayName(hex)`. Picture: `AvatarSource.resolve`; `.photo(path)` → the JPEG bytes from `AvatarStore`; `.contact(data)` → `ImageEncoder.encodeAvatar(data).data`; `.icon`/`.initials` → none.
 - Banner: title = name, or the first 8 hex characters for a picture-only entry; body = `"New message"`; `threadIdentifier` = sender hex; no sender → the original content untouched (badged as today); suppress → empty content.
@@ -36,8 +36,8 @@
 ### Task 1: The directory builder (pure)
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/SenderDirectoryBuilder.swift`
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/SenderDirectoryBuilderTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/SenderDirectoryBuilder.swift`
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/SenderDirectoryBuilderTests.swift`
 
 **Interfaces:**
 - Produces:
@@ -110,9 +110,9 @@ private let key = Data(repeating: 9, count: 64)
 ### Task 2: The writer (reducer, dependency, debounce)
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/SenderDirectoryReducer.swift`
-- Modify: `ReTiCaMsgrCore/Sources/ReTiCaMsgrCore/AppFeature.swift` (compose `SenderDirectoryReducer()` after `BlockingReducer()` near line 2992)
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/SenderDirectoryWriterTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/SenderDirectoryReducer.swift`
+- Modify: `ReTiCAMsgrCore/Sources/ReTiCAMsgrCore/AppFeature.swift` (compose `SenderDirectoryReducer()` after `BlockingReducer()` near line 2992)
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/SenderDirectoryWriterTests.swift`
 
 **Interfaces:**
 - Consumes: Task 1; `SenderDirectoryStore` via `state.push.storage.senderDirectory`; `@Dependency(\.avatarStore)`, `\.contactsClient` (`thumbnail(id)`), `\.defaultDatabase`, `\.continuousClock`.
@@ -161,7 +161,7 @@ Write each body fully; the comments give the setup and the exact assertions.
 
 - [ ] **Step 2: Run, expect failure:** `--filter senderDirectory`.
 - [ ] **Step 3: Implement** `SenderDirectoryReducer.swift` and compose it.
-- [ ] **Step 4: Run `--filter senderDirectory`**, then the whole Core suite (`swift test --package-path …/ReTiCaMsgrCore`) — all green, same count as `main` plus the new tests. Any existing test that now fails means the disabled path still produces an effect; fix that, not the test.
+- [ ] **Step 4: Run `--filter senderDirectory`**, then the whole Core suite (`swift test --package-path …/ReTiCAMsgrCore`) — all green, same count as `main` plus the new tests. Any existing test that now fails means the disabled path still produces an effect; fix that, not the test.
 - [ ] **Step 5: Mutation check** (6 tests):
   - `…AfterTheDebounce` ← sleep 0 instead of 1 s (the 999 ms assertion goes red).
   - `…IncludesGroupMembersFromTheDatabase` ← pass `[]` as group members.
@@ -172,12 +172,12 @@ Write each body fully; the comments give the setup and the exact assertions.
   Table, revert, green.
 - [ ] **Step 6: Commit** `feat(core): keep the app-group sender directory current`.
 
-### Task 3: The banner (`PushBanner` in `ReTiCaMsgrPushService`)
+### Task 3: The banner (`PushBanner` in `ReTiCAMsgrPushService`)
 
 **Files:**
-- Create: `ReTiCaMsgrCore/Sources/ReTiCaMsgrPushService/PushBanner.swift`
-- Modify: `ReTiCaMsgrNotificationService/NotificationService.swift` (call `handler.outcome(userInfo:)` and `PushBanner.content`; delete its `content(for:original:)`)
-- Test: `ReTiCaMsgrCore/Tests/ReTiCaMsgrCoreTests/PushBannerTests.swift`
+- Create: `ReTiCAMsgrCore/Sources/ReTiCAMsgrPushService/PushBanner.swift`
+- Modify: `ReTiCAMsgrNotificationService/NotificationService.swift` (call `handler.outcome(userInfo:)` and `PushBanner.content`; delete its `content(for:original:)`)
+- Test: `ReTiCAMsgrCore/Tests/ReTiCAMsgrCoreTests/PushBannerTests.swift`
 
 **Interfaces:**
 - Consumes: `PushOutcome`, `PushSenderMatch` (ReTiCAPush); `BadgeCounter` (same target).
@@ -252,12 +252,12 @@ private func original() -> UNNotificationContent {
 ### Task 4: Capabilities and a device build
 
 **Files:**
-- Modify: `ReTiCaMsgr/ReTiCaMsgr.entitlements`, `ReTiCaMsgrNotificationService/ReTiCaMsgrNotificationService.entitlements` — add `com.apple.developer.usernotifications.communication` = `true`.
-- Modify: `ReTiCaMsgr/Info.plist` — `NSUserActivityTypes` = `[INSendMessageIntent]`.
+- Modify: `ReTiCAMsgr/ReTiCAMsgr.entitlements`, `ReTiCAMsgrNotificationService/ReTiCAMsgrNotificationService.entitlements` — add `com.apple.developer.usernotifications.communication` = `true`.
+- Modify: `ReTiCAMsgr/Info.plist` — `NSUserActivityTypes` = `[INSendMessageIntent]`.
 - Not the macOS entitlements (no service extension on the Mac).
 
 - [ ] **Step 1: Edit** the three files.
-- [ ] **Step 2: Build for the simulator:** `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-sender-push/ReTiCaMsgr.xcodeproj -scheme ReTiCaMsgr -destination 'generic/platform=iOS Simulator' build` → `** BUILD SUCCEEDED **`. There is no separate Mac scheme: build the same `ReTiCaMsgr` scheme with `-destination 'generic/platform=macOS'` to prove `ReTiCaMsgrPushService` still compiles there.
+- [ ] **Step 2: Build for the simulator:** `xcodebuild -project /Users/ell/development/ios/apps/ReTiCaMsgr-sender-push/ReTiCAMsgr.xcodeproj -scheme ReTiCAMsgr -destination 'generic/platform=iOS Simulator' build` → `** BUILD SUCCEEDED **`. There is no separate Mac scheme: build the same `ReTiCAMsgr` scheme with `-destination 'generic/platform=macOS'` to prove `ReTiCAMsgrPushService` still compiles there.
 - [ ] **Step 3: Device build** with `-allowProvisioningUpdates` (signing is Automatic, so Xcode should add the capability to both App IDs). If it fails on provisioning, stop and tell the user to enable **Communication Notifications** on both App IDs in the developer portal.
 - [ ] **Step 4: Commit** `chore: Communication Notifications capability`.
 

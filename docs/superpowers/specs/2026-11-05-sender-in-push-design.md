@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-05. **Scope:** two repositories. ReTiCAPush (`ReTiCAPushCore`,
 `ReTiCAPushExtension`: verified sender attribution and a shared sender directory) and the
-ReTiCaMsgr app (Core package: writing the directory; the Notification Service Extension: drawing
+ReTiCAMsgr app (Core package: writing the directory; the Notification Service Extension: drawing
 the banner; project settings: the Communication Notifications capability).
 
 ## Intent
@@ -56,7 +56,7 @@ from them is marked **(my call)**.
 
 ## Constraints
 
-- The extension links no TCA or SQLite (`ReTiCaMsgrPushService` depends only on
+- The extension links no TCA or SQLite (`ReTiCAMsgrPushService` depends only on
   `ReTiCAPushExtension`). It can't read the app's database or `AvatarStore`, which lives in the
   app's own Application Support folder outside the app group.
 - The extension has a 30-second budget and runs while the phone is locked after first unlock.
@@ -121,10 +121,10 @@ truth and writes a mirror on every change and on launch, and the extension reads
 - The sender is decided before the network wait, in the same locked box as the verdict, so a
   slow proof upload never costs the name.
 
-### 3. The banner (app: `ReTiCaMsgrNotificationService`)
+### 3. The banner (app: `ReTiCAMsgrNotificationService`)
 
 `NotificationService.content(for:original:)` takes the `PushOutcome`. The extension target has
-no tests, so this function moves into `ReTiCaMsgrPushService` (which has them) and the extension
+no tests, so this function moves into `ReTiCAMsgrPushService` (which has them) and the extension
 calls it. That target then links `Intents`, which is also available on macOS. For
 `.deliverOriginal` with a sender:
 
