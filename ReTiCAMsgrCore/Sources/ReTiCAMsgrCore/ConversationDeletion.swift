@@ -27,17 +27,17 @@ public enum ConversationDeletion {
     /// excludes group posts, which also carry that peer's address.
     public static func run(_ database: any DatabaseWriter, attachmentStore: AttachmentStore,
                            key: String, isGroup: Bool) async throws -> Result {
-        let rows = try await database.read { db in
+        let messages = try await database.read { db -> [(id: UUID, hash: String, inFlight: Bool)] in
             let sql = isGroup
                 ? "SELECT id, messageHash, isOutgoing, status FROM messages WHERE groupHex = ?"
                 : "SELECT id, messageHash, isOutgoing, status FROM messages WHERE peerHex = ? AND groupHex IS NULL"
-            return try Row.fetchAll(db, sql: sql, arguments: [key])
-        }
-        let messages = rows.compactMap { row -> (id: UUID, hash: String, inFlight: Bool)? in
-            guard let id = UUID(uuidString: row["id"]) else { return nil }
-            let outgoing: Bool = row["isOutgoing"]
-            let status: String = row["status"]
-            return (id, row["messageHash"], outgoing && status == MessageStatus.sending)
+            let rows = try Row.fetchAll(db, sql: sql, arguments: [key])
+            return rows.compactMap { row -> (id: UUID, hash: String, inFlight: Bool)? in
+                guard let id = UUID(uuidString: row["id"]) else { return nil }
+                let outgoing: Bool = row["isOutgoing"]
+                let status: String = row["status"]
+                return (id, row["messageHash"], outgoing && status == MessageStatus.sending)
+            }
         }
         guard !messages.isEmpty else { return Result(deleted: 0) }
         // A group post's `messageHash` is its post id; the router knows each member's copy by the
