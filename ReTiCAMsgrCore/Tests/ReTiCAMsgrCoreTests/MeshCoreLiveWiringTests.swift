@@ -152,6 +152,56 @@ private let connectedEvent = MeshCoreDriverEvent.connected(selfPrefix: mcRadioPu
     #expect(await mcWait { log.finished.value })
 }
 
+/// The forget must land before the event is forwarded: a consumer that acts on the event (or a
+/// start that follows it) must already see the retired key gone. Inside `forgetRetired`, the test
+/// waits (up to 3 s) for the consumer to report the event. The real wrapper hasn't forwarded it
+/// yet, so the wait runs out and the check passes; a wrapper that forwarded first lets the
+/// consumer see it during the wait. Correct code can't fail this; the 3 s only bounds how long a
+/// forward-first wrapper has to show itself on a busy main actor.
+@MainActor @Test func mcSecretsForgetsBeforeForwardingTheClearedEvent() async {
+    let harness = MeshCoreRadioHarness()
+    let live = keyStore(pasting: [mcHexB, mcHexA])
+    let consumerSawEvent = LockIsolated(false)
+    let forwardedBeforeForget = LockIsolated<Bool?>(nil)
+    var store = live
+    store.forgetRetired = { keys in
+        let deadline = Date().addingTimeInterval(3)
+        while !consumerSawEvent.value, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        forwardedBeforeForget.setValue(consumerSawEvent.value)
+        live.forgetRetired(keys)
+    }
+    let driver = MeshCoreDriver.resolvingSecrets(base: harness.driver, keyStore: store)
+    let stream = driver.start(config())
+    let consumer = Task { @MainActor in
+        for await event in stream where event == .retiredChannelsCleared {
+            consumerSawEvent.setValue(true)
+        }
+    }
+    harness.yieldToLatest(.retiredChannelsCleared)
+    #expect(await mcWait { forwardedBeforeForget.value != nil && consumerSawEvent.value })
+    #expect(forwardedBeforeForget.value == false, "the cleared event was forwarded before the forget")
+    #expect(live.secrets()?.retired == [])
+    consumer.cancel()
+}
+
+// MARK: - installDriver
+
+/// The installed driver goes through `resolvingSecrets`: the base sees the 16-byte key at start,
+/// though the reducer's config carries none.
+@MainActor @Test func mcWiringInstalledDriverFillsTheKey() async {
+    let harness = MeshCoreRadioHarness()
+    var values = DependencyValues()
+    MeshCoreLiveWiring.installDriver(into: &values, keyStore: keyStore(pasting: [mcHexB, mcHexA]),
+                                     base: harness.driver)
+    let log = EventLog(values.meshCoreDriver.start(config()))
+    #expect(harness.configs.value.count == 1)
+    #expect(harness.configs.value.first?.channelSecret.count == 16)
+    #expect(harness.configs.value.first?.channelSecret == key(mcHexA))
+    #expect(harness.configs.value.first?.retiredChannelSecrets == [key(mcHexB)])
+    #expect(harness.calls.value == [.start(mcRadioIDA, canRoute: false, secretBytes: 16)])
+    log.task.cancel()
+}
+
 // MARK: - Scanner
 
 @MainActor @Test func mcLiveScanMapsEachRadio() async {

@@ -100,6 +100,15 @@ public struct MeshCoreStatus: Equatable, Sendable {
 }
 
 extension MeshCoreStatus.Counters {
+    /// A slot's counters, as the endpoint reports them.
+    public init(_ counters: MeshCoreCounters) {
+        self.init(malformed: counters.malformed, notAddressed: counters.notAddressed,
+                  evicted: counters.evicted, timedOut: counters.timedOut, oversize: counters.oversize,
+                  completed: counters.completed, queueFull: counters.queueFull,
+                  sendFailed: counters.sendFailed, announcesLimited: counters.announcesLimited,
+                  pathRequestsLimited: counters.pathRequestsLimited)
+    }
+
     public static func + (lhs: Self, rhs: Self) -> Self {
         Self(malformed: lhs.malformed + rhs.malformed, notAddressed: lhs.notAddressed + rhs.notAddressed,
              evicted: lhs.evicted + rhs.evicted, timedOut: lhs.timedOut + rhs.timedOut,

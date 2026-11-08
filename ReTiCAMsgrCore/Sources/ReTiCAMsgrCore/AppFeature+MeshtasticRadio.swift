@@ -23,8 +23,10 @@ extension AppFeature.State {
     var meshtasticWillDial: Bool { meshtasticEnabled && meshtasticRadioUUID != nil }
 
     /// Amendment A10 ("only show Connecting… when something will actually dial"), now including
-    /// the radio. The single definition behind onLaunch, Connect and the foreground re-dial.
-    var somethingWillDial: Bool { !enabledNodes.isEmpty || listenEnabled || bleEnabled || meshtasticWillDial }
+    /// the radios. The single definition behind onLaunch, Connect and the foreground re-dial.
+    var somethingWillDial: Bool {
+        !enabledNodes.isEmpty || listenEnabled || bleEnabled || meshtasticWillDial || meshCoreWillDial
+    }
 }
 
 /// Makes the radio slot follow `meshtasticEnabled` + `meshtasticRadioUUID` (spec §7 lane E).

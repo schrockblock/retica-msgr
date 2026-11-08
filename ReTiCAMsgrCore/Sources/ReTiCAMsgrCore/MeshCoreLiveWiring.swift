@@ -112,7 +112,14 @@ public enum MeshCoreLiveWiring {
             send: { await driver.send($0) },
             removeChannel: { await driver.removeChannel() },
             stop: { await driver.stop() })
-        values.meshCoreDriver = .resolvingSecrets(base: lazyDriver, keyStore: keyStore)
+        installDriver(into: &values, keyStore: keyStore, base: lazyDriver)
+    }
+
+    /// `installDriver(into:keyStore:)` over `base`, so a test can check that what's installed goes
+    /// through `resolvingSecrets` without starting CoreBluetooth.
+    static func installDriver(into values: inout DependencyValues, keyStore: MeshCoreKeyStore,
+                              base: MeshCoreDriver) {
+        values.meshCoreDriver = .resolvingSecrets(base: base, keyStore: keyStore)
     }
 
     /// `$0.meshCoreRadioDetails`: what the live driver last reported.

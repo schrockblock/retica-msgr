@@ -96,6 +96,7 @@ func mcRadioStore(radio: UUID?, enabled: Bool = true, radioHarness: MeshCoreRadi
                   meshtastic: MeshRadioHarness = MeshRadioHarness(),
                   tcp: MeshTCPHarness = MeshTCPHarness(),
                   keychain: InMemoryKeychain = mcKeyedKeychain(),
+                  removeChannelSends: LockIsolated<Int>? = nil,
                   configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     let store = MeshCoreKeyStore.live(ops: keychain.ops)
     let defaults = UserDefaults.inMemory
@@ -111,7 +112,18 @@ func mcRadioStore(radio: UUID?, enabled: Bool = true, radioHarness: MeshCoreRadi
     configure?(&initial)
     let db = try! AppDatabase.makeInMemory()
     let testStore = TestStore(initialState: initial) {
-        AppFeature()
+        CombineReducers {
+            AppFeature()
+            // Counts the `.removeChannel`s the store reduces, when the test asks: lane B's
+            // interface answers one sent to a radio that isn't online without calling the driver,
+            // so the harness never sees it.
+            Reduce<AppFeature.State, AppFeature.Action> { _, action in
+                if case .node(.client(.endpoint(.meshCore(.removeChannel)))) = action {
+                    removeChannelSends?.withValue { $0 += 1 }
+                }
+                return .none
+            }
+        }
     } withDependencies: {
         $0.badge = .ignored
         $0.defaultAppStorage = defaults
@@ -141,15 +153,44 @@ func mcRadioStore(radio: UUID?, enabled: Bool = true, radioHarness: MeshCoreRadi
 }
 
 /// Brings the newest MeshCore driver session online and waits for its interface to register.
+/// Time-based waits with room for a whole-package run, where effects can wait seconds for a thread.
 @MainActor
 func mcBringRadioOnline(_ store: TestStoreOf<AppFeature>, _ radio: MeshCoreRadioHarness, id: InterfaceID,
                         starts: Int = 1,
                         params: MeshCoreLinkParams? = MeshCoreLinkParams(spreadingFactor: 10, bandwidthHz: 250_000,
                                                                          codingRate: 5)) async {
-    await radio.waitForStarts(starts)
+    _ = await meshWaitUntil(timeout: .seconds(20)) { radio.startCount >= starts }
     radio.yieldToLatest(.connected(selfPrefix: mcRadioPublicKey.prefix(4), publicKey: mcRadioPublicKey,
                                    params: params))
-    await store.receive({ isInterfaceConnected($0, id) }, timeout: .seconds(2))
+    await store.receive({ isInterfaceConnected($0, id) }, timeout: .seconds(20))
+}
+
+/// Polls `store`'s state until `condition` holds or `timeout` passes. A TestStore's `state` moves
+/// only as received actions are consumed, so each round skips them first. Returns as soon as the
+/// condition holds, so only a failing check pays the timeout.
+@MainActor
+func mcEventually(_ store: TestStoreOf<AppFeature>, timeout: Duration = .seconds(20),
+                  _ condition: @MainActor () -> Bool) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+        await store.skipReceivedActions(strict: false)
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    await store.skipReceivedActions(strict: false)
+    return condition()
+}
+
+/// True when every config the reducer handed the driver kept the key out of state: an empty channel
+/// secret and an empty retired list (the wrapper fills both only at `driver.start`).
+func mcConfigsHoldNoKey(_ radio: MeshCoreRadioHarness) -> Bool {
+    radio.configs.value.allSatisfy { $0.channelSecret.isEmpty && $0.retiredChannelSecrets.isEmpty }
+}
+
+func isMeshCoreRadioOffline(_ action: AppFeature.Action) -> Bool {
+    if case .node(.client(.endpoint(.meshCore(.delegate(.radioOffline))))) = action { return true }
+    return false
 }
 
 /// True when no `.start` follows a `.start` without a `.stop` between them.
