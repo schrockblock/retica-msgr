@@ -15,6 +15,9 @@ let package = Package(
         // Meshtastic radio support (spec 2026-10-16 §7 lane E): the app builds the session and the
         // scanner. Same checkout ReTiCA's `../MeshtasticKit` resolves to.
         .package(path: "../../../pods/MeshtasticKit"),
+        // MeshCore radio support (spec 2026-11-07 lane D): the app builds the session and the
+        // scanner. Same checkout ReTiCA's `../MeshCoreKit` resolves to.
+        .package(path: "../../../pods/MeshCoreKit"),
         // sharing-grdb was deprecated and replaced by sqlite-data (1.x+).
         // sharing-grdb 0.8.0 (latest) is incompatible with Swift 6.3 due to a
         // ScalarDatabaseFunction.invoke API break in swift-structured-queries 0.22:
@@ -33,6 +36,8 @@ let package = Package(
                 .product(name: "ReTiCAKeychain", package: "ReTiCA"),
                 .product(name: "ReTiCAMeshtasticLive", package: "ReTiCA"),
                 .product(name: "MeshtasticKit", package: "MeshtasticKit"),
+                .product(name: "ReTiCAMeshCoreLive", package: "ReTiCA"),
+                .product(name: "MeshCoreKit", package: "MeshCoreKit"),
                 .product(name: "ReTiCAPush", package: "ReTiCAPush"),
                 .product(name: "ReTiCAPushCore", package: "ReTiCAPush"),
                 .product(name: "SQLiteData", package: "sqlite-data"),
@@ -55,6 +60,8 @@ let package = Package(
                 .product(name: "ReTiCAPush", package: "ReTiCAPush"),
                 .product(name: "ReTiCAPushCore", package: "ReTiCAPush"),
                 .product(name: "MeshtasticKit", package: "MeshtasticKit"),
+                .product(name: "ReTiCAMeshCoreLive", package: "ReTiCA"),
+                .product(name: "MeshCoreKit", package: "MeshCoreKit"),
             ]
         ),
     ]

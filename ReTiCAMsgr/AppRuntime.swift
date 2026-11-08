@@ -140,6 +140,13 @@ final class AppRuntime {
             // The live Meshtastic driver over the app's ONE MeshtasticSession (spec 2026-10-16 §7
             // lane E). Lazy: no CoreBluetooth work until a radio slot starts.
             MeshtasticLiveWiring.installDriver(into: &$0)
+            // The live MeshCore driver over the app's ONE MeshCoreSession (spec 2026-11-07 lane D),
+            // filling the channel key from the key store only at `driver.start`; its radio details
+            // for Diagnostics; and the MeshCore half of the picker scan. Outside `#if DEBUG`: they
+            // build nothing until a slot starts, and a Release build can't start one.
+            MeshCoreLiveWiring.installDriver(into: &$0, keyStore: meshCoreKeyStore)
+            MeshCoreLiveWiring.installDetails(into: &$0)
+            MeshCoreLiveWiring.installScanner(into: &$0)
             // A purged attachment's decoded images leave the app's cache with its file (A17).
             $0.attachmentCacheEvictor = AttachmentCacheEvictor { ids in
                 await ThumbnailCache.shared.evict(attachmentIds: ids)
