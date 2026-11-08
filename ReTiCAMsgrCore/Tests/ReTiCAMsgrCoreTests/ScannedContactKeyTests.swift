@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import ComposableArchitecture
+import SQLiteData
 import ReTiCA
 import ReTiCATransport
 @testable import ReTiCAMsgrCore
@@ -17,6 +18,19 @@ private let aliceHash = Data(hexString: aliceAddress)!
     await store.send(.scannedContactKey(ScannedContact(addressHex: aliceAddress, publicKey: alice.publicKey)))
     await store.skipReceivedActions(strict: false)
     #expect(store.state.node.client.endpoint.recall(destinationHash: aliceHash)?.publicKey == alice.publicKey)
+}
+
+/// Saved at once, not on the next path-learned debounce or `.backgrounded`: the Mac never sends
+/// `.backgrounded`, and on a quiet network nothing else arms the debounce before a quit.
+@MainActor @Test func scannedKeyIsWrittenToTheDatabase() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let store = makeLinkStore(db, fake: FakeContacts(contacts: []))
+    await store.send(.scannedContactKey(ScannedContact(addressHex: aliceAddress, publicKey: alice.publicKey)))
+    await store.skipReceivedActions(strict: false)
+    await store.finish()
+    let rows = try await db.read { try KnownDestinationRow.all.fetchAll($0) }
+    #expect(rows.map(\.destinationHashHex) == [aliceAddress])
+    #expect(rows.first?.publicKeyHex == alice.publicKey.hexString)
 }
 
 /// An announced peer's entry carries its link cost. A scan must not replace it with a cost-less one,

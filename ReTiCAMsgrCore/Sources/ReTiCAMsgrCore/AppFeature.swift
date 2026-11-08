@@ -1677,8 +1677,12 @@ public struct AppFeature {
                       state.node.client.endpoint.recall(destinationHash: hash) == nil
                 else { return .none }
                 let entry = KnownDestination(identity: identity, appData: nil, lastHeard: transportDate.now)
-                // Persisted by the known-destination flush (debounced, and on `.backgrounded`).
-                return .send(.node(.client(.endpoint(.transport(.rehydrateKnownDestinations([hash: entry]))))))
+                // Written at once: the debounced flush is armed only by `pathLearned`, and the Mac
+                // never sends `.backgrounded`, so a scan of an offline peer could be lost on quit.
+                // A scan is rare and user-driven, so a full-table write here costs nothing.
+                return .concatenate(
+                    .send(.node(.client(.endpoint(.transport(.rehydrateKnownDestinations([hash: entry])))))),
+                    .send(._flushLearnedDestinations))
 
             case let .startConversation(hex):
                 guard let data = Data(hexString: hex), data.count == 16 else { return .none }
