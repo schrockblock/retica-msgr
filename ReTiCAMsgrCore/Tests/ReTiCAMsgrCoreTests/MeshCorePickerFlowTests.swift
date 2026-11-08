@@ -236,3 +236,19 @@ func mcFlowEveryExitResumesPausedBLE(_ exit: PickerExit) async {
     #expect(!store.state.blePausedForRadioScan)
     #expect(store.state.node.client.endpoint.ble?.ble.status == .online)
 }
+
+/// A swipe dismiss can land between the child's delegate send and its dismiss, so the parent can see
+/// `.selected` with no picker. It has no kind to store under, so it stores nothing.
+@MainActor @Test func mcFlowPickWithNoPickerOpenStoresNothing() async {
+    let defaults = UserDefaults.inMemory
+    let store = mcStore(defaults: defaults)
+    #expect(store.state.radioPicker == nil)
+    // TCA may report the delegate as an ifLet action sent with no presented state.
+    await withKnownIssue(isIntermittent: true) {
+        await store.send(.radioPicker(.presented(.delegate(.selected(mcAlpha)))))
+    }
+    #expect(defaults.string(forKey: "meshtasticRadioID") == nil)
+    #expect(defaults.string(forKey: "meshtasticRadioName") == nil)
+    #expect(defaults.string(forKey: "meshCoreRadioID") == nil)
+    #expect(defaults.string(forKey: "meshCoreRadioName") == nil)
+}

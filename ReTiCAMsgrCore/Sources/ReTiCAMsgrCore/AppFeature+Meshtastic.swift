@@ -68,9 +68,12 @@ struct MeshtasticSettingsReducer: Reducer {
                 case .meshCore:
                     state.$meshCoreRadioID.withLock { $0 = radio.id.uuidString }
                     state.$meshCoreRadioName.withLock { $0 = radio.name }
-                case .meshtastic, nil:
+                case .meshtastic:
                     state.$meshtasticRadioID.withLock { $0 = radio.id.uuidString }
                     state.$meshtasticRadioName.withLock { $0 = radio.name }
+                case nil:
+                    // A swipe dismiss landed before this delegate: no picker, so no kind to store under.
+                    break
                 }
                 return .none
 
