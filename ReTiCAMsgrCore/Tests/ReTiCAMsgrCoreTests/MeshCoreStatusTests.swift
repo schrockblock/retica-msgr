@@ -212,6 +212,31 @@ private let hubNode = NodeEntry(id: UUID(), name: "hub", host: "hub.example", po
     #expect(store.state.connection == .connecting)
 }
 
+/// Review Focus 5 (T9 review carry): a MeshCore policy failure never marks the app Disconnected
+/// while another radio is up. Meshtastic is turned off in Settings after it came up (that waits for
+/// Connect, so the radio stays up) so nothing else will dial: only the interface that is up keeps
+/// `.connected`.
+@MainActor @Test func mcStatusPolicyFailureWithMeshtasticUpStaysConnected() async {
+    let radio = MeshCoreRadioHarness()
+    let meshtastic = MeshRadioHarness()
+    let store = mcRadioStore(radio: mcRadioIDA, radioHarness: radio, meshtastic: meshtastic,
+                             configure: bothRadios)
+    await store.send(.connectTapped)
+    #expect(await mcWait { radio.startCount >= 1 && meshtastic.startCount >= 1 })
+    meshtastic.yieldToLatest(.connected(myNodeNum: meshSlotOwnNode, modemPreset: 8))
+    await store.receive({ isInterfaceConnected($0, meshSlotIDA) }, timeout: .seconds(20))
+    #expect(store.state.connection == .connected)
+    await store.send(.binding(.set(\.meshtasticEnabled, false)))
+    #expect(store.state.node.client.endpoint.meshtastic?.interface.isOnline == true,
+            "precondition: turning Meshtastic off waits for Connect")
+    radio.yieldToLatest(.unavailable(.other(MeshCoreLiveMessage.noFreeSlot)))
+    radio.finishLatest()
+    await store.receive(isMeshCoreAdapterUnavailable, timeout: .seconds(20))
+    #expect(store.state.meshCorePolicyFailed)
+    #expect(!store.state.somethingWillDial, "precondition: nothing else will dial")
+    #expect(store.state.connection == .connected)
+}
+
 // MARK: - Announces
 
 /// Contract 4: only the first interface-up registers; the MeshCore radio coming up after TCP
