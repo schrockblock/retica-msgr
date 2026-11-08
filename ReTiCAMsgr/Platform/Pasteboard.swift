@@ -17,19 +17,40 @@ enum Pasteboard {
         #endif
     }
 
-    /// How long a copied secret stays on the iOS pasteboard.
+    /// How long a copied secret stays on the pasteboard.
     static let secretLifetime: TimeInterval = 120
 
-    /// Copies a secret (the MeshCore channel key, ruling R8). On iOS the item is local-only, so
-    /// Universal Clipboard never sends it to another device, and it expires after `secretLifetime`.
-    /// macOS has no equivalent options, so there it is a plain copy.
+    #if !canImport(UIKit)
+    /// The nspasteboard.org markers: clipboard managers skip concealed items and don't keep
+    /// transient ones in their history.
+    private static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+    private static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+    #endif
+
+    /// Copies a secret (the MeshCore channel key, ruling R8 as amended). Universal Clipboard never
+    /// sends it to another device, and it is cleared after `secretLifetime`.
+    /// - iOS: a local-only item with an expiration date.
+    /// - macOS: current-host-only contents, marked concealed and transient, cleared after
+    ///   `secretLifetime` unless something else has been copied since.
     static func copySecret(_ string: String) {
         #if canImport(UIKit)
         UIPasteboard.general.setItems(
             [[UTType.plainText.identifier: string]],
             options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(secretLifetime)])
         #else
-        copy(string)
+        let pasteboard = NSPasteboard.general
+        // Clears the pasteboard like `clearContents()`, and keeps these contents off Universal Clipboard.
+        _ = pasteboard.prepareForNewContents(with: .currentHostOnly)
+        pasteboard.setString(string, forType: .string)
+        pasteboard.setData(Data(), forType: concealedType)
+        pasteboard.setData(Data(), forType: transientType)
+        // Recorded after the writes, so only a later copy by anyone stops the clear.
+        let copiedCount = pasteboard.changeCount
+        DispatchQueue.main.asyncAfter(deadline: .now() + secretLifetime) {
+            if NSPasteboard.general.changeCount == copiedCount {
+                NSPasteboard.general.clearContents()
+            }
+        }
         #endif
     }
 }
