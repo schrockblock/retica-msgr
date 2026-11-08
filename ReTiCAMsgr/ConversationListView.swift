@@ -295,9 +295,9 @@ struct ComposeSheet: View {
             .sheet(isPresented: $showingScanner, onDismiss: {
                 if pendingScan != nil { askingWhoIsThis = true }
             }) {
-                QRScannerView(ownAddress: store.myAddressHex) { hex in
-                    address = hex
-                    pendingScan = hex
+                QRScannerView(ownAddress: store.myAddressHex) { contact in
+                    address = contact.addressHex
+                    pendingScan = contact.addressHex
                     showingScanner = false
                 }
             }

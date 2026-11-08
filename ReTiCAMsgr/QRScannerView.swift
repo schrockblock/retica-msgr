@@ -11,13 +11,14 @@ import Vision
 import ReTiCAMsgrCore
 
 /// Presents VisionKit's live barcode scanner and reports the first recognized
-/// QR payload that parses as an LXMF address. Falls back to a plain "not
+/// QR payload that parses as an LXMF contact (`ContactURI.parse`: a bare or
+/// `lxmf://` address, or an `lxma://` URI with its key). Falls back to a plain "not
 /// available" screen when the simulator (no camera) or a permission denial
 /// makes scanning impossible.
 struct QRScannerView: View {
     @Environment(\.dismiss) private var dismiss
     let ownAddress: String
-    let onScanned: (String) -> Void
+    let onScanned: (ScannedContact) -> Void
 
     @State private var errorCaption: String?
     @State private var startFailed = false
@@ -94,16 +95,16 @@ struct QRScannerView: View {
     /// scanning should stop. A payload that parses but matches this device's own
     /// address is treated like an unparseable one: keep scanning, show a caption.
     private func handlePayload(_ payload: String) -> Bool {
-        guard let hex = ScannedAddress.parse(payload) else {
+        guard let contact = ContactURI.parse(payload) else {
             errorCaption = "That code isn't an LXMF address."
             return false
         }
-        guard hex != ownAddress.lowercased() else {
+        guard contact.addressHex != ownAddress.lowercased() else {
             errorCaption = "That's your own address."
             return false
         }
         errorCaption = nil
-        onScanned(hex)
+        onScanned(contact)
         return true
     }
 }

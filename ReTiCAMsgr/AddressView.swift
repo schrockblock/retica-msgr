@@ -12,6 +12,9 @@ import ReTiCAMsgrCore
 struct AddressView: View {
     let store: StoreOf<AppFeature>
     @Environment(\.dismiss) private var dismiss
+    /// Legacy is the bare address every earlier ReTiCAMsgr build displayed and scans; Standard is
+    /// the lxma:// contact URI MeshChatX, Columba and Retichat read.
+    @State private var showsLegacyQR = false
 
     var body: some View {
         NavigationStack {
@@ -27,6 +30,22 @@ struct AddressView: View {
                 }
 
                 qrCodeView
+
+                VStack(spacing: 6) {
+                    Picker("QR format", selection: $showsLegacyQR) {
+                        Text("Standard").tag(false)
+                        Text("Legacy").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 260)
+                    Text(showsLegacyQR
+                         ? "Address only, for older ReTiCAMsgr versions."
+                         : "Works with MeshChatX, Columba, Retichat and current ReTiCAMsgr.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
 
                 Text(store.myAddressHex)
                     .font(.system(.body, design: .monospaced))
@@ -59,11 +78,15 @@ struct AddressView: View {
         }
     }
 
-    /// QR encoding of the LXMF address, a pure derivation of `store.myAddressHex`
-    /// (set once at store init), so no extra TCA state is needed.
+    /// The QR's payload: `lxma://<address>:<public key>` (`ContactURI.encode`), or the bare address
+    /// in legacy mode. Both derive from the identity set once at store init, so no TCA state.
+    private var qrPayload: String {
+        showsLegacyQR ? store.myAddressHex : ContactURI.encode(store.identity)
+    }
+
     @ViewBuilder
     private var qrCodeView: some View {
-        if let image = QRCodeImage.generate(from: store.myAddressHex) {
+        if let image = QRCodeImage.generate(from: qrPayload) {
             Image(platformImage: image)
                 .interpolation(.none)
                 .resizable()
