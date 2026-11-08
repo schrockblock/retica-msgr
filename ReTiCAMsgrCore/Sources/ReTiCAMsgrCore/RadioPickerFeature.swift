@@ -23,8 +23,29 @@ public struct RadioPickerFeature {
         /// The radio Settings currently holds (a checkmark), then the one just tapped.
         public var selectedID: UUID?
 
-        public init(selectedID: UUID? = nil) {
+        /// Which family of radio this picker scans for.
+        public var kind: RadioKind
+
+        public init(kind: RadioKind = .meshtastic, selectedID: UUID? = nil) {
+            self.kind = kind
             self.selectedID = selectedID
+        }
+
+        /// The footer while a scan runs.
+        public var scanningMessage: String {
+            let name = kind == .meshCore ? "MeshCore" : "Meshtastic"
+            return "Scanning for \(name) radios… Make sure the radio is on and not connected to another app."
+        }
+
+        /// The footer when the scan ended without finding anything.
+        public var scanEndedEmptyMessage: String {
+            switch kind {
+            case .meshtastic:
+                RadioPickerFeature.scanEndedEmptyMessage
+            case .meshCore:
+                "Scanning stopped before any radio was found. MeshCore support may not be installed in "
+                    + "this build, or Bluetooth may be off or not allowed."
+            }
         }
     }
 
@@ -57,8 +78,8 @@ public struct RadioPickerFeature {
                 state.scanEnded = false
                 // `cancelInFlight`: SwiftUI can fire onAppear twice, and FCB's one process-wide scan
                 // means a second concurrent scan would supersede the first (Review Focus 5).
-                return .run { [radioScanner] send in
-                    for await radio in radioScanner.scan() {
+                return .run { [radioScanner, kind = state.kind] send in
+                    for await radio in radioScanner.stream(for: kind) {
                         await send(.radioFound(radio))
                     }
                     // A cancelled scan (dismiss, a second appear) ended on purpose: not "stopped".

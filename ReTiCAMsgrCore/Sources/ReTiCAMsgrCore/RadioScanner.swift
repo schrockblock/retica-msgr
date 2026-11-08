@@ -34,11 +34,35 @@ public struct RadioScanResult: Equatable, Sendable, Identifiable {
 /// Cancelling the consuming task stops the scan. FCB runs one scan per process (spec §2), so the
 /// app pauses its BLE interface while a scan runs (see `MeshtasticSettingsReducer`).
 public struct RadioScanner: Sendable {
+    /// Scans for Meshtastic radios.
     public var scan: @Sendable () -> AsyncStream<RadioScanResult>
+    /// Scans for MeshCore radios. The default finishes at once, so a host that installs no
+    /// MeshCore scanner reaches `scanEnded` instead of a spinner that never resolves.
+    public var scanMeshCore: @Sendable () -> AsyncStream<RadioScanResult>
 
-    public init(scan: @escaping @Sendable () -> AsyncStream<RadioScanResult>) {
+    public init(
+        scan: @escaping @Sendable () -> AsyncStream<RadioScanResult>,
+        scanMeshCore: @escaping @Sendable () -> AsyncStream<RadioScanResult> = {
+            AsyncStream<RadioScanResult> { $0.finish() }
+        }
+    ) {
         self.scan = scan
+        self.scanMeshCore = scanMeshCore
     }
+
+    /// The scan stream for a radio kind.
+    public func stream(for kind: RadioKind) -> AsyncStream<RadioScanResult> {
+        switch kind {
+        case .meshtastic: scan()
+        case .meshCore: scanMeshCore()
+        }
+    }
+}
+
+/// Which family of radio a picker scans for.
+public enum RadioKind: String, Equatable, Sendable {
+    case meshtastic
+    case meshCore
 }
 
 extension RadioScanner: DependencyKey {
@@ -50,19 +74,31 @@ extension RadioScanner: DependencyKey {
     public static let liveValue = RadioScanner(scan: { AsyncStream<RadioScanResult> { $0.finish() } })
 
     public static let testValue = RadioScanner(
-        scan: unimplemented("RadioScanner.scan", placeholder: AsyncStream<RadioScanResult> { $0.finish() }))
+        scan: unimplemented("RadioScanner.scan", placeholder: AsyncStream<RadioScanResult> { $0.finish() }),
+        scanMeshCore: unimplemented("RadioScanner.scanMeshCore", placeholder: AsyncStream<RadioScanResult> { $0.finish() }))
 
-    /// Three fake radios, then an open stream (a scan in progress), for SwiftUI previews.
-    public static let previewValue = RadioScanner(scan: {
-        AsyncStream<RadioScanResult> { continuation in
-            continuation.yield(RadioScanResult(
-                id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-000000000001")!, name: "Meshtastic_1a2b", rssi: -52))
-            continuation.yield(RadioScanResult(
-                id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-000000000002")!, name: "Base camp T-Beam", rssi: -71))
-            continuation.yield(RadioScanResult(
-                id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-000000000003")!, name: nil, rssi: -88))
-        }
-    })
+    /// Three fake radios per kind, then an open stream (a scan in progress), for SwiftUI previews.
+    public static let previewValue = RadioScanner(
+        scan: {
+            AsyncStream<RadioScanResult> { continuation in
+                continuation.yield(RadioScanResult(
+                    id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-000000000001")!, name: "Meshtastic_1a2b", rssi: -52))
+                continuation.yield(RadioScanResult(
+                    id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-000000000002")!, name: "Base camp T-Beam", rssi: -71))
+                continuation.yield(RadioScanResult(
+                    id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-000000000003")!, name: nil, rssi: -88))
+            }
+        },
+        scanMeshCore: {
+            AsyncStream<RadioScanResult> { continuation in
+                continuation.yield(RadioScanResult(
+                    id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-0000000000C1")!, name: "MeshCore-1a2b", rssi: -55))
+                continuation.yield(RadioScanResult(
+                    id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-0000000000C2")!, name: "Base camp", rssi: -68))
+                continuation.yield(RadioScanResult(
+                    id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-0000000000C3")!, name: nil, rssi: -90))
+            }
+        })
 }
 
 extension DependencyValues {

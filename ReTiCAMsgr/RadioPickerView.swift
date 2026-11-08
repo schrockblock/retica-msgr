@@ -63,11 +63,10 @@ struct RadioPickerView: View {
         if !store.scanEnded {
             HStack(spacing: 8) {
                 ProgressView()
-                Text("Scanning for Meshtastic radios… Make sure the radio is on and not connected "
-                     + "to another app.")
+                Text(store.scanningMessage)
             }
         } else if store.radios.isEmpty {
-            Text(RadioPickerFeature.scanEndedEmptyMessage)
+            Text(store.scanEndedEmptyMessage)
                 .foregroundStyle(.red)
         } else {
             Text("Scanning stopped.")
@@ -78,4 +77,8 @@ struct RadioPickerView: View {
 #Preview {
     // `\.radioScanner`'s previewValue lists three fake radios on an open scan.
     RadioPickerView(store: Store(initialState: RadioPickerFeature.State()) { RadioPickerFeature() })
+}
+
+#Preview("MeshCore") {
+    RadioPickerView(store: Store(initialState: RadioPickerFeature.State(kind: .meshCore)) { RadioPickerFeature() })
 }
