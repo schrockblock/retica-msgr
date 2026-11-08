@@ -319,6 +319,21 @@ public struct AppFeature {
         /// The chosen radio's advertised name when it was picked, for the Settings row only.
         /// Unauthenticated text from the air: never put it in a diagnostics reason.
         @Shared(.appStorage("meshtasticRadioName")) public var meshtasticRadioName: String? = nil
+        /// Opt-in: also reach Reticulum through a MeshCore radio. OFF by default. Read at connect
+        /// time (lane D's slot sync), like `meshtasticEnabled`; see `meshCoreWillDial`.
+        @Shared(.appStorage("meshCoreEnabled")) public var meshCoreEnabled: Bool = false
+        /// The chosen MeshCore radio's peripheral UUID as a string, nil when none is chosen. Read at
+        /// connect time by lane D; read it through `meshCoreRadioUUID`.
+        @Shared(.appStorage("meshCoreRadioID")) public var meshCoreRadioID: String? = nil
+        /// The chosen MeshCore radio's advertised name, for the Settings row only. Read at connect
+        /// time by lane D. Unauthenticated text from the air: never put it in a diagnostics reason.
+        @Shared(.appStorage("meshCoreRadioName")) public var meshCoreRadioName: String? = nil
+        /// Whether the channel key is in the Keychain. Session-only; never the key itself.
+        public var meshCoreKeyPresence: MeshCoreKeyPresence = .absent
+        /// Bumped on every key change. Session-only; lane D's slot identity reads it.
+        public var meshCoreKeyGeneration = 0
+        /// The Release gate. Stored so tests can turn it off (`swift test` always compiles DEBUG).
+        public var meshCoreAvailable = MeshCoreReleaseGate.isCompiledIn
         /// The radio picker sheet (spec 2026-10-16 §7), nil when closed. Closed ONLY through
         /// `.radioPicker(.dismiss)` (swipe, Cancel, or a pick), which is where paused BLE resumes:
         /// never set this to nil directly.

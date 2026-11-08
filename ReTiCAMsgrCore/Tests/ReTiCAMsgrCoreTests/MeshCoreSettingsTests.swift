@@ -79,3 +79,121 @@ private func mcCountingScanner(meshtastic: LockIsolated<Int>, meshCore: LockIsol
             == "Scanning for Meshtastic radios… Make sure the radio is on and not connected to another app.")
     #expect(RadioPickerFeature.State().scanEndedEmptyMessage == RadioPickerFeature.scanEndedEmptyMessage)
 }
+
+// MARK: - Persisted settings and the Release gate value (T2)
+
+@MainActor @Test func mcSettingsDefaultsAreOffWithNoRadio() {
+    let state = mcStore().state
+    #expect(!state.meshCoreEnabled)
+    #expect(state.meshCoreRadioID == nil)
+    #expect(state.meshCoreRadioLabel == "None")
+}
+
+/// The toggle goes through the same path as Settings' `$store.meshCoreEnabled` binding.
+@MainActor @Test func mcSettingsToggleWritesTheMeshCoreEnabledKey() async {
+    let defaults = UserDefaults.inMemory
+    let store = mcStore(defaults: defaults)
+    await store.send(.binding(.set(\.meshCoreEnabled, true)))
+    #expect(defaults.bool(forKey: "meshCoreEnabled"))
+}
+
+@MainActor @Test func mcSettingsReadsAPersistedRadioID() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(mcRadioA.id.uuidString, forKey: "meshCoreRadioID")
+    let store = mcStore(defaults: defaults)
+    #expect(store.state.meshCoreRadioUUID == mcRadioA.id)
+}
+
+@MainActor @Test func mcSettingsRadioNameKeyIsMeshCoreRadioName() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(mcRadioA.id.uuidString, forKey: "meshCoreRadioID")
+    defaults.set("Base camp", forKey: "meshCoreRadioName")
+    let store = mcStore(defaults: defaults)
+    #expect(store.state.meshCoreRadioLabel == "Base camp")
+}
+
+@MainActor @Test func mcSettingsRadioLabelFallsBackToTheIDForABlankName() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(mcRadioA.id.uuidString, forKey: "meshCoreRadioID")
+    defaults.set("   ", forKey: "meshCoreRadioName")
+    let store = mcStore(defaults: defaults)
+    #expect(store.state.meshCoreRadioLabel == mcRadioA.id.uuidString)
+}
+
+/// The string is planted under the real key, so the test goes through `meshCoreRadioUUID`.
+@MainActor @Test func mcSettingsNonUUIDRadioIDCountsAsNoRadio() {
+    let defaults = UserDefaults.inMemory
+    defaults.set("not-a-uuid", forKey: "meshCoreRadioID")
+    let store = mcStore(defaults: defaults)
+    #expect(store.state.meshCoreRadioID == "not-a-uuid")
+    #expect(store.state.meshCoreRadioUUID == nil)
+    #expect(store.state.meshCoreRadioLabel == "None")
+}
+
+@MainActor @Test func mcSettingsMeshtasticSettingsDoNotLeakIn() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(true, forKey: "meshtasticEnabled")
+    defaults.set(mcRadioA.id.uuidString, forKey: "meshtasticRadioID")
+    let store = mcStore(defaults: defaults)
+    #expect(!store.state.meshCoreEnabled)
+    #expect(store.state.meshCoreRadioUUID == nil)
+}
+
+private struct MCDialCase: Sendable, CustomTestStringConvertible {
+    var enabled: Bool
+    var radio: Bool
+    var presence: MeshCoreKeyPresence
+    var available: Bool
+    var expected: Bool
+    var testDescription: String {
+        "enabled \(enabled), radio \(radio), key \(presence), available \(available) -> \(expected)"
+    }
+}
+
+@MainActor @Test(arguments: [
+    MCDialCase(enabled: true, radio: true, presence: .present, available: true, expected: true),
+    MCDialCase(enabled: false, radio: true, presence: .present, available: true, expected: false),
+    MCDialCase(enabled: true, radio: false, presence: .present, available: true, expected: false),
+    MCDialCase(enabled: true, radio: true, presence: .present, available: false, expected: false),
+    MCDialCase(enabled: true, radio: true, presence: .absent, available: true, expected: false),
+    MCDialCase(enabled: true, radio: true, presence: .unreadable, available: true, expected: false),
+])
+private func mcSettingsWillDialNeedsEveryCondition(_ c: MCDialCase) {
+    let defaults = UserDefaults.inMemory
+    defaults.set(c.enabled, forKey: "meshCoreEnabled")
+    if c.radio { defaults.set(mcRadioA.id.uuidString, forKey: "meshCoreRadioID") }
+    let store = mcStore(defaults: defaults) { state in
+        state.meshCoreKeyPresence = c.presence
+        state.meshCoreAvailable = c.available
+    }
+    #expect(store.state.meshCoreWillDial == c.expected)
+}
+
+/// Defaults restored from a backup, with no Keychain item behind them.
+@MainActor @Test func mcSettingsRestoredDefaultsWithoutAKeyWillNotDial() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(true, forKey: "meshCoreEnabled")
+    defaults.set(mcRadioA.id.uuidString, forKey: "meshCoreRadioID")
+    let state = mcStore(defaults: defaults) { $0.meshCoreKeyPresence = .absent }.state
+    #expect(state.meshCoreEnabled)
+    #expect(state.meshCoreRadioUUID == mcRadioA.id)
+    #expect(!state.meshCoreWillDial)
+}
+
+/// A Release build with Debug-era defaults and a key: the gate alone stops the dial.
+@MainActor @Test func mcSettingsStaleDefaultsWithTheGateOffWillNotDial() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(true, forKey: "meshCoreEnabled")
+    defaults.set(mcRadioA.id.uuidString, forKey: "meshCoreRadioID")
+    let state = mcStore(defaults: defaults) {
+        $0.meshCoreKeyPresence = .present
+        $0.meshCoreAvailable = false
+    }.state
+    #expect(state.meshCoreEnabled)
+    #expect(state.meshCoreRadioUUID == mcRadioA.id)
+    #expect(!state.meshCoreWillDial)
+}
+
+@Test func mcSettingsGateIsOnInThisBuild() {
+    #expect(MeshCoreReleaseGate.isCompiledIn)
+}
