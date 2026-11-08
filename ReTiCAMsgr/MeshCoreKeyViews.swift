@@ -87,7 +87,7 @@ struct MeshCoreShareKeySheet: View {
             .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button(MeshCoreCopy.doneButton) { dismiss() }
                 }
             }
         }

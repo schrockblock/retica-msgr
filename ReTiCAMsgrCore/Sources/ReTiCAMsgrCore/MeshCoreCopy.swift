@@ -52,6 +52,7 @@ public enum MeshCoreCopy {
     public static let pasteTitle = "Paste Channel Key"
     public static let pastePrompt = "32 hex characters"
     public static let saveButton = "Save"
+    public static let doneButton = "Done"
 
     public static let shareTitle = "Channel Key"
     public static let shareBody =
@@ -63,7 +64,7 @@ public enum MeshCoreCopy {
         keyRow, keySet, keyNotSet, keyUnreadable, generateKey, pasteKey, copyKey, shareKey,
         replaceTitle, replaceMessage, replaceButton, cancelButton,
         requiredWarning, footer, turnOffNotice, radioChangeNotice, noKeyNotice, channelLeftNotice,
-        pasteTitle, pastePrompt, saveButton, shareTitle, shareBody,
+        pasteTitle, pastePrompt, saveButton, doneButton, shareTitle, shareBody,
     ]
 
     /// The channel key row's value for a presence.

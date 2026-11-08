@@ -65,6 +65,8 @@ struct MeshCoreSettingsReducer: Reducer {
                 }
 
             case let .meshCoreKeyDidChange(result):
+                // Any `.meshCoreKeyDidChange` clears it, a paste result included (Settings disables
+                // Paste while a Generate runs).
                 state.meshCoreKeyGenerating = false
                 state.meshCoreKeyPresence = keyStore.presence()
                 // Lane D's slot identity reads the generation: only a real change may move it.

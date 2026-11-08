@@ -113,6 +113,16 @@ struct SettingsView: View {
                 RadioPickerView(store: pickerStore)
                     .macSheetFrame()
             }
+            #if DEBUG
+            // At Form level, like the sheets above: a Form row only presents while it is drawn.
+            .modifier(MeshCoreKeyPresentations(
+                store: store,
+                keyStore: meshCoreKeyStore,
+                pendingReplace: $meshCorePendingReplace,
+                showingPaste: $showingMeshCorePaste,
+                shareText: $meshCoreShareText,
+                onReplace: meshCoreKeyReplacementConfirmed))
+            #endif
             // Seed the field from persisted state, so opening Settings with a name set does not
             // show a blank box whose Save button would clear it. (The propagation-node field below
             // deliberately starts blank — pasting a fresh hex address is its normal use — but a
@@ -514,26 +524,8 @@ struct SettingsView: View {
             if store.meshCoreRadioUUID != nil {
                 meshCoreNote(MeshCoreCopy.radioChangeNotice)
             }
+            // Its confirmation and sheets are on the Form (`MeshCoreKeyPresentations`).
             LabeledContent(MeshCoreCopy.keyRow, value: MeshCoreCopy.keyValue(store.meshCoreKeyPresence))
-                .confirmationDialog(MeshCoreCopy.replaceTitle,
-                                    isPresented: Binding(get: { meshCorePendingReplace != nil },
-                                                         set: { if !$0 { meshCorePendingReplace = nil } }),
-                                    titleVisibility: .visible,
-                                    presenting: meshCorePendingReplace) { replacement in
-                    Button(MeshCoreCopy.replaceButton, role: .destructive) {
-                        meshCorePendingReplace = nil
-                        meshCoreKeyReplacementConfirmed(replacement)
-                    }
-                    Button(MeshCoreCopy.cancelButton, role: .cancel) { meshCorePendingReplace = nil }
-                } message: { _ in
-                    Text(MeshCoreCopy.replaceMessage)
-                }
-                .sheet(isPresented: $showingMeshCorePaste) {
-                    MeshCorePasteKeySheet(store: store, keyStore: meshCoreKeyStore)
-                }
-                .sheet(item: $meshCoreShareText) { key in
-                    MeshCoreShareKeySheet(key: key)
-                }
             if let message = store.meshCoreKeyMessage {
                 meshCoreNote(message, color: .red)
             }
@@ -590,6 +582,43 @@ struct SettingsView: View {
 /// Which key change the "Replace the channel key?" confirmation is for.
 private enum MeshCoreKeyReplacement {
     case generate, paste
+}
+
+/// The MeshCore key section's "Replace the channel key?" confirmation and its paste and share
+/// sheets. Applied to the Form, never to a row: a lazily drawn row that is off screen presents
+/// nothing, and would present late (holding the key in `shareText`) once scrolled back.
+private struct MeshCoreKeyPresentations: ViewModifier {
+    let store: StoreOf<AppFeature>
+    let keyStore: MeshCoreKeyStore
+    @Binding var pendingReplace: MeshCoreKeyReplacement?
+    @Binding var showingPaste: Bool
+    @Binding var shareText: MeshCoreKeyText?
+    let onReplace: (MeshCoreKeyReplacement) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(MeshCoreCopy.replaceTitle,
+                                isPresented: Binding(get: { pendingReplace != nil },
+                                                     set: { if !$0 { pendingReplace = nil } }),
+                                titleVisibility: .visible,
+                                presenting: pendingReplace) { replacement in
+                Button(MeshCoreCopy.replaceButton, role: .destructive) {
+                    pendingReplace = nil
+                    onReplace(replacement)
+                }
+                Button(MeshCoreCopy.cancelButton, role: .cancel) { pendingReplace = nil }
+            } message: { _ in
+                Text(MeshCoreCopy.replaceMessage)
+            }
+            // The paste sheet clears its own field on Save, Cancel and disappear (R7).
+            .sheet(isPresented: $showingPaste) {
+                MeshCorePasteKeySheet(store: store, keyStore: keyStore)
+            }
+            // `item:` already sets it to nil on dismissal; onDismiss makes the drop explicit.
+            .sheet(item: $shareText, onDismiss: { shareText = nil }) { key in
+                MeshCoreShareKeySheet(key: key)
+            }
+    }
 }
 #endif
 
