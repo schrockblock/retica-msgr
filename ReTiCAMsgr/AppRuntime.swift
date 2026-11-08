@@ -147,6 +147,11 @@ final class AppRuntime {
             // Explicit for the same hosted-XCTest reason as `\.date`, and so a hosted run uses the
             // test host's in-memory Keychain, never the real one.
             $0.meshCoreKeyStore = meshCoreKeyStore
+            // Settings' Copy button. Local-only with an expiry on iOS (ruling R8); revealed only here.
+            // The copy effect runs off the main actor; the pasteboard is used from the main actor.
+            $0.meshCoreKeyPasteboard = MeshCoreKeyPasteboard { text in
+                Task { @MainActor in Pasteboard.copySecret(text.reveal()) }
+            }
         }
         self.store = store
         store.send(.onLaunch)

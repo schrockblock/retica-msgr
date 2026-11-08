@@ -332,6 +332,8 @@ public struct AppFeature {
         public var meshCoreKeyPresence: MeshCoreKeyPresence = .absent
         /// Bumped on every key change. Session-only; lane D's slot identity reads it.
         public var meshCoreKeyGeneration = 0
+        /// What the last key change needs to tell the user, nil when nothing. Session-only.
+        public var meshCoreKeyMessage: String? = nil
         /// The Release gate. Stored so tests can turn it off (`swift test` always compiles DEBUG).
         public var meshCoreAvailable = MeshCoreReleaseGate.isCompiledIn
         /// The radio picker sheet (spec 2026-10-16 §7), nil when closed. Closed ONLY through
@@ -752,6 +754,13 @@ public struct AppFeature {
         /// running BLE interface. Handled in `MeshtasticSettingsReducer`.
         case chooseRadioTapped
         case radioPicker(PresentationAction<RadioPickerFeature.Action>)
+        /// MeshCore Settings' Generate button: the store makes and saves a new channel key. Handled
+        /// in `MeshCoreSettingsReducer`, like the two below. No MeshCore action carries a key.
+        case meshCoreGenerateKeyTapped
+        /// MeshCore Settings' Copy button: the store's key goes to the pasteboard inside an effect.
+        case meshCoreCopyKeyTapped
+        /// A key change finished: Generate's effect, or the paste sheet after it called the store.
+        case meshCoreKeyDidChange(MeshCoreKeyChangeResult)
         case node(LXMFServiceNode.Action)
         case binding(BindingAction<State>)
     }
@@ -784,6 +793,7 @@ public struct AppFeature {
     @Dependency(\.avatarStore) var avatarStore
     @Dependency(\.backgroundTask) var backgroundTask
     @Dependency(\.localNotifications) var localNotifications
+    @Dependency(\.meshCoreKeyStore) var meshCoreKeyStore
 
     /// Path expiry for pruning `learnedDestinationRows`, taken from the library rather than copied.
     ///
@@ -846,6 +856,8 @@ public struct AppFeature {
         Reduce { state, action in
             switch action {
             case .onLaunch:
+                // First, and synchronously: lane D's slot sync later in this arm reads it.
+                state.meshCoreKeyPresence = meshCoreKeyStore.presence()
                 // Rows this run sends are stamped from here on; older `sending` rows are orphans
                 // the first `interfaceConnected` resends. Kept if `onLaunch` ever runs twice.
                 if state.launchedAt == nil { state.launchedAt = date.now }
@@ -2892,6 +2904,10 @@ public struct AppFeature {
             // The Meshtastic picker arms live in `MeshtasticSettingsReducer` (AppFeature+Meshtastic.swift).
             case .chooseRadioTapped, .radioPicker:
                 return .none
+
+            // The MeshCore key arms live in `MeshCoreSettingsReducer` (AppFeature+MeshCore.swift).
+            case .meshCoreGenerateKeyTapped, .meshCoreCopyKeyTapped, .meshCoreKeyDidChange:
+                return .none
             }
         }
 
@@ -3007,6 +3023,7 @@ public struct AppFeature {
         BlockingReducer()
         ProfilePhotoReducer()
         MeshtasticSettingsReducer()
+        MeshCoreSettingsReducer()
         MeshtasticRadioReducer()
         BLESlotReducer()
     }

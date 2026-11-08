@@ -24,3 +24,55 @@ extension AppFeature.State {
         meshCoreAvailable && meshCoreEnabled && meshCoreRadioUUID != nil && meshCoreKeyPresence == .present
     }
 }
+
+/// The MeshCore key arms of `AppFeature` (spec 2026-11-07 §6), composed into `AppFeature.body` after
+/// `MeshtasticSettingsReducer`. The main reducer treats these actions as no-ops.
+///
+/// The key never passes through here: Generate and Copy are effects that call the store, and the
+/// paste sheet calls the store itself and sends only the result. State gets presence, a generation
+/// counter and a message, nothing derived from the key.
+struct MeshCoreSettingsReducer: Reducer {
+    @Dependency(\.meshCoreKeyStore) var keyStore
+    @Dependency(\.meshCoreKeyPasteboard) var pasteboard
+
+    static let invalidKeyMessage =
+        "Enter a key of 32 hex characters. A key other people already use for something else can't be used here."
+    static let storageFailedMessage = "The key couldn't be saved. Try again."
+
+    var body: some ReducerOf<AppFeature> {
+        Reduce { state, action in
+            switch action {
+            case .meshCoreGenerateKeyTapped:
+                return .run { [keyStore] send in
+                    await send(.meshCoreKeyDidChange(keyStore.generate()))
+                }
+
+            case .meshCoreCopyKeyTapped:
+                return .run { [keyStore, pasteboard] _ in
+                    if let text = keyStore.exportText() {
+                        pasteboard.copy(text)
+                    }
+                }
+
+            case let .meshCoreKeyDidChange(result):
+                state.meshCoreKeyPresence = keyStore.presence()
+                // Lane D's slot identity reads the generation: only a real change may move it.
+                if result == .changed {
+                    state.meshCoreKeyGeneration += 1
+                }
+                switch result {
+                case .invalid:
+                    state.meshCoreKeyMessage = Self.invalidKeyMessage
+                case .storageFailed:
+                    state.meshCoreKeyMessage = Self.storageFailedMessage
+                case .changed, .unchanged:
+                    state.meshCoreKeyMessage = nil
+                }
+                return .none
+
+            default:
+                return .none
+            }
+        }
+    }
+}
