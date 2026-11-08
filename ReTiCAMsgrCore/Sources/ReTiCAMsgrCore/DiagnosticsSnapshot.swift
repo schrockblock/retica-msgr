@@ -23,6 +23,9 @@ import ReTiCATransport
 ///   * `InterfaceProfile.ifac` — `IFAC` stores the derived network `key` and the Ed25519
 ///     `seed`. Leaking it hands over membership of an access-controlled network. Reachable
 ///     from `socketLayer` via `endpoint.interfaces`, which renders only `name`.
+///   * The MeshCore channel key and its retired keys, in any wrapper: `MeshCoreKeyText`,
+///     `MeshCoreSecrets`, or anything `MeshCoreKeyStore` returns, and no fingerprint of any key.
+///     `meshCoreLayer` renders only `MeshCoreKeyPresence` and never reads the key store.
 ///
 /// `textCarriesNoKeyMaterialFromAnyLayer` pins the CLASS, not one field: it plants a distinct
 /// recognisable pattern in each of the above and asserts none of them — nor their field
@@ -53,16 +56,22 @@ public struct DiagnosticsSnapshot: Equatable {
 
     public init(from state: AppFeature.State, at date: Date) {
         self.generatedAt = date
-        self.layers = [
+        var layers = [
             Self.socketLayer(state),
             Self.bleLayer(state),
             Self.meshtasticLayer(state),
+        ]
+        if state.meshCoreAvailable {
+            layers.append(Self.meshCoreLayer(state))
+        }
+        layers += [
             Self.identityLayer(state),
             Self.pathsLayer(state),
             Self.peersLayer(state, at: date),
             Self.linksLayer(state, at: date),
             Self.deliveryLayer(state),
         ]
+        self.layers = layers
     }
 }
 
@@ -252,15 +261,24 @@ extension DiagnosticsSnapshot {
             Row("send failed", String(counters.sendFailed)),
         ])
 
-        guard radio != nil else {
+        return radioLinkLayer(title: title, rows: rows, radioChosen: radio != nil,
+                              adapterUnavailable: status.adapterUnavailable != nil, online: status.online)
+    }
+
+    /// The health checks every radio layer ends with, first match wins: no radio chosen, then the
+    /// Bluetooth path unavailable, then the radio offline, else ok. The reasons are fixed text:
+    /// nothing from the radio (its name, an `.other` payload) may reach them.
+    private static func radioLinkLayer(title: String, rows: [Row], radioChosen: Bool,
+                                       adapterUnavailable: Bool, online: Bool) -> Layer {
+        guard radioChosen else {
             return Layer(title: title, health: .warn,
                          reason: "no radio chosen — choose one in Settings", rows: rows)
         }
-        if status.adapterUnavailable != nil {
+        if adapterUnavailable {
             return Layer(title: title, health: .problem,
                          reason: "the Bluetooth path to the radio is unavailable", rows: rows)
         }
-        guard status.online else {
+        guard online else {
             return Layer(title: title, health: .warn, reason: "radio not connected", rows: rows)
         }
         return Layer(title: title, health: .ok, reason: nil, rows: rows)
@@ -288,6 +306,86 @@ extension DiagnosticsSnapshot {
         let names = [0: "LongFast", 1: "LongSlow", 3: "MediumSlow", 4: "MediumFast",
                      5: "ShortSlow", 6: "ShortFast", 7: "LongModerate", 8: "ShortTurbo"]
         return names[raw].map { "\($0) (\(raw))" } ?? "unknown (\(raw))"
+    }
+}
+
+// MARK: - MeshCore
+
+extension DiagnosticsSnapshot {
+    /// The MeshCore radio (spec 2026-11-07 §6), fed from `AppFeature.State.meshCoreStatus`. Present
+    /// only while the Release gate (`meshCoreAvailable`) is on.
+    ///
+    /// DENY LIST: the channel key. Only `meshCoreKeyPresence` is rendered; this layer never reads
+    /// `MeshCoreKeyStore` (`mcDiagTextCarriesNoChannelKey`).
+    ///
+    /// UNTRUSTED TEXT: the advertised name from the picker (`meshCoreRadioLabel`), the radio's own
+    /// name (`radioName`) and the `.other` adapter payload are rendered in ROWS only, which `text`
+    /// escapes. Never in `reason`, which it does not (`mcDiagAHostileRadioNameCannotForgeLines`).
+    static func meshCoreLayer(_ state: AppFeature.State) -> Layer {
+        let title = "MeshCore"
+        let enabled = state.meshCoreEnabled
+        let status = state.meshCoreStatus
+        var rows = [Row("meshcore", enabled ? "on" : "off")]
+        guard enabled else {
+            // Off by choice is not a fault. A turn-off that couldn't clear our slot is still worth
+            // a row: the radio keeps the channel until the user removes it.
+            if status.channelLeftOnRadio { rows.append(Row("channel left on radio", "yes")) }
+            return Layer(title: title, health: .ok, reason: nil, rows: rows)
+        }
+
+        let presence = state.meshCoreKeyPresence
+        let radio = state.meshCoreRadioUUID
+        rows.append(Row("channel key", describe(presence)))
+        rows.append(Row("radio", radio == nil ? "(none chosen)" : state.meshCoreRadioLabel))
+        if let radio { rows.append(Row("radio id", radio.uuidString)) }
+        rows.append(Row("status", status.online ? "online" : "offline"))
+        rows.append(Row("radio name", status.radioName ?? "unknown"))
+        rows.append(Row("LoRa", status.params.map(describe) ?? "unknown"))
+        rows.append(Row("firmware code", status.firmwareCode.map { String($0) } ?? "unknown"))
+        rows.append(Row("channel slot", status.channelSlot.map { String($0) } ?? "unknown"))
+        if let reason = status.offlineReason { rows.append(Row("offline reason", reason)) }
+        if let cause = status.adapterUnavailable { rows.append(Row("adapter", describeMeshtastic(cause))) }
+        let counters = status.counters
+        rows.append(contentsOf: [
+            Row("reassembled", String(counters.completed)),
+            Row("malformed", String(counters.malformed)),
+            Row("not addressed", String(counters.notAddressed)),
+            Row("evicted", String(counters.evicted)),
+            Row("timed out", String(counters.timedOut)),
+            Row("oversize", String(counters.oversize)),
+            Row("queue full", String(counters.queueFull)),
+            Row("send failed", String(counters.sendFailed)),
+            Row("announces limited", String(counters.announcesLimited)),
+            Row("path requests limited", String(counters.pathRequestsLimited)),
+        ])
+
+        switch presence {
+        case .present:
+            break
+        case .absent:
+            return Layer(title: title, health: .warn,
+                         reason: "no channel key — set one in Settings", rows: rows)
+        case .unreadable:
+            return Layer(title: title, health: .warn, reason: "the channel key can't be read", rows: rows)
+        }
+        return radioLinkLayer(title: title, rows: rows, radioChosen: radio != nil,
+                              adapterUnavailable: status.adapterUnavailable != nil, online: status.online)
+    }
+
+    static func describe(_ presence: MeshCoreKeyPresence) -> String {
+        switch presence {
+        case .present:    return "set"
+        case .absent:     return "not set"
+        case .unreadable: return "can't be read"
+        }
+    }
+
+    /// `SF10 / 250 kHz / CR5`. A bandwidth that isn't a whole number of kHz keeps its fraction
+    /// (`62.5 kHz`).
+    static func describe(_ params: MeshCoreStatus.LoRaParams) -> String {
+        let hz = params.bandwidthHz
+        let khz = hz % 1000 == 0 ? String(hz / 1000) : String(Double(hz) / 1000)
+        return "SF\(params.spreadingFactor) / \(khz) kHz / CR\(params.codingRate)"
     }
 }
 

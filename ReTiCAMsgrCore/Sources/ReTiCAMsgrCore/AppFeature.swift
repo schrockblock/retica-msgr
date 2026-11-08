@@ -336,6 +336,8 @@ public struct AppFeature {
         public var meshCoreKeyMessage: String? = nil
         /// The Release gate. Stored so tests can turn it off (`swift test` always compiles DEBUG).
         public var meshCoreAvailable = MeshCoreReleaseGate.isCompiledIn
+        /// The MeshCore radio's state for Diagnostics and Settings. Lane D fills it. Session-only.
+        public var meshCoreStatus = MeshCoreStatus()
         /// The radio picker sheet (spec 2026-10-16 §7), nil when closed. Closed ONLY through
         /// `.radioPicker(.dismiss)` (swipe, Cancel, or a pick), which is where paused BLE resumes:
         /// never set this to nil directly.

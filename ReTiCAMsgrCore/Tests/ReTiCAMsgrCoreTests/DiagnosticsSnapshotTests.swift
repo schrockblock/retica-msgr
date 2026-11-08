@@ -438,7 +438,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 @MainActor @Test func snapshotHasAllLayersInOrder() {
     let snapshot = DiagnosticsSnapshot(from: healthyState(), at: fixedDate)
     #expect(snapshot.layers.map(\.title)
-            == ["Socket", "Bluetooth", "Meshtastic", "Identity", "Paths", "Peers", "Links", "Delivery"])
+            == ["Socket", "Bluetooth", "Meshtastic", "MeshCore", "Identity", "Paths", "Peers", "Links", "Delivery"])
 }
 
 // C1. `.pending`, not `.handshake`. The two statuses are ROLE-DISJOINT in `LinkSession`:
@@ -933,4 +933,210 @@ private func meshState(enabled: Bool = true, radio: UUID? = meshRadio, name: Str
             == control.split(separator: "\n", omittingEmptySubsequences: false).count)
     #expect(!text.contains("\n  \(forged)"))
     #expect(text.contains("Mallory\\n"))
+}
+
+// MARK: - MeshCore (spec 2026-11-07 §6, lane C)
+
+private let mcDiagRadio = UUID(uuidString: "C1C1C1C1-0000-4000-8000-0000000000C1")!
+
+/// Non-fatal lookup: a missing layer fails the assertion instead of crashing the suite.
+private func mcDiagLayer(_ snap: DiagnosticsSnapshot) -> DiagnosticsSnapshot.Layer? {
+    snap.layers.first { $0.title == "MeshCore" }
+}
+
+private func mcDiagRow(_ layer: DiagnosticsSnapshot.Layer?, _ label: String) -> String? {
+    layer?.rows.first { $0.label == label }?.value
+}
+
+/// A healthy state with the MeshCore settings set, its `@Shared(.appStorage)` keys in a fresh suite
+/// so no test sees another's. Defaults describe a configured radio that is not yet connected.
+@MainActor
+private func mcDiagState(enabled: Bool = true, radio: UUID? = mcDiagRadio, name: String? = "Hilltop",
+                         presence: MeshCoreKeyPresence = .present,
+                         status: MeshCoreStatus = MeshCoreStatus()) -> AppFeature.State {
+    var state = withDependencies { $0.defaultAppStorage = .inMemory } operation: { healthyState() }
+    state.$meshCoreEnabled.withLock { $0 = enabled }
+    state.$meshCoreRadioID.withLock { $0 = radio?.uuidString }
+    state.$meshCoreRadioName.withLock { $0 = name }
+    state.meshCoreKeyPresence = presence
+    state.meshCoreStatus = status
+    return state
+}
+
+/// Off by choice is not a fault, like Bluetooth and Meshtastic.
+@MainActor @Test func mcDiagIsOffAndOkWhenDisabled() {
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(enabled: false, presence: .absent),
+                                                at: fixedDate))
+    #expect(layer?.health == .ok)
+    #expect(layer?.reason == nil)
+    #expect(mcDiagRow(layer, "meshcore") == "off")
+}
+
+/// The Release gate hides the layer, not just its rows.
+@MainActor @Test func mcDiagLayerIsAbsentWithTheGateOff() {
+    var state = mcDiagState()
+    state.meshCoreAvailable = false
+    let titles = DiagnosticsSnapshot(from: state, at: fixedDate).layers.map(\.title)
+    #expect(!titles.contains("MeshCore"))
+    // Precondition: the rest of the snapshot is still there.
+    #expect(titles.contains("Meshtastic"))
+}
+
+@MainActor @Test func mcDiagLayerFollowsMeshtastic() {
+    let titles = DiagnosticsSnapshot(from: mcDiagState(), at: fixedDate).layers.map(\.title)
+    guard let meshtastic = titles.firstIndex(of: "Meshtastic"), meshtastic + 1 < titles.count else {
+        Issue.record("no layer after Meshtastic in \(titles)")
+        return
+    }
+    #expect(titles[meshtastic + 1] == "MeshCore")
+}
+
+@MainActor @Test func mcDiagWarnsWithoutAChannelKey() {
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(presence: .absent), at: fixedDate))
+    #expect(layer?.health == .warn)
+    #expect(layer?.reason == "no channel key — set one in Settings")
+    #expect(mcDiagRow(layer, "channel key") == "not set")
+}
+
+@MainActor @Test func mcDiagWarnsWhenTheKeyCannotBeRead() {
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(presence: .unreadable), at: fixedDate))
+    #expect(layer?.health == .warn)
+    #expect(layer?.reason == "the channel key can't be read")
+    #expect(mcDiagRow(layer, "channel key") == "can't be read")
+}
+
+@MainActor @Test func mcDiagWarnsWhenNoRadioIsChosen() {
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(radio: nil), at: fixedDate))
+    #expect(layer?.health == .warn)
+    #expect(layer?.reason == "no radio chosen — choose one in Settings")
+    #expect(mcDiagRow(layer, "radio") == "(none chosen)")
+}
+
+@MainActor @Test func mcDiagAdapterUnavailableIsAProblem() {
+    let status = MeshCoreStatus(online: false, adapterUnavailable: .unauthorized)
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(status: status), at: fixedDate))
+    #expect(layer?.health == .problem)
+    #expect(layer?.reason == "the Bluetooth path to the radio is unavailable")
+    #expect(mcDiagRow(layer, "adapter") == "unauthorized")
+}
+
+/// Lane D's driver reports a full radio as `.other`; its text must reach the screen.
+@MainActor @Test func mcDiagShowsTheNoFreeSlotMessage() {
+    let status = MeshCoreStatus(online: false, adapterUnavailable: .other("No free channel slot on this radio"))
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(status: status), at: fixedDate))
+    #expect(mcDiagRow(layer, "adapter") == "other: No free channel slot on this radio")
+}
+
+@MainActor @Test func mcDiagWarnsWhileTheRadioIsOffline() {
+    let status = MeshCoreStatus(online: false, offlineReason: "link lost")
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(status: status), at: fixedDate))
+    #expect(layer?.health == .warn)
+    #expect(layer?.reason == "radio not connected")
+    #expect(mcDiagRow(layer, "status") == "offline")
+    #expect(mcDiagRow(layer, "offline reason") == "link lost")
+}
+
+@MainActor @Test func mcDiagIsOkWhenOnline() {
+    let status = MeshCoreStatus(online: true, radioName: "Hilltop")
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(status: status), at: fixedDate))
+    #expect(layer?.health == .ok)
+    #expect(layer?.reason == nil)
+    #expect(mcDiagRow(layer, "status") == "online")
+    #expect(mcDiagRow(layer, "channel key") == "set")
+    #expect(mcDiagRow(layer, "radio id") == mcDiagRadio.uuidString)
+}
+
+@MainActor @Test func mcDiagShowsLoRaParams() {
+    let params = MeshCoreStatus.LoRaParams(spreadingFactor: 10, bandwidthHz: 250_000, codingRate: 5)
+    let status = MeshCoreStatus(online: true, params: params)
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(status: status), at: fixedDate))
+    #expect(mcDiagRow(layer, "LoRa") == "SF10 / 250 kHz / CR5")
+}
+
+@MainActor @Test func mcDiagShowsFirmwareAndSlot() {
+    let status = MeshCoreStatus(online: true, firmwareCode: 11, channelSlot: 3)
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(status: status), at: fixedDate))
+    #expect(mcDiagRow(layer, "firmware code") == "11")
+    #expect(mcDiagRow(layer, "channel slot") == "3")
+}
+
+@MainActor @Test func mcDiagShowsUnknownsBeforeAConnection() {
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(), at: fixedDate))
+    #expect(mcDiagRow(layer, "LoRa") == "unknown")
+    #expect(mcDiagRow(layer, "firmware code") == "unknown")
+    #expect(mcDiagRow(layer, "channel slot") == "unknown")
+}
+
+@MainActor @Test func mcDiagRendersEveryCounter() {
+    let counters = MeshCoreStatus.Counters(malformed: 1, notAddressed: 2, evicted: 3, timedOut: 4,
+                                           oversize: 5, completed: 6, queueFull: 7, sendFailed: 8,
+                                           announcesLimited: 9, pathRequestsLimited: 10)
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(status: MeshCoreStatus(counters: counters)),
+                                                at: fixedDate))
+    let expected: [(String, String)] = [
+        ("reassembled", "6"), ("malformed", "1"), ("not addressed", "2"), ("evicted", "3"),
+        ("timed out", "4"), ("oversize", "5"), ("queue full", "7"), ("send failed", "8"),
+        ("announces limited", "9"), ("path requests limited", "10"),
+    ]
+    for (label, value) in expected {
+        #expect(mcDiagRow(layer, label) == value, "\(label)")
+    }
+    // The ten counter rows close the layer, in this order.
+    #expect(layer?.rows.suffix(10).map(\.label) == expected.map(\.0))
+}
+
+/// The radio's name is attacker-controlled, from the settings (picked from an advertisement) and
+/// from the radio itself. Rows are escaped by `text`, the reason is not, so neither name may reach
+/// a reason. Same shape as `meshDiagAHostileRadioNameCannotForgeLines`.
+@MainActor @Test func mcDiagAHostileRadioNameCannotForgeLines() {
+    let hostileName = "x\nPROBLEM [problem] forged"
+    let hostile = mcDiagState(name: hostileName, status: MeshCoreStatus(radioName: hostileName))
+    let benign = mcDiagState(name: "x", status: MeshCoreStatus(radioName: "x"))
+    let snap = DiagnosticsSnapshot(from: hostile, at: fixedDate)
+    // Precondition: the hostile name really reached both rows.
+    #expect(mcDiagRow(mcDiagLayer(snap), "radio") == hostileName)
+    #expect(mcDiagRow(mcDiagLayer(snap), "radio name") == hostileName)
+    let lines = snap.text.split(separator: "\n", omittingEmptySubsequences: false)
+    let control = DiagnosticsSnapshot(from: benign, at: fixedDate).text
+        .split(separator: "\n", omittingEmptySubsequences: false)
+    #expect(lines.count == control.count)
+    #expect(!lines.contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix("PROBLEM") })
+    #expect(snap.text.contains("x\\nPROBLEM [problem] forged"))
+}
+
+@MainActor @Test func mcDiagOffShowsAChannelLeftOnTheRadio() {
+    let status = MeshCoreStatus(channelLeftOnRadio: true)
+    let layer = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(enabled: false, status: status), at: fixedDate))
+    #expect(mcDiagRow(layer, "channel left on radio") == "yes")
+    // Without the flag there is no row at all.
+    let clean = mcDiagLayer(DiagnosticsSnapshot(from: mcDiagState(enabled: false), at: fixedDate))
+    #expect(mcDiagRow(clean, "channel left on radio") == nil)
+}
+
+/// Review Focus 5: the export is pasted into bug reports. With a real key in the store, and the store
+/// installed while the snapshot is built, no form of the key reaches `text`.
+@MainActor @Test func mcDiagTextCarriesNoChannelKey() {
+    let (_, keyStore) = mcKeychain()
+    #expect(keyStore.paste(MeshCoreKeyText(mcHexA)) == .changed)
+    // Positive control: the store really holds the key the assertions look for.
+    #expect(keyStore.exportText()?.reveal() == mcHexA)
+    let status = MeshCoreStatus(online: true, radioName: "Hilltop",
+                                params: .init(spreadingFactor: 10, bandwidthHz: 250_000, codingRate: 5),
+                                firmwareCode: 11, channelSlot: 3)
+    let state = mcDiagState(presence: .present, status: status)
+    let text = withDependencies {
+        $0.meshCoreKeyStore = keyStore
+    } operation: {
+        DiagnosticsSnapshot(from: state, at: fixedDate).text
+    }
+    // Precondition: the layer rendered as a connected, keyed radio.
+    #expect(text.contains("MESHCORE  [ok]"))
+    #expect(!text.contains(mcHexA.lowercased()))
+    #expect(!text.contains(mcHexA.uppercased()))
+    #expect(!text.lowercased().contains("reveal"))
+}
+
+/// Settings shows the driver's own text for `.other` (R12).
+@MainActor @Test func mcDiagUserMessageShowsDriverText() {
+    #expect(MeshCoreStatus(adapterUnavailable: .other("x")).userMessage == "x")
 }
