@@ -110,6 +110,27 @@ private func recordingPasteboard() -> (LockIsolated<MeshCoreKeyText?>, MeshCoreK
     #expect(store.state.meshCoreKeyMessage == nil)
 }
 
+@MainActor @Test func mcKeyFlowGenerateTapClearsAnOldMessage() async {
+    let (keychain, keyStore) = mcKeychain()
+    // The generate fails too, so only the tap itself can clear the message before its result lands.
+    keychain.failAdd(at: MeshCoreKeyStore.keyLocation, status: errSecNotAvailable)
+    let store = mcStore(keyStore: keyStore)
+    await store.send(.meshCoreKeyDidChange(keyStore.paste(MeshCoreKeyText("not a key"))))
+    #expect(store.state.meshCoreKeyMessage == invalidMessage)
+    await store.send(.meshCoreGenerateKeyTapped)
+    #expect(store.state.meshCoreKeyMessage == nil)
+    await store.receive(isDidChange(.storageFailed))
+}
+
+@MainActor @Test func mcKeyFlowOpeningPasteClearsAnOldMessage() async {
+    let (_, keyStore) = mcKeychain()
+    let store = mcStore(keyStore: keyStore)
+    await store.send(.meshCoreKeyDidChange(keyStore.paste(MeshCoreKeyText("not a key"))))
+    #expect(store.state.meshCoreKeyMessage == invalidMessage)
+    await store.send(.meshCorePasteKeyOpened)
+    #expect(store.state.meshCoreKeyMessage == nil)
+}
+
 // MARK: - Copy
 
 @MainActor @Test func mcKeyFlowCopyGivesThePasteboardTheKey() async {

@@ -53,9 +53,15 @@ struct MeshCoreSettingsReducer: Reducer {
                 // One at a time: each generate is a real key change and a reconnect.
                 guard !state.meshCoreKeyGenerating else { return .none }
                 state.meshCoreKeyGenerating = true
+                // A new key change starts: the last one's message no longer applies.
+                state.meshCoreKeyMessage = nil
                 return .run { [keyStore] send in
                     await send(.meshCoreKeyDidChange(keyStore.generate()))
                 }
+
+            case .meshCorePasteKeyOpened:
+                state.meshCoreKeyMessage = nil
+                return .none
 
             case .meshCoreCopyKeyTapped:
                 return .run { [keyStore, pasteboard] _ in

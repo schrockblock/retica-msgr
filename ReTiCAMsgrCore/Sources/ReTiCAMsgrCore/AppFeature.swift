@@ -766,6 +766,8 @@ public struct AppFeature {
         /// MeshCore Settings' Generate button: the store makes and saves a new channel key. Handled
         /// in `MeshCoreSettingsReducer`, like the two below. No MeshCore action carries a key.
         case meshCoreGenerateKeyTapped
+        /// MeshCore Settings opened the paste sheet. Carries nothing; it clears the last key message.
+        case meshCorePasteKeyOpened
         /// MeshCore Settings' Copy button: the store's key goes to the pasteboard inside an effect.
         case meshCoreCopyKeyTapped
         /// A key change finished: Generate's effect, or the paste sheet after it called the store.
@@ -2915,7 +2917,8 @@ public struct AppFeature {
                 return .none
 
             // The MeshCore key arms live in `MeshCoreSettingsReducer` (AppFeature+MeshCore.swift).
-            case .meshCoreGenerateKeyTapped, .meshCoreCopyKeyTapped, .meshCoreKeyDidChange:
+            case .meshCoreGenerateKeyTapped, .meshCorePasteKeyOpened, .meshCoreCopyKeyTapped,
+                 .meshCoreKeyDidChange:
                 return .none
             }
         }

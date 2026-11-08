@@ -154,14 +154,18 @@ public struct MeshCoreKeyStore: Sendable {
         }
         return MeshCoreKeyStore(
             presence: {
-                switch ops.read(keyLocation) {
-                case let .found(data, _):
-                    // A wrong-length item is not a usable key, but it is not "no key" either.
-                    return data.count == keyLength ? .present : .unreadable
-                case .notFound:
-                    return .absent
-                case .failed, .rejected:
-                    return .unreadable
+                // Locked: a key change deletes the item before adding the new one, and in that window
+                // an unlocked read would say `.absent` (lane D would then remove the channel).
+                locked {
+                    switch ops.read(keyLocation) {
+                    case let .found(data, _):
+                        // A wrong-length item is not a usable key, but it is not "no key" either.
+                        return data.count == keyLength ? .present : .unreadable
+                    case .notFound:
+                        return .absent
+                    case .failed, .rejected:
+                        return .unreadable
+                    }
                 }
             },
             generate: {
@@ -174,8 +178,11 @@ public struct MeshCoreKeyStore: Sendable {
                 return locked { change(to: key, ops: ops) }
             },
             exportText: {
-                guard case let .found(data, _) = ops.read(keyLocation), data.count == keyLength else { return nil }
-                return MeshCoreKeyText(data.hexString)
+                // Locked for the same delete-then-add window as `presence`.
+                locked {
+                    guard case let .found(data, _) = ops.read(keyLocation), data.count == keyLength else { return nil }
+                    return MeshCoreKeyText(data.hexString)
+                }
             },
             secrets: {
                 // Locked so the two reads never straddle a key change.

@@ -572,7 +572,9 @@ struct SettingsView: View {
     private func meshCoreKeyReplacementConfirmed(_ replacement: MeshCoreKeyReplacement) {
         switch replacement {
         case .generate: store.send(.meshCoreGenerateKeyTapped)
-        case .paste: showingMeshCorePaste = true
+        case .paste:
+            store.send(.meshCorePasteKeyOpened)
+            showingMeshCorePaste = true
         }
     }
     #endif
