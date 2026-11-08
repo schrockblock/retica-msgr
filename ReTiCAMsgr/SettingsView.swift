@@ -419,6 +419,8 @@ struct SettingsView: View {
                  + "this device over Bluetooth. Set the radio to a Short preset (ShortTurbo or "
                  + "ShortFast): longer presets are too slow for most messages. The radio must not "
                  + "be connected to another app, such as the Meshtastic app, at the same time. "
+                 + "Text messages waiting on the radio may be removed when this app connects, and "
+                 + "may not reach the Meshtastic app. "
                  + "Choosing a radio pauses Bluetooth connections to nearby devices until the list "
                  + "closes. Off by default.")
         }
