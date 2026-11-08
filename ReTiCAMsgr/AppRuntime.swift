@@ -27,6 +27,9 @@ final class AppRuntime {
         /// How long `pushWake` holds the process after sending `.pushWake`, so the re-dial and
         /// drain get a chance before the fetch handler completes. Zero under test.
         var wakeHold: Duration = .seconds(20)
+        /// The MeshCore channel-key store. Inert by default, so a runtime built without one (the
+        /// app's own runtime tests) never touches the real Keychain; `live()` passes the real one.
+        var meshCoreKeyStore: MeshCoreKeyStore = .inert
 
         static func live() -> Environment {
             let dbPath = URL.documentsDirectory.appending(path: "reticamsgr.sqlite").path()
@@ -44,7 +47,8 @@ final class AppRuntime {
                 database: try! AppDatabase.makeOnDisk(path: dbPath),
                 identityStore: .liveValue,
                 anchor: IdentityAnchor(defaults: .standard),
-                pushStorage: pushStorage ?? .temporary())
+                pushStorage: pushStorage ?? .temporary(),
+                meshCoreKeyStore: .live(ops: .live))
         }
 
         /// Hosted XCTest runs and UI-test launches never touch the real Keychain, database or
@@ -61,7 +65,8 @@ final class AppRuntime {
                 database: try! AppDatabase.makeInMemory(),
                 identityStore: .live(ops: keychain.ops),
                 anchor: IdentityAnchor(defaults: defaults),
-                wakeHold: .zero)
+                wakeHold: .zero,
+                meshCoreKeyStore: .live(ops: keychain.ops))
         }
 
         static var isTestHost: Bool {
@@ -97,6 +102,7 @@ final class AppRuntime {
         guard let identity = resolved.identity else { return }
         let database = environment.database
         let pushStorage = environment.pushStorage
+        let meshCoreKeyStore = environment.meshCoreKeyStore
         let store = Store(initialState: AppFeature.State(identity: identity, pushStorage: pushStorage)) {
             AppFeature()
         } withDependencies: {
@@ -138,6 +144,9 @@ final class AppRuntime {
             $0.attachmentCacheEvictor = AttachmentCacheEvictor { ids in
                 await ThumbnailCache.shared.evict(attachmentIds: ids)
             }
+            // Explicit for the same hosted-XCTest reason as `\.date`, and so a hosted run uses the
+            // test host's in-memory Keychain, never the real one.
+            $0.meshCoreKeyStore = meshCoreKeyStore
         }
         self.store = store
         store.send(.onLaunch)
@@ -267,4 +276,8 @@ final class AppRuntime {
     }
 
     var pushStorage: PushStorage { environment.pushStorage }
+
+    /// The key sheets call the store directly; a view's own `@Dependency` wouldn't see the store's
+    /// override, so they take this one.
+    var meshCoreKeyStore: MeshCoreKeyStore { environment.meshCoreKeyStore }
 }
