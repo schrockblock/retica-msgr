@@ -160,6 +160,8 @@ private let mcPeerPrefix = Data([0x09, 0x08, 0x07, 0x06])
 /// path. The radio it arrives on is one a swap installed (radio A, changed to B, foreground), so the
 /// slot is started by `installMeshCoreSlot` itself: at Connect or foreground the endpoint-wide start
 /// would start a freshly installed slot anyway.
+/// Inbound on a plain-Connect radio is covered by `mcStatusCountersFollowTheLiveSlot` (app, packet
+/// received) and ReTiCA's `TransportEndpointMeshCoreTests` (learned entry names the radio's id).
 @MainActor @Test func mcSliceAPacketFromTheRadioRegistersItsPath() async {
     let radio = MeshCoreRadioHarness()
     let store = mcRadioStore(radio: mcRadioIDA, radioHarness: radio)
@@ -247,6 +249,13 @@ private let mcPeerPrefix = Data([0x09, 0x08, 0x07, 0x06])
 }
 
 // MARK: - Release gate
+
+/// The gate tests below set `meshCoreAvailable = false` by hand; this pins that a real state's
+/// default follows the compile-time switch (off in Release).
+@MainActor @Test func mcGateDefaultFollowsTheReleaseGate() {
+    let store = mcRadioStore(radio: nil, radioHarness: MeshCoreRadioHarness())
+    #expect(store.state.meshCoreAvailable == MeshCoreReleaseGate.isCompiledIn)
+}
 
 /// Stale defaults in a build without MeshCore: the setting on, a radio chosen and a key in the
 /// Keychain.
