@@ -24,6 +24,9 @@ extension MeshCoreDriver {
     ///
     /// `willForward` runs after that forget and before each event is yielded. It's a test hook (the
     /// app never passes one): a test reads the key store from it to prove the forget came first.
+    /// Keep the call immediately before `continuation.yield`: that test
+    /// (`mcSecretsForgetsBeforeForwardingTheClearedEvent`) relies on the hook marking the moment of
+    /// forwarding, and moving it would let a forward-first wrapper pass.
     static func resolvingSecrets(base: MeshCoreDriver, keyStore: MeshCoreKeyStore,
                                  willForward: @escaping @Sendable (MeshCoreDriverEvent) async -> Void = { _ in })
         -> MeshCoreDriver {

@@ -229,6 +229,60 @@ func mcRedialConnectRetriesAPolicyFailure(_ text: String) async {
     #expect(await mcWait { radio.startCount >= 3 }, "calls: \(radio.calls.value)")
 }
 
+/// Review fix 1: with only MeshCore set up and held back by a policy failure, a re-dial after
+/// Disconnect dials nothing, so it must not show a Connecting… that never resolves.
+@MainActor @Test func mcRedialPolicyFailureThenDisconnectForegroundStaysDisconnected() async {
+    let radio = MeshCoreRadioHarness()
+    let commands = LockIsolated<[McSlotCommand]>([])
+    let store = await connectingStore(radio: radio, slotCommands: commands)
+    await failRadio(store, radio, MeshCoreLiveMessage.noFreeSlot)
+    await disconnect(store)
+    #expect(store.state.connection == .disconnected)
+    commands.setValue([])
+    await redial(store, .foregrounded)
+    #expect(store.state.connection == .disconnected, "Connecting… with nothing dialing")
+    #expect(commands.value == [])
+    await mcSettle(store)
+    #expect(radio.calls.value == [startA, .stop])
+}
+
+/// Review fix 1, the other half: Meshtastic still re-dials (and shows Connecting…) while MeshCore
+/// is held back by a policy failure.
+@MainActor @Test func mcRedialPolicyFailureStillRedialsMeshtastic() async {
+    let radio = MeshCoreRadioHarness()
+    let meshtastic = MeshRadioHarness()
+    let commands = LockIsolated<[McSlotCommand]>([])
+    let store = mcRadioStore(radio: mcRadioIDA, radioHarness: radio, meshtastic: meshtastic,
+                             slotCommands: commands, configure: bothRadios)
+    await store.send(.connectTapped)
+    #expect(await mcWait { radio.startCount >= 1 })
+    await bringMeshtasticOnline(store, meshtastic)
+    await failRadio(store, radio, MeshCoreLiveMessage.noFreeSlot)
+    await disconnect(store)
+    #expect(await mcWait { meshtastic.calls.value.count >= 2 })
+    #expect(store.state.connection == .disconnected)
+    commands.setValue([])
+    await redial(store, .foregrounded)
+    #expect(store.state.connection == .connecting)
+    #expect(commands.value == [], "the MeshCore radio held by a policy failure was re-dialled")
+    #expect(await mcWait { meshtastic.startCount >= 2 })
+    #expect(meshtastic.calls.value == [.start(meshSlotRadioA), .stop, .start(meshSlotRadioA)])
+}
+
+/// Review minor 1 (ruling F17): `.other(nil)` carries no reason, so it is never a policy failure
+/// and a foreground still re-dials.
+@MainActor @Test func mcRedialAnUnavailableRadioWithNoReasonIsRestarted() async {
+    let radio = MeshCoreRadioHarness()
+    let store = await connectingStore(radio: radio)
+    radio.yieldToLatest(.unavailable(.other(nil)))
+    radio.finishLatest()
+    await store.receive(isMeshCoreAdapterUnavailable, timeout: .seconds(20))
+    #expect(!store.state.meshCorePolicyFailed)
+    await store.send(.foregrounded)
+    #expect(await mcWait { radio.startCount >= 2 }, "calls: \(radio.calls.value)")
+    #expect(radio.calls.value == [startA, startA])
+}
+
 /// Installing a different radio clears the flag: B may have a free slot.
 @MainActor @Test func mcRedialANewRadioIsNotHeldByTheOldFailure() async {
     let radio = MeshCoreRadioHarness()
