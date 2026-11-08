@@ -334,6 +334,9 @@ public struct AppFeature {
         public var meshCoreKeyGeneration = 0
         /// What the last key change needs to tell the user, nil when nothing. Session-only.
         public var meshCoreKeyMessage: String? = nil
+        /// A Generate is running. Settings disables the button and the reducer ignores another tap,
+        /// so a double tap can't make two key changes (two reconnects). Session-only.
+        public var meshCoreKeyGenerating = false
         /// The Release gate. Stored so tests can turn it off (`swift test` always compiles DEBUG).
         public var meshCoreAvailable = MeshCoreReleaseGate.isCompiledIn
         /// The MeshCore radio's state for Diagnostics and Settings. Lane D fills it. Session-only.

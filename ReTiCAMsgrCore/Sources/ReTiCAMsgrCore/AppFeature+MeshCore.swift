@@ -23,6 +23,13 @@ extension AppFeature.State {
     var meshCoreWillDial: Bool {
         meshCoreAvailable && meshCoreEnabled && meshCoreRadioUUID != nil && meshCoreKeyPresence == .present
     }
+
+    /// Settings' turn-off notice. Whether our slot is still on the radio can't always be known (no
+    /// slot this session, or the radio never reached), so it shows whenever a radio is chosen, unless
+    /// a removal is known to have succeeded or the left-on-radio notice already says it failed.
+    public var meshCoreTurnOffNoticeVisible: Bool {
+        meshCoreRadioUUID != nil && !meshCoreStatus.channelRemoved && !meshCoreStatus.channelLeftOnRadio
+    }
 }
 
 /// The MeshCore key arms of `AppFeature` (spec 2026-11-07 §6), composed into `AppFeature.body` after
@@ -43,6 +50,9 @@ struct MeshCoreSettingsReducer: Reducer {
         Reduce { state, action in
             switch action {
             case .meshCoreGenerateKeyTapped:
+                // One at a time: each generate is a real key change and a reconnect.
+                guard !state.meshCoreKeyGenerating else { return .none }
+                state.meshCoreKeyGenerating = true
                 return .run { [keyStore] send in
                     await send(.meshCoreKeyDidChange(keyStore.generate()))
                 }
@@ -55,6 +65,7 @@ struct MeshCoreSettingsReducer: Reducer {
                 }
 
             case let .meshCoreKeyDidChange(result):
+                state.meshCoreKeyGenerating = false
                 state.meshCoreKeyPresence = keyStore.presence()
                 // Lane D's slot identity reads the generation: only a real change may move it.
                 if result == .changed {

@@ -14,7 +14,7 @@ struct RootView: View {
                 ConversationListView(store: store)
                     .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                     .tag(Tab.chat)
-                SettingsView(store: store)
+                SettingsView(store: store, meshCoreKeyStore: runtime.meshCoreKeyStore)
                     .tabItem { Label("Settings", systemImage: "gear") }
                     .tag(Tab.settings)
             }

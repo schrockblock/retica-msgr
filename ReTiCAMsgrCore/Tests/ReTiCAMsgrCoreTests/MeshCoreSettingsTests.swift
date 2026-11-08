@@ -197,3 +197,142 @@ private func mcSettingsWillDialNeedsEveryCondition(_ c: MCDialCase) {
 @Test func mcSettingsGateIsOnInThisBuild() {
     #expect(MeshCoreReleaseGate.isCompiledIn)
 }
+
+// MARK: - Settings copy, notices and Generate (T7)
+
+@Test func mcCopyWarningSaysMessagesAreRemoved() {
+    #expect(MeshCoreCopy.requiredWarning
+            == "Text messages waiting on the radio are removed when this app connects and won't reach the MeshCore app.")
+}
+
+@Test func mcCopyFooterCarriesTheWarning() {
+    #expect(MeshCoreCopy.footer.contains(MeshCoreCopy.requiredWarning))
+}
+
+@Test func mcCopyFooterSaysThisAddsSharedTraffic() {
+    #expect(MeshCoreCopy.footer.contains("adds traffic to a shared radio network"))
+}
+
+@Test func mcCopyFooterSaysEveryoneNeedsTheKey() {
+    #expect(MeshCoreCopy.footer.contains("Everyone on the tunnel needs the same channel key"))
+}
+
+@Test func mcCopyTurnOffSaysWhatHappensWhenNotConnected() {
+    #expect(MeshCoreCopy.turnOffNotice.contains("may stay on the radio"))
+    #expect(MeshCoreCopy.turnOffNotice.contains("MeshCore app"))
+}
+
+@Test func mcCopyRadioChangeSaysTheOldChannelStays() {
+    #expect(MeshCoreCopy.radioChangeNotice.contains("different radio"))
+    #expect(MeshCoreCopy.radioChangeNotice.contains("old radio"))
+    #expect(MeshCoreCopy.radioChangeNotice.contains("MeshCore app"))
+}
+
+@Test func mcCopyNeverNamesTheApp() {
+    for text in MeshCoreCopy.all {
+        #expect(!text.lowercased().contains("reticamsgr"), "\(text)")
+    }
+}
+
+/// Guards `all` itself: a string left out of it would escape `mcCopyNeverNamesTheApp`.
+@Test func mcCopyAllListsTheNotices() {
+    for text in [MeshCoreCopy.footer, MeshCoreCopy.requiredWarning, MeshCoreCopy.turnOffNotice,
+                 MeshCoreCopy.radioChangeNotice, MeshCoreCopy.noKeyNotice, MeshCoreCopy.channelLeftNotice,
+                 MeshCoreCopy.shareBody, MeshCoreCopy.replaceMessage] {
+        #expect(MeshCoreCopy.all.contains(text), "\(text)")
+    }
+}
+
+@Test func mcCopyUserMessageFallsBackForOtherWithoutText() {
+    #expect(MeshCoreStatus(adapterUnavailable: .other(nil)).userMessage
+            == "The Bluetooth path to the radio is unavailable.")
+}
+
+@Test func mcCopyUserMessageForUnauthorized() {
+    #expect(MeshCoreStatus(adapterUnavailable: .unauthorized).userMessage
+            == "Bluetooth permission is off for this app. Allow it in Settings.")
+}
+
+@Test func mcCopyUserMessageForUnsupported() {
+    #expect(MeshCoreStatus(adapterUnavailable: .unsupported).userMessage
+            == "This device has no Bluetooth LE radio.")
+}
+
+@Test func mcCopyUserMessageForPoweredOff() {
+    #expect(MeshCoreStatus(adapterUnavailable: .poweredOff).userMessage
+            == "Bluetooth is off. Turn it on to reach the radio.")
+}
+
+@Test func mcCopyUserMessageIsNilWhileTheAdapterIsAvailable() {
+    #expect(MeshCoreStatus().userMessage == nil)
+}
+
+@MainActor @Test(arguments: [false, true])
+func mcCopyTurnOffNoticeShowsWithARadioChosen(enabled: Bool) {
+    let defaults = UserDefaults.inMemory
+    defaults.set(enabled, forKey: "meshCoreEnabled")
+    defaults.set(mcRadioA.id.uuidString, forKey: "meshCoreRadioID")
+    let state = mcStore(defaults: defaults).state
+    #expect(state.meshCoreEnabled == enabled)
+    #expect(state.meshCoreTurnOffNoticeVisible)
+}
+
+@MainActor @Test func mcCopyTurnOffNoticeHidesWithNoRadio() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(true, forKey: "meshCoreEnabled")
+    let state = mcStore(defaults: defaults).state
+    #expect(!state.meshCoreTurnOffNoticeVisible)
+}
+
+@MainActor @Test func mcCopyTurnOffNoticeHidesAfterARemoval() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(mcRadioA.id.uuidString, forKey: "meshCoreRadioID")
+    let state = mcStore(defaults: defaults) { $0.meshCoreStatus.channelRemoved = true }.state
+    #expect(!state.meshCoreTurnOffNoticeVisible)
+}
+
+@MainActor @Test func mcCopyTurnOffNoticeGivesWayToTheLeftNotice() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(mcRadioA.id.uuidString, forKey: "meshCoreRadioID")
+    let state = mcStore(defaults: defaults) { $0.meshCoreStatus.channelLeftOnRadio = true }.state
+    #expect(!state.meshCoreTurnOffNoticeVisible)
+}
+
+/// A key store whose `generate` counts its calls.
+private func mcCountingKeyStore(calls: LockIsolated<Int>) -> MeshCoreKeyStore {
+    var keyStore = MeshCoreKeyStore.inert
+    keyStore.generate = {
+        calls.withValue { $0 += 1 }
+        return .changed
+    }
+    keyStore.presence = { .present }
+    return keyStore
+}
+
+@MainActor @Test func mcCopyGenerateMarksItselfRunning() async {
+    let store = mcStore(keyStore: mcCountingKeyStore(calls: LockIsolated(0)))
+    await store.send(.meshCoreGenerateKeyTapped)
+    #expect(store.state.meshCoreKeyGenerating)
+    await store.receive { if case .meshCoreKeyDidChange = $0 { return true }; return false }
+}
+
+/// A second tap while the first generate runs would make two real key changes and two reconnects.
+/// The running state is planted, so the test doesn't race the first generate's effect.
+@MainActor @Test func mcCopyGenerateWhileOneIsRunningIsIgnored() async {
+    let calls = LockIsolated(0)
+    let store = mcStore(keyStore: mcCountingKeyStore(calls: calls)) { $0.meshCoreKeyGenerating = true }
+    await store.send(.meshCoreGenerateKeyTapped)
+    await store.finish()
+    #expect(calls.value == 0)
+}
+
+@MainActor @Test func mcCopyGenerateIsAllowedAgainAfterTheResult() async {
+    let calls = LockIsolated(0)
+    let store = mcStore(keyStore: mcCountingKeyStore(calls: calls))
+    await store.send(.meshCoreGenerateKeyTapped)
+    await store.receive { if case .meshCoreKeyDidChange = $0 { return true }; return false }
+    #expect(!store.state.meshCoreKeyGenerating)
+    await store.send(.meshCoreGenerateKeyTapped)
+    await store.receive { if case .meshCoreKeyDidChange = $0 { return true }; return false }
+    #expect(calls.value == 2)
+}

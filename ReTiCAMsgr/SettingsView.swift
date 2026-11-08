@@ -19,6 +19,9 @@ import ReTiCAPush
 /// their own "Network" heading.
 struct SettingsView: View {
     @Bindable var store: StoreOf<AppFeature>
+    /// The MeshCore paste and share sheets talk to the key store directly, so the key never
+    /// passes through `AppFeature`.
+    let meshCoreKeyStore: MeshCoreKeyStore
     @State private var pnInput: String = ""
     @State private var nameInput: String = ""
     @State private var showingAddress = false
@@ -29,6 +32,13 @@ struct SettingsView: View {
     @State private var showingCamera = false
     @State private var photoItem: PhotosPickerItem?
     @State private var cropTarget: CropTarget?
+    #if DEBUG
+    /// The key the share sheet shows, nil when it is closed: dismissing drops it.
+    @State private var meshCoreShareText: MeshCoreKeyText?
+    @State private var showingMeshCorePaste = false
+    /// A Generate or Paste over an existing key, waiting for "Replace".
+    @State private var meshCorePendingReplace: MeshCoreKeyReplacement?
+    #endif
     @Environment(\.openURL) private var openURL
     @FocusState private var focusedField: Field?
 
@@ -403,6 +413,10 @@ struct SettingsView: View {
                  + "closes. Off by default.")
         }
 
+        #if DEBUG
+        meshCoreSection
+        #endif
+
         Section("Direct Connections") {
             // Standard Toggle in a Form row: the whole row is already hittable, so no
             // explicit contentShape is needed here.
@@ -476,7 +490,108 @@ struct SettingsView: View {
                  + "snapshot for bug reports.")
         }
     }
+
+    // MARK: - MeshCore (Debug-only until lane E)
+
+    #if DEBUG
+    private var meshCoreKeyIsPresent: Bool { store.meshCoreKeyPresence == .present }
+
+    private var meshCoreSection: some View {
+        Section {
+            // Standard Toggle in a Form row: the whole row is already hittable. It stays enabled
+            // while on, so restored defaults without a key can still be turned off.
+            Toggle(MeshCoreCopy.toggle, isOn: $store.meshCoreEnabled)
+                .disabled(!store.meshCoreEnabled && !meshCoreKeyIsPresent)
+            if !meshCoreKeyIsPresent {
+                meshCoreNote(MeshCoreCopy.noKeyNotice)
+            }
+            if let message = store.meshCoreStatus.userMessage {
+                meshCoreNote(message, color: .red)
+            }
+            LabeledContent(MeshCoreCopy.radioRow, value: store.meshCoreRadioLabel)
+            // A standard Form button row is hittable across its width already.
+            Button(MeshCoreCopy.chooseRadio) { store.send(.chooseMeshCoreRadioTapped) }
+            if store.meshCoreRadioUUID != nil {
+                meshCoreNote(MeshCoreCopy.radioChangeNotice)
+            }
+            LabeledContent(MeshCoreCopy.keyRow, value: MeshCoreCopy.keyValue(store.meshCoreKeyPresence))
+                .confirmationDialog(MeshCoreCopy.replaceTitle,
+                                    isPresented: Binding(get: { meshCorePendingReplace != nil },
+                                                         set: { if !$0 { meshCorePendingReplace = nil } }),
+                                    titleVisibility: .visible,
+                                    presenting: meshCorePendingReplace) { replacement in
+                    Button(MeshCoreCopy.replaceButton, role: .destructive) {
+                        meshCorePendingReplace = nil
+                        meshCoreKeyReplacementConfirmed(replacement)
+                    }
+                    Button(MeshCoreCopy.cancelButton, role: .cancel) { meshCorePendingReplace = nil }
+                } message: { _ in
+                    Text(MeshCoreCopy.replaceMessage)
+                }
+                .sheet(isPresented: $showingMeshCorePaste) {
+                    MeshCorePasteKeySheet(store: store, keyStore: meshCoreKeyStore)
+                }
+                .sheet(item: $meshCoreShareText) { key in
+                    MeshCoreShareKeySheet(key: key)
+                }
+            if let message = store.meshCoreKeyMessage {
+                meshCoreNote(message, color: .red)
+            }
+            // Disabled while a Generate runs: each one is a real key change and a reconnect.
+            Button(MeshCoreCopy.generateKey) { meshCoreKeyChangeTapped(.generate) }
+                .disabled(store.meshCoreKeyGenerating)
+            Button(MeshCoreCopy.pasteKey) { meshCoreKeyChangeTapped(.paste) }
+                .disabled(store.meshCoreKeyGenerating)
+            if meshCoreKeyIsPresent {
+                Button(MeshCoreCopy.copyKey) { store.send(.meshCoreCopyKeyTapped) }
+                Button(MeshCoreCopy.shareKey) {
+                    // nil (the key went away or can't be read) presents nothing.
+                    meshCoreShareText = meshCoreKeyStore.exportText()
+                }
+            }
+            if store.meshCoreStatus.channelLeftOnRadio {
+                meshCoreNote(MeshCoreCopy.channelLeftNotice)
+            }
+            if store.meshCoreTurnOffNoticeVisible {
+                meshCoreNote(MeshCoreCopy.turnOffNotice)
+            }
+        } header: {
+            Text(MeshCoreCopy.header)
+        } footer: {
+            Text(MeshCoreCopy.footer)
+        }
+    }
+
+    private func meshCoreNote(_ text: String, color: Color = .secondary) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(color)
+    }
+
+    /// Over an existing key, Generate and Paste ask first; otherwise they go straight ahead.
+    private func meshCoreKeyChangeTapped(_ replacement: MeshCoreKeyReplacement) {
+        if meshCoreKeyIsPresent {
+            meshCorePendingReplace = replacement
+        } else {
+            meshCoreKeyReplacementConfirmed(replacement)
+        }
+    }
+
+    private func meshCoreKeyReplacementConfirmed(_ replacement: MeshCoreKeyReplacement) {
+        switch replacement {
+        case .generate: store.send(.meshCoreGenerateKeyTapped)
+        case .paste: showingMeshCorePaste = true
+        }
+    }
+    #endif
 }
+
+#if DEBUG
+/// Which key change the "Replace the channel key?" confirmation is for.
+private enum MeshCoreKeyReplacement {
+    case generate, paste
+}
+#endif
 
 /// A picked library photo waiting in the crop screen.
 private struct CropTarget: Identifiable {
