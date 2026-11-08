@@ -5149,6 +5149,10 @@ private func groupSends(_ store: TestStoreOf<AppFeature>, _ action: AppFeature.A
     #expect(store.state.threadMessages.map(\.body) == ["You created the group Mutual Aid"])
 }
 
+/// The library's record of a peer whose delivery announce was heard, with no stamp cost.
+let heardAnnounce = LXMFNode.LearnedPeer(displayName: nil, stampCost: nil, supportsCompression: true,
+                                         learnedAt: Date(timeIntervalSince1970: 0))
+
 /// A reachable member gets their roster copy at once: title, invite body, full roster, revision
 /// 1; their row moves to sending with the copy's hash, the unreachable member's stays waiting.
 @MainActor @Test func groupCreateSendsRosterToReachableMembers() async throws {
@@ -5157,6 +5161,9 @@ private func groupSends(_ store: TestStoreOf<AppFeature>, _ action: AppFeature.A
     let myHex = lxmfAddressHex(me)
     let store = makeStore(db, identity: me) { s in
         s.reachablePeers = [memberC]
+        // What C's announce left in the library: reachable means heard, so ReTiCA knows C's stamp
+        // cost and sends without first asking for C's path.
+        s.node.client.learnedPeers[Data(hexString: memberC)!] = heardAnnounce
         s.$displayName.withLock { $0 = "Ada" }
     }
     let sent = await groupSends(store, .createGroup(name: "Mutual Aid", members: [memberC, memberD]), count: 1)

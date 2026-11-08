@@ -244,6 +244,8 @@ private func failedGroupPost(_ db: any DatabaseWriter) async throws
         s.threadMessages = [post]
         s.deliveriesByMessageId = [post.id: copies]
         s.reachablePeers = [memberD]
+        // What D's announce left in the library, so ReTiCA does not ask for D's path itself.
+        s.node.client.learnedPeers[Data(hexString: memberD)!] = heardAnnounce
     }
     let gate = DatabaseGate()
     await gate.hold(db)
