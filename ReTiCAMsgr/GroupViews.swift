@@ -96,6 +96,7 @@ struct GroupMemberPicker: View {
         }
         .sheet(isPresented: $showingScanner) {
             QRScannerView(ownAddress: store.myAddressHex) { contact in
+                if contact.publicKey != nil { store.send(.scannedContactKey(contact)) }
                 let hex = contact.addressHex   // already lowercase
                 if !exclude.contains(hex) { selected.insert(hex) }
                 showingScanner = false

@@ -296,6 +296,7 @@ struct ComposeSheet: View {
                 if pendingScan != nil { askingWhoIsThis = true }
             }) {
                 QRScannerView(ownAddress: store.myAddressHex) { contact in
+                    if contact.publicKey != nil { store.send(.scannedContactKey(contact)) }
                     address = contact.addressHex
                     pendingScan = contact.addressHex
                     showingScanner = false

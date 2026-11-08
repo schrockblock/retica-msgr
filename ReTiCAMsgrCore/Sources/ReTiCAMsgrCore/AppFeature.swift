@@ -620,6 +620,10 @@ public struct AppFeature {
         /// peer's address or a group id, the list row's key, and `isGroup` says which.
         case deleteConversation(key: String, isGroup: Bool)
         case startConversation(String)
+        /// A QR scan or link carried the peer's public key (`ContactURI.parse` already proved it
+        /// belongs to the address). Remembered as a known destination, so a propagated send can
+        /// reach the peer before it announces. Never replaces a key we already know.
+        case scannedContactKey(ScannedContact)
         /// ChatView's onAppear: the open thread is on screen again (back from another tab), so its
         /// unstamped rows are viewed now.
         case chatAppeared
@@ -796,6 +800,8 @@ public struct AppFeature {
 
     @Dependency(\.defaultDatabase) var database
     @Dependency(\.date) var date
+    /// Transport's clock: an entry handed to `rehydrateKnownDestinations` is checked against it.
+    @Dependency(\.transportDate) var transportDate
     @Dependency(\.uuid) var uuid
     @Dependency(\.contactsClient) var contactsClient
     @Dependency(\.continuousClock) var clock
@@ -1661,6 +1667,18 @@ public struct AppFeature {
                 // The waiting rows were written inside the receive; the unreachable members get
                 // their copy when their path is learned (Task 5's hook). Only this group's rows go.
                 return groupDispatchEffect(state, members: state.reachablePeers, groupHex: groupHex)
+
+            case let .scannedContactKey(contact):
+                // An existing entry came from a signed announce and may carry the peer's link cost:
+                // overwriting it with a fresh, cost-less one would send the next link unstamped.
+                guard let key = contact.publicKey,
+                      let identity = Identity(publicKey: key),
+                      let hash = Data(hexString: contact.addressHex), hash.count == 16,
+                      state.node.client.endpoint.recall(destinationHash: hash) == nil
+                else { return .none }
+                let entry = KnownDestination(identity: identity, appData: nil, lastHeard: transportDate.now)
+                // Persisted by the known-destination flush (debounced, and on `.backgrounded`).
+                return .send(.node(.client(.endpoint(.transport(.rehydrateKnownDestinations([hash: entry]))))))
 
             case let .startConversation(hex):
                 guard let data = Data(hexString: hex), data.count == 16 else { return .none }
