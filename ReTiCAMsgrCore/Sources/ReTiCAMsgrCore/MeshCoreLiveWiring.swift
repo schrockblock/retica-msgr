@@ -21,7 +21,12 @@ extension MeshCoreDriver {
     ///
     /// On `.retiredChannelsCleared` it forgets exactly the retired keys THAT start carried, before
     /// forwarding the event: a key retired after the start is still on the radio, so it stays.
-    static func resolvingSecrets(base: MeshCoreDriver, keyStore: MeshCoreKeyStore) -> MeshCoreDriver {
+    ///
+    /// `willForward` runs after that forget and before each event is yielded. It's a test hook (the
+    /// app never passes one): a test reads the key store from it to prove the forget came first.
+    static func resolvingSecrets(base: MeshCoreDriver, keyStore: MeshCoreKeyStore,
+                                 willForward: @escaping @Sendable (MeshCoreDriverEvent) async -> Void = { _ in })
+        -> MeshCoreDriver {
         MeshCoreDriver(
             start: { config in
                 guard let secrets = keyStore.secrets() else {
@@ -40,6 +45,7 @@ extension MeshCoreDriver {
                             if event == .retiredChannelsCleared {
                                 keyStore.forgetRetired(secrets.retired)
                             }
+                            await willForward(event)
                             continuation.yield(event)
                         }
                         continuation.finish()

@@ -21,6 +21,10 @@ let mcRadioPublicKey = Data((0..<32).map { UInt8($0 + 1) })
 /// `channelSecret`, never its value: 0 when the driver sits under the reducer with no wrapper.
 enum McRadioCall: Equatable { case start(UUID, canRoute: Bool, secretBytes: Int), stop, removeChannel }
 
+/// A slot-level command the store reduced (`.node(.client(.endpoint(.meshCore(…))))`), whether or not
+/// the interface passed it on to the driver: an online interface ignores `.start`.
+enum McSlotCommand: Equatable, Sendable { case start, stop, removeChannel }
+
 /// A mock MeshCore driver shaped like the live adapter: every `start` opens a FRESH session
 /// stream; `stop` and `removeChannel` block while held and are recorded only when they RETURN.
 final class MeshCoreRadioHarness: Sendable {
@@ -97,6 +101,7 @@ func mcRadioStore(radio: UUID?, enabled: Bool = true, radioHarness: MeshCoreRadi
                   tcp: MeshTCPHarness = MeshTCPHarness(),
                   keychain: InMemoryKeychain = mcKeyedKeychain(),
                   removeChannelSends: LockIsolated<Int>? = nil,
+                  slotCommands: LockIsolated<[McSlotCommand]>? = nil,
                   configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     let store = MeshCoreKeyStore.live(ops: keychain.ops)
     let defaults = UserDefaults.inMemory
@@ -120,6 +125,15 @@ func mcRadioStore(radio: UUID?, enabled: Bool = true, radioHarness: MeshCoreRadi
             Reduce<AppFeature.State, AppFeature.Action> { _, action in
                 if case .node(.client(.endpoint(.meshCore(.removeChannel)))) = action {
                     removeChannelSends?.withValue { $0 += 1 }
+                }
+                // Every slot-level command the store reduces, in order: an absence check reads this
+                // once a barrier action proves the effect that would have sent one has run.
+                switch action {
+                case .node(.client(.endpoint(.meshCore(.start)))): slotCommands?.withValue { $0.append(.start) }
+                case .node(.client(.endpoint(.meshCore(.stop)))): slotCommands?.withValue { $0.append(.stop) }
+                case .node(.client(.endpoint(.meshCore(.removeChannel)))):
+                    slotCommands?.withValue { $0.append(.removeChannel) }
+                default: break
                 }
                 return .none
             }

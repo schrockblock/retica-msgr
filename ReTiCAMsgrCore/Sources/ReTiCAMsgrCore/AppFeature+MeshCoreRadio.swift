@@ -1,6 +1,7 @@
 import Foundation
 import ComposableArchitecture
 import ReTiCAInterfaces
+import ReTiCAMeshCoreLive
 import ReTiCANode
 
 /// What a MeshCore slot was built for (spec 2026-11-07 §6, lane D). Decides whether the slot must
@@ -133,9 +134,12 @@ func finishMeshCoreSwap(_ state: inout AppFeature.State) -> Effect<AppFeature.Ac
 
 /// Keeps the existing slot for `identity` (same radio). Resets the per-radio status as an install
 /// does, keeping the counters: the slot is about to run again, so a turn-off's "removed" or "left on
-/// the radio" no longer describes it (ruling F13).
+/// the radio" no longer describes it (ruling F13). Both keep-slot paths restart for a new key (or a
+/// turn-on), which may succeed where the old one failed, so a policy failure no longer holds
+/// re-dials back (ruling F18).
 private func keepMeshCoreSlot(_ state: inout AppFeature.State, _ identity: MeshCoreSlotIdentity) {
     state.meshCoreSlotIdentity = identity
+    state.meshCorePolicyFailed = false
     let live = state.node.client.endpoint.meshCore.map { MeshCoreStatus.Counters($0.counters) }
         ?? MeshCoreStatus.Counters()
     state.meshCoreStatus = MeshCoreStatus(counters: state.meshCoreRetiredCounters + live)
@@ -156,6 +160,10 @@ func installMeshCoreSlot(_ state: inout AppFeature.State, _ identity: MeshCoreSl
                                profile: .meshCore(params: nil))
     }
     state.meshCoreSlotIdentity = identity
+    // A different radio (or key) may succeed where a policy failure stopped the old one.
+    if identity != nil {
+        state.meshCorePolicyFailed = false
+    }
     // A turn-off's outcome stays visible while there's no slot; a new slot clears it.
     let keepRecord = identity == nil
     state.meshCoreStatus = MeshCoreStatus(
@@ -167,13 +175,18 @@ func installMeshCoreSlot(_ state: inout AppFeature.State, _ identity: MeshCoreSl
 }
 
 /// The MeshCore slot's app-side arms: turn-off acts at once, swap completion at `.radioOffline`,
-/// and the turn-off's channel removal. Composed into `AppFeature.body` after
-/// `MeshtasticRadioReducer`. Other delegates are Task 9's.
+/// the turn-off's channel removal, and recording a policy failure. Composed into `AppFeature.body`
+/// after `MeshtasticRadioReducer`. Other delegates are Task 9's.
 struct MeshCoreRadioReducer: Reducer {
+    /// `\.meshCoreEnabled` as a read-only key path. A binding's key path compares equal to it, but
+    /// forming it doesn't touch the `@Shared` property's deprecated setter, as the writable key path
+    /// in `case .binding(\.meshCoreEnabled)` does.
+    private static var meshCoreEnabledKeyPath: KeyPath<AppFeature.State, Bool> { \.meshCoreEnabled }
+
     var body: some ReducerOf<AppFeature> {
         Reduce { state, action in
             switch action {
-            case .binding(\.meshCoreEnabled):
+            case let .binding(binding) where binding.keyPath == Self.meshCoreEnabledKeyPath:
                 // Turn-off acts at once (otherwise toggle-off, Disconnect, Connect would never sync
                 // with the radio connected). Turning on waits for Connect, except while a swap is in
                 // flight: that swap is already replacing the slot and would otherwise end with
@@ -196,6 +209,16 @@ struct MeshCoreRadioReducer: Reducer {
 
             case .node(.client(.endpoint(.meshCore(.delegate(.radioOffline))))):
                 return finishMeshCoreSwap(&state)
+
+            case let .node(.client(.endpoint(.meshCore(.delegate(.adapterUnavailable(.other(text?))))))):
+                // No free slot, old firmware or a refused channel write: the live adapter has
+                // released the radio, and only the user can fix it, so re-dials stop until Connect
+                // or a new radio or key. Other causes ("radio not found", a missing text) may clear
+                // on their own and keep being re-dialled.
+                if MeshCoreLiveMessage.isPolicyFailure(text) {
+                    state.meshCorePolicyFailed = true
+                }
+                return .none
 
             default:
                 return .none

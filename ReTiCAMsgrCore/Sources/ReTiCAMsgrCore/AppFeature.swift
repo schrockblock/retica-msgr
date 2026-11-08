@@ -370,6 +370,12 @@ public struct AppFeature {
         /// Counters of MeshCore slots already replaced, so Diagnostics stays cumulative since launch.
         /// Session-only.
         public var meshCoreRetiredCounters = MeshCoreStatus.Counters()
+        /// The MeshCore radio last failed on a policy (`MeshCoreLiveMessage.isPolicyFailure`: no free
+        /// slot, firmware too old, channel setup refused). Each attempt's handshake drains the
+        /// radio's queue and can't succeed until the user acts, so foreground and push-wake re-dials
+        /// leave it alone. Cleared by Connect and by installing or restarting the slot for a
+        /// different radio or key. Session-only, so a fresh launch tries once.
+        public var meshCorePolicyFailed = false
 
         /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
         /// link write. The one source for "what do we call this peer" when a link exists.
@@ -1266,6 +1272,10 @@ public struct AppFeature {
                 // would restart a BLE interface the picker paused and take FCB's one scan from it.
                 // The Connect button sits behind the sheet; the tap is dropped, not deferred.
                 guard state.radioPicker == nil else { return .none }
+                // An explicit Connect retries a MeshCore radio that failed on policy (the user may
+                // have freed a slot or updated it): `.endpoint(.start)` below restarts it. This
+                // drains the radio's queue, which Settings' `requiredWarning` covers.
+                state.meshCorePolicyFailed = false
                 // Amendment A10 (final-review M1): only show "Connecting…" when something will
                 // actually dial.
                 if state.somethingWillDial {
@@ -1281,6 +1291,7 @@ public struct AppFeature {
                 state.connection = .disconnected
                 // A radio swap that finishes after this leaves the new radio stopped.
                 state.meshtasticSwap?.startNext = false
+                state.meshCoreSwap?.startNext = false
                 return .send(.node(.client(.endpoint(.stop))))
 
             case let .node(.client(.endpoint(.transport(.interfaceConnected(interfaceID, _))))):
@@ -3886,7 +3897,8 @@ private func propagationSyncEffect(_ state: AppFeature.State) -> Effect<AppFeatu
 /// restart; `down.isEmpty` alone would now skip it in that case, so `noClientSlots` keeps the
 /// restart reachable. `connection` goes to connecting only when nothing is up (amendment A10).
 /// The push re-point is held while an `/unregister` is in flight (`heldPushSyncEffects`).
-/// Also restarts a stopped or unavailable Meshtastic radio slot (never one a swap is replacing).
+/// Also restarts a stopped or unavailable Meshtastic or MeshCore radio slot (never one a swap is
+/// replacing, and never a MeshCore radio that failed on policy).
 private func redialDownNodes(_ state: inout AppFeature.State, restartListener: Bool) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
     // Restart a stopped or unavailable radio (spec 2026-10-16 §7 lane E). `.start` is ignored by a
@@ -3897,9 +3909,18 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
     let radioRestart: Effect<AppFeature.Action> =
         state.meshtasticSwap == nil && state.node.client.endpoint.meshtastic != nil
             ? .send(.node(.client(.endpoint(.meshtastic(.start))))) : .none
+    // The MeshCore radio the same way (spec 2026-11-07 §6, lane D), and not after a policy failure
+    // (no free slot, old firmware, a refused channel write): every attempt's handshake drains the
+    // radio's queue and can't succeed until the user acts. Only Connect, or a new radio or key,
+    // retries it. A MeshCore session never scans either, so the picker doesn't defer this.
+    let meshCoreRestart: Effect<AppFeature.Action> =
+        state.meshCoreSwap == nil && state.node.client.endpoint.meshCore != nil && !state.meshCorePolicyFailed
+            ? .send(.node(.client(.endpoint(.meshCore(.start))))) : .none
     let down = tcpDownIDs(state)
     let noClientSlots = state.node.client.endpoint.tcpClients.isEmpty
-    guard !down.isEmpty || noClientSlots else { return .concatenate(sync.removals, sync.radios, radioRestart) }
+    guard !down.isEmpty || noClientSlots else {
+        return .concatenate(sync.removals, sync.radios, .merge(radioRestart, meshCoreRestart))
+    }
     // Final-review M1: "nothing is up" alone is not enough — with no enabled node, no listener, no
     // BLE and no Meshtastic radio, nothing here is going to dial, and `.connecting` would never
     // resolve.
@@ -3923,7 +3944,8 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
             dials.append(.send(.node(.client(.endpoint(.ble(.start))))))
         }
     }
-    return .concatenate(sync.removals, sync.radios, .merge(dials + [radioRestart]), heldPushSyncEffects(state))
+    return .concatenate(sync.removals, sync.radios, .merge(dials + [radioRestart, meshCoreRestart]),
+                        heldPushSyncEffects(state))
 }
 
 // Seed `reachablePeers` (the Send gate, "a send would route now") from learned destinations that
