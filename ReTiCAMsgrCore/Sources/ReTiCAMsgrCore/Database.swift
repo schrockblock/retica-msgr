@@ -320,6 +320,21 @@ public enum AppDatabase {
             // SQLite cannot match to a `WHERE validated = 0` index.
             try db.create(index: "messages_peerHex", on: "messages", columns: ["peerHex"])
         }
+        m.registerMigration("createKnownDestinations") { db in
+            // Known destinations: mirrors Transport.State.knownDestinations so a peer's network-stamp
+            // link cost survives a relaunch (see KnownDestinationRow). Written with the learned
+            // table on the same debounce and backgrounding flush; pruned at launch (before the read)
+            // on Transport.knownDestinationExpiry. REAL columns: linkCost is fractional (LXMF's
+            // default is 3.25), so an integer column would truncate it.
+            try db.create(table: "knownDestinationRows") { t in
+                t.primaryKey("destinationHashHex", .text).notNull()
+                t.column("publicKeyHex", .text).notNull()
+                t.column("appDataHex", .text)           // nullable — absent when announce has no app-data
+                t.column("lastHeard", .datetime).notNull()
+                t.column("linkCost", .double)           // nullable — absent when no cost announced
+                t.column("stampValue", .double)         // nullable — absent when no network stamp
+            }
+        }
         return m
     }
 

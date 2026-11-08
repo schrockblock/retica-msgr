@@ -814,6 +814,9 @@ public struct AppFeature {
     /// produced a real stamp-cost bug in this project.
     static var pathExpiry: TimeInterval { Transport.pathExpiry }
 
+    /// Expiry for pruning `knownDestinationRows`, taken from the library for the same reason.
+    static var knownDestinationExpiry: TimeInterval { Transport.knownDestinationExpiry }
+
     /// Request path for the public-key exchange this device ANSWERS (older builds of this app send
     /// it; this build no longer does — see `.announceRowTapped`): it replies with its 64-byte public key
     /// (`Identity.publicKey`). The key is already public — every delivery announce carries it,
@@ -996,6 +999,27 @@ public struct AppFeature {
                         let pending = try await UnverifiedRecheck.pendingPeers(database)
                         if !pending.isEmpty { await send(._recheckUnverified(pending)) }
                     },
+                    .run { [database, expiryCutoff = date.now.addingTimeInterval(-AppFeature.knownDestinationExpiry)] send in
+                        // Restore the known-destination table so each peer's network-stamp link cost
+                        // survives the relaunch (see KnownDestinationRow). Prune BEFORE the read, for
+                        // the same reason as the learned table above: Transport.maintenanceTick bounds
+                        // the in-memory table on this cutoff, nothing bounds the disk copy but this.
+                        // Cutoff from `\.date` in the capture list, as above.
+                        let cutoff = expiryCutoff
+                        let knownRows = try await database.write { db in
+                            try KnownDestinationRow
+                                .where { $0.lastHeard < cutoff }
+                                .delete().execute(db)
+                            return try KnownDestinationRow.all.fetchAll(db)
+                        }
+                        var known: [Data: KnownDestination] = [:]
+                        for row in knownRows {
+                            guard let pair = row.toKnownDestination() else { continue }
+                            known[pair.hash] = pair.destination
+                        }
+                        guard !known.isEmpty else { return }
+                        await send(.node(.client(.endpoint(.transport(.rehydrateKnownDestinations(known))))))
+                    },
                     .run { [database, attachmentStore, attachmentCacheEvictor, now = date.now] send in
                         // Nothing ran while suspended or dead: purge what fell due and arm the sleeper.
                         try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: now, send)
@@ -1101,6 +1125,8 @@ public struct AppFeature {
                 // so without this flush up to ~30 s of path learning is lost on every background
                 // cycle. Cancel the pending debounce so it doesn't fire redundantly on resume.
                 let learnedToFlush = state.node.client.endpoint.learned
+                // The known-destination table (link costs) rides the same flush.
+                let knownToFlush = state.node.client.endpoint.knownDestinations
                 // Close the hub socket NOW, while the process still runs. A suspended app's socket
                 // stays open from the hub's side (the kernel keeps answering keepalives and ACKing
                 // writes), so the push hub keeps writing packets into a socket nobody reads and
@@ -1138,6 +1164,7 @@ public struct AppFeature {
                     closeOrFinishSending,
                     .run { [database] _ in
                         try await writeLearnedDestinations(learnedToFlush, to: database)
+                        try await writeKnownDestinations(knownToFlush, to: database)
                     },
                     // File storage writes a second after the last edit; write the drafts now, in
                     // case the process is suspended and killed before that second passes.
@@ -1210,8 +1237,14 @@ public struct AppFeature {
                 // since the timer was armed; we always write the latest snapshot, so rapid
                 // announces are coalesced into one write per 30 s window.
                 let learnedToWrite = state.node.client.endpoint.learned
+                // The known-destination table (link costs) is written in the same flush. Known gap:
+                // only `pathLearned` arms this debounce, so an announce that refreshes a known
+                // destination (e.g. a changed link cost) WITHOUT winning the path is saved at the
+                // next flush or at backgrounding, not 30 s later.
+                let knownToWrite = state.node.client.endpoint.knownDestinations
                 return .run { [database] _ in
                     try await writeLearnedDestinations(learnedToWrite, to: database)
+                    try await writeKnownDestinations(knownToWrite, to: database)
                 }
 
             case .connectTapped:
@@ -4434,6 +4467,20 @@ private func writeLearnedDestinations(_ learned: [Data: LearnedDestination],
         try LearnedDestinationRow.all.delete().execute(db)
         for row in rows {
             try LearnedDestinationRow.insert { row }.execute(db)
+        }
+    }
+}
+
+/// Persist the full `knownDestinations` snapshot to `knownDestinationRows`, replacing the table
+/// atomically. Called beside `writeLearnedDestinations` on both of its paths (the debounce and
+/// `.backgrounded`); same full-replace policy. See `KnownDestinationRow`.
+private func writeKnownDestinations(_ known: [Data: KnownDestination],
+                                    to database: any DatabaseWriter) async throws {
+    let rows = known.compactMap { hash, dest in KnownDestinationRow(hash: hash, destination: dest) }
+    try await database.write { db in
+        try KnownDestinationRow.all.delete().execute(db)
+        for row in rows {
+            try KnownDestinationRow.insert { row }.execute(db)
         }
     }
 }

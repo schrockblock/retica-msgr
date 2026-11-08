@@ -1804,6 +1804,122 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
             "Expired destination must not appear in rehydrateLearnedDestinations payload")
 }
 
+// MARK: - Known-destination persistence (network-stamp link cost)
+
+/// Seeds `Transport.State.knownDestinations` the only way a test can without a wire announce.
+@MainActor private func seedKnownDestination(_ store: TestStoreOf<AppFeature>, hash: Data,
+                                             _ destination: KnownDestination) async {
+    await store.send(.node(.client(.endpoint(.transport(.rehydrateKnownDestinations([hash: destination]))))))
+}
+
+/// A peer's link cost survives a relaunch. Session 1 holds a known destination with a link cost;
+/// the debounce flush writes it to `knownDestinationRows`; session 2's `.onLaunch` reads it back
+/// and Transport's `knownDestinations` carries the same cost. 3.25 (LXMF's default) is not an
+/// integer, so a Double→Int truncation anywhere on the path fails the equality.
+@MainActor @Test func knownDestinationLinkCostSurvivesRestart() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let peer = Identity()
+    let peerHash = LXMessage.deliveryHash(identityHash: peer.hash)
+    let testNow = Date(timeIntervalSince1970: 1700000000)
+    let appData = Data([0x01, 0x02, 0x03])
+
+    // --- Session 1: a known destination with a link cost, then the debounce flush ---
+    let clock = TestClock()
+    let store1 = makeStore(db, identity: me, clock: clock)
+    await seedKnownDestination(store1, hash: peerHash, KnownDestination(
+        identity: peer, appData: appData, lastHeard: testNow, linkCost: 3.25, stampValue: 9.5))
+    // A pathLearned arms the debounce that flushes both tables.
+    await store1.send(.node(.client(.endpoint(.delegate(.pathLearned(destinationHash: peerHash, hops: 1))))))
+    await clock.advance(by: .seconds(30))
+    await store1.receive { if case ._flushLearnedDestinations = $0 { return true }; return false }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store1.finish()
+    await store1.skipReceivedActions(strict: false)
+
+    let rows = try await db.read { try KnownDestinationRow.all.fetchAll($0) }
+    #expect(rows.count == 1, "the debounce flush must write the known destination")
+    let row = try #require(rows.first)
+    #expect(row.destinationHashHex == peerHash.hexString)
+    #expect(row.linkCost == 3.25)
+    #expect(row.stampValue == 9.5)
+
+    // --- Session 2: restart, same database ---
+    let store2 = makeStore(db, identity: me)
+    await store2.send(.onLaunch)
+    await store2.receive {
+        if case .node(.client(.endpoint(.transport(.rehydrateKnownDestinations)))) = $0 { return true }
+        return false
+    }
+    let restored = store2.state.node.client.endpoint.knownDestinations[peerHash]
+    #expect(restored?.linkCost == 3.25, "session 2 must know the peer's link cost without an announce")
+    #expect(restored?.stampValue == 9.5)
+    #expect(restored?.appData == appData)
+    #expect(restored?.lastHeard == testNow)
+    #expect(restored?.identity.publicKey == peer.publicKey)
+    await store2.finish()
+    await store2.skipReceivedActions(strict: false)
+}
+
+/// `.backgrounded` writes the known-destination table at once, without the debounce.
+@MainActor @Test func backgroundedFlushesKnownDestinationsImmediately() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let peer = Identity()
+    let peerHash = LXMessage.deliveryHash(identityHash: peer.hash)
+    let clock = TestClock()
+    let store = makeStore(db, identity: Identity(), clock: clock)
+    await seedKnownDestination(store, hash: peerHash, KnownDestination(
+        identity: peer, appData: nil, lastHeard: Date(timeIntervalSince1970: 1700000000), linkCost: 3.25))
+
+    await store.send(.backgrounded)
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+
+    let rows = try await db.read { try KnownDestinationRow.all.fetchAll($0) }
+    #expect(rows.count == 1, "backgrounded must write known destinations without waiting for the debounce")
+    #expect(rows.first?.destinationHashHex == peerHash.hexString)
+    #expect(rows.first?.linkCost == 3.25)
+}
+
+/// A row older than `Transport.knownDestinationExpiry` is deleted at launch and not restored; a
+/// fresh row beside it is kept and restored (so the prune is a cutoff, not a wipe).
+@MainActor @Test func expiredKnownDestinationsArePrunedAtLaunch() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let testNow = Date(timeIntervalSince1970: 1700000000)
+    let expiredPeer = Identity()
+    let expiredHash = LXMessage.deliveryHash(identityHash: expiredPeer.hash)
+    let freshPeer = Identity()
+    let freshHash = LXMessage.deliveryHash(identityHash: freshPeer.hash)
+    let expired = KnownDestinationRow(
+        destinationHashHex: expiredHash.hexString, publicKeyHex: expiredPeer.publicKey.hexString,
+        appDataHex: nil, lastHeard: testNow.addingTimeInterval(-(Transport.knownDestinationExpiry + 24 * 3600)),
+        linkCost: 3.25, stampValue: nil)
+    let fresh = KnownDestinationRow(
+        destinationHashHex: freshHash.hexString, publicKeyHex: freshPeer.publicKey.hexString,
+        appDataHex: nil, lastHeard: testNow.addingTimeInterval(-3600), linkCost: 3.25, stampValue: nil)
+    try await db.write { db in
+        try KnownDestinationRow.insert { expired }.execute(db)
+        try KnownDestinationRow.insert { fresh }.execute(db)
+    }
+
+    let store = makeStore(db, identity: Identity())
+    await store.send(.onLaunch)
+    await store.receive {
+        if case .node(.client(.endpoint(.transport(.rehydrateKnownDestinations)))) = $0 { return true }
+        return false
+    }
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+
+    let remaining = try await db.read { try KnownDestinationRow.all.fetchAll($0) }
+    #expect(remaining.map(\.destinationHashHex) == [freshHash.hexString],
+            "the expired row must be deleted at launch and the fresh one kept")
+    let known = store.state.node.client.endpoint.knownDestinations
+    #expect(known[expiredHash] == nil, "an expired row must not be restored")
+    #expect(known[freshHash]?.linkCost == 3.25, "a fresh row must be restored")
+}
+
 /// After restart, a persisted path that is now reachable (interface registered) must unlock Send —
 /// i.e. land in `reachablePeers` — WITHOUT any inbound announce. This is the UI-gate assertion the
 /// sibling test `learnedPathSurvivesRestartAndIsReachableWithoutAnnounce` deliberately does NOT make
