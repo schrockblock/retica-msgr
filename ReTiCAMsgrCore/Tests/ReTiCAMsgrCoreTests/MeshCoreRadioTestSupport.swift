@@ -8,6 +8,7 @@ import ReTiCANode
 import ReTiCATransport
 import ReTiCAPush
 import ReTiCAKeychain
+import ReTiCAMeshCoreLive
 @testable import ReTiCAMsgrCore
 
 let mcRadioIDA = UUID(uuidString: "C0C0C0C0-0000-4000-8000-0000000000A1")!
@@ -102,6 +103,7 @@ func mcRadioStore(radio: UUID?, enabled: Bool = true, radioHarness: MeshCoreRadi
                   keychain: InMemoryKeychain = mcKeyedKeychain(),
                   removeChannelSends: LockIsolated<Int>? = nil,
                   slotCommands: LockIsolated<[McSlotCommand]>? = nil,
+                  details: MeshCoreRadioDetails? = nil,
                   configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     let store = MeshCoreKeyStore.live(ops: keychain.ops)
     let defaults = UserDefaults.inMemory
@@ -159,6 +161,8 @@ func mcRadioStore(radio: UUID?, enabled: Bool = true, radioHarness: MeshCoreRadi
         $0.meshtasticDate = DateGenerator { Date(timeIntervalSince1970: 1_700_000_000) }
         $0.meshCoreKeyStore = store
         $0.meshCoreDriver = radioHarness.driver
+        // What the live driver's details sink would hold once the radio is connected.
+        $0.meshCoreRadioDetails = { details }
         $0.meshCoreClock = ImmediateClock()
         $0.meshCoreDate = DateGenerator { Date(timeIntervalSince1970: 1_700_000_000) }
     }

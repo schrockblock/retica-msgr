@@ -99,6 +99,14 @@ public struct MeshCoreStatus: Equatable, Sendable {
     }
 }
 
+extension MeshCoreStatus.LoRaParams {
+    /// The LoRa settings the radio reported at `.connected`.
+    public init(_ params: MeshCoreLinkParams) {
+        self.init(spreadingFactor: params.spreadingFactor, bandwidthHz: params.bandwidthHz,
+                  codingRate: params.codingRate)
+    }
+}
+
 extension MeshCoreStatus.Counters {
     /// A slot's counters, as the endpoint reports them.
     public init(_ counters: MeshCoreCounters) {

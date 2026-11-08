@@ -174,9 +174,12 @@ func installMeshCoreSlot(_ state: inout AppFeature.State, _ identity: MeshCoreSl
     return meshCore(.start)
 }
 
-/// The MeshCore slot's app-side arms: turn-off acts at once, swap completion at `.radioOffline`,
-/// the turn-off's channel removal, and recording a policy failure. Composed into `AppFeature.body`
-/// after `MeshtasticRadioReducer`. Other delegates are Task 9's.
+/// The MeshCore slot's app-side arms: turn-off acts at once, the delegates into `meshCoreStatus`
+/// (as `MeshtasticRadioReducer` does), swap completion at `.radioOffline`, the turn-off's channel
+/// removal, and recording a policy failure. The counters are refreshed on EVERY MeshCore action
+/// (they change with each datagram, and no delegate reports them). Composed into `AppFeature.body`
+/// after `MeshtasticRadioReducer`. `.retiredChannelsCleared` is ignored here: the driver wrapper
+/// handles it (lane D Contract issue 2).
 struct MeshCoreRadioReducer: Reducer {
     /// `\.meshCoreEnabled` as a read-only key path. A binding's key path compares equal to it, but
     /// forming it doesn't touch the `@Shared` property's deprecated setter, as the writable key path
@@ -185,44 +188,84 @@ struct MeshCoreRadioReducer: Reducer {
 
     var body: some ReducerOf<AppFeature> {
         Reduce { state, action in
-            switch action {
-            case let .binding(binding) where binding.keyPath == Self.meshCoreEnabledKeyPath:
-                // Turn-off acts at once (otherwise toggle-off, Disconnect, Connect would never sync
-                // with the radio connected). Turning on waits for Connect, except while a swap is in
-                // flight: that swap is already replacing the slot and would otherwise end with
-                // `next` nil and the feature on.
-                let enabled = state.meshCoreEnabled
-                guard !enabled || state.meshCoreSwap != nil else { return .none }
-                let effect = syncMeshCoreSlot(&state)
-                if enabled, state.connection == .disconnected {
-                    // After a Disconnect, turning on still doesn't start a radio without a Connect.
-                    state.meshCoreSwap?.startNext = false
+            let effect = reduceArms(&state, action)
+            if case .node(.client(.endpoint(.meshCore))) = action {
+                let live = state.node.client.endpoint.meshCore.map { MeshCoreStatus.Counters($0.counters) }
+                    ?? MeshCoreStatus.Counters()
+                let total = state.meshCoreRetiredCounters + live
+                if state.meshCoreStatus.counters != total {
+                    state.meshCoreStatus.counters = total
                 }
-                return effect
+            }
+            return effect
+        }
+    }
 
-            case let .node(.client(.endpoint(.meshCore(.delegate(.channelRemoved(ok)))))):
-                state.meshCoreStatus.channelLeftOnRadio = !ok
-                state.meshCoreStatus.channelRemoved = ok
-                guard state.meshCoreSwap?.removingChannel == true else { return .none }
-                state.meshCoreSwap?.removingChannel = false
-                return meshCore(.stop)
+    private func reduceArms(_ state: inout AppFeature.State, _ action: AppFeature.Action) -> Effect<AppFeature.Action> {
+        switch action {
+        case let .binding(binding) where binding.keyPath == Self.meshCoreEnabledKeyPath:
+            // Turn-off acts at once (otherwise toggle-off, Disconnect, Connect would never sync
+            // with the radio connected). Turning on waits for Connect, except while a swap is in
+            // flight: that swap is already replacing the slot and would otherwise end with
+            // `next` nil and the feature on.
+            let enabled = state.meshCoreEnabled
+            guard !enabled || state.meshCoreSwap != nil else { return .none }
+            let effect = syncMeshCoreSlot(&state)
+            if enabled, state.connection == .disconnected {
+                // After a Disconnect, turning on still doesn't start a radio without a Connect.
+                state.meshCoreSwap?.startNext = false
+            }
+            return effect
 
-            case .node(.client(.endpoint(.meshCore(.delegate(.radioOffline))))):
-                return finishMeshCoreSwap(&state)
+        case let .node(.client(.endpoint(.meshCore(.delegate(.channelRemoved(ok)))))):
+            state.meshCoreStatus.channelLeftOnRadio = !ok
+            state.meshCoreStatus.channelRemoved = ok
+            guard state.meshCoreSwap?.removingChannel == true else { return .none }
+            state.meshCoreSwap?.removingChannel = false
+            return meshCore(.stop)
 
-            case let .node(.client(.endpoint(.meshCore(.delegate(.adapterUnavailable(.other(text?))))))):
-                // No free slot, old firmware or a refused channel write: the live adapter has
-                // released the radio, and only the user can fix it, so re-dials stop until Connect
-                // or a new radio or key. Other causes ("radio not found", a missing text) may clear
-                // on their own and keep being re-dialled.
-                if MeshCoreLiveMessage.isPolicyFailure(text) {
-                    state.meshCorePolicyFailed = true
-                }
-                return .none
+        case let .node(.client(.endpoint(.meshCore(.delegate(.radioOnline(_, params)))))):
+            // The radio's name, firmware code and our channel slot come from the live driver's
+            // details sink, recorded before it yielded `.connected`. Never the key.
+            @Dependency(\.meshCoreRadioDetails) var radioDetails
+            let details = radioDetails()
+            state.meshCoreStatus.online = true
+            state.meshCoreStatus.params = params.map(MeshCoreStatus.LoRaParams.init)
+            state.meshCoreStatus.radioName = details?.name
+            state.meshCoreStatus.firmwareCode = details?.firmwareCode
+            state.meshCoreStatus.channelSlot = details?.channelSlot
+            state.meshCoreStatus.offlineReason = nil
+            state.meshCoreStatus.adapterUnavailable = nil
+            return .none
 
-            default:
+        case let .node(.client(.endpoint(.meshCore(.delegate(.radioOffline(reason)))))):
+            // Status first: a finishing swap installs or keeps a slot, which resets the status.
+            state.meshCoreStatus.online = false
+            state.meshCoreStatus.offlineReason = reason
+            return finishMeshCoreSwap(&state)
+
+        case let .node(.client(.endpoint(.meshCore(.delegate(.adapterUnavailable(cause)))))):
+            state.meshCoreStatus.online = false
+            state.meshCoreStatus.adapterUnavailable = cause
+            // No free slot, old firmware or a refused channel write: the live adapter has
+            // released the radio, and only the user can fix it, so re-dials stop until Connect
+            // or a new radio or key. Other causes ("radio not found", a missing text) may clear
+            // on their own and keep being re-dialled.
+            guard case let .other(text?) = cause, MeshCoreLiveMessage.isPolicyFailure(text) else {
                 return .none
             }
+            state.meshCorePolicyFailed = true
+            // Amendment A10: "Connecting…" only while something will dial. With nothing up and
+            // nothing else dialing, this radio was the only dial, and it won't retry until
+            // Connect, so show Disconnected and its Connect button. (A Meshtastic or other
+            // MeshCore `.unavailable` keeps Connecting…: the next re-dial restarts it.)
+            if state.connectedInterfaces.isEmpty, !state.somethingWillDial {
+                state.connection = .disconnected
+            }
+            return .none
+
+        default:
+            return .none
         }
     }
 }
