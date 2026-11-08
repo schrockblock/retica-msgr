@@ -34,6 +34,20 @@ extension AppFeature.State {
     }
 }
 
+/// Opens the radio picker for `kind` on `selected` and pauses a running BLE interface. Shared by
+/// the Meshtastic and MeshCore "Choose radio…" arms: BLE pauses the same way for both.
+func openRadioPicker(_ state: inout AppFeature.State, kind: RadioKind, selected: UUID?) -> Effect<AppFeature.Action> {
+    guard state.radioPicker == nil else { return .none }
+    state.radioPicker = RadioPickerFeature.State(kind: kind, selectedID: selected)
+    // FCB runs ONE scan per process and a new scan silently supersedes the old (spec
+    // §2), so a running BLE interface and the picker would steal each other's scan.
+    // Pause BLE while the picker is up. A stopped or unavailable interface, or a
+    // missing slot, is left alone (see `bleIsRunning`).
+    guard state.bleIsRunning else { return .none }
+    state.blePausedForRadioScan = true
+    return .send(.node(.client(.endpoint(.ble(.stop)))))
+}
+
 /// The Meshtastic Settings arms of `AppFeature` (spec 2026-10-16 §7 lane D), composed into
 /// `AppFeature.body` after `BlockingReducer`. The main reducer treats these actions as no-ops.
 /// It owns the radio picker's presentation and the BLE pause around it.
@@ -42,20 +56,22 @@ struct MeshtasticSettingsReducer: Reducer {
         Reduce { state, action in
             switch action {
             case .chooseRadioTapped:
-                guard state.radioPicker == nil else { return .none }
-                let selected = state.meshtasticRadioUUID
-                state.radioPicker = RadioPickerFeature.State(selectedID: selected)
-                // FCB runs ONE scan per process and a new scan silently supersedes the old (spec
-                // §2), so a running BLE interface and the picker would steal each other's scan.
-                // Pause BLE while the picker is up. A stopped or unavailable interface, or a
-                // missing slot, is left alone (see `bleIsRunning`).
-                guard state.bleIsRunning else { return .none }
-                state.blePausedForRadioScan = true
-                return .send(.node(.client(.endpoint(.ble(.stop)))))
+                return openRadioPicker(&state, kind: .meshtastic, selected: state.meshtasticRadioUUID)
+
+            case .chooseMeshCoreRadioTapped:
+                guard state.meshCoreAvailable else { return .none }
+                return openRadioPicker(&state, kind: .meshCore, selected: state.meshCoreRadioUUID)
 
             case let .radioPicker(.presented(.delegate(.selected(radio)))):
-                state.$meshtasticRadioID.withLock { $0 = radio.id.uuidString }
-                state.$meshtasticRadioName.withLock { $0 = radio.name }
+                // The child state is still present here: dismiss comes after the delegate action.
+                switch state.radioPicker?.kind {
+                case .meshCore:
+                    state.$meshCoreRadioID.withLock { $0 = radio.id.uuidString }
+                    state.$meshCoreRadioName.withLock { $0 = radio.name }
+                case .meshtastic, nil:
+                    state.$meshtasticRadioID.withLock { $0 = radio.id.uuidString }
+                    state.$meshtasticRadioName.withLock { $0 = radio.name }
+                }
                 return .none
 
             case .radioPicker(.dismiss):

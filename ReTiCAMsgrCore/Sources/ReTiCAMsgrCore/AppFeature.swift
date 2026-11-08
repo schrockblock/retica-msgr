@@ -753,6 +753,10 @@ public struct AppFeature {
         /// "Choose radio…" in Settings (spec 2026-10-16 §7): opens the radio picker and pauses a
         /// running BLE interface. Handled in `MeshtasticSettingsReducer`.
         case chooseRadioTapped
+        /// MeshCore Settings' "Choose radio…": the same picker and BLE pause, scanning for MeshCore
+        /// radios. Does nothing while the release gate (`meshCoreAvailable`) is off. Handled in
+        /// `MeshtasticSettingsReducer`.
+        case chooseMeshCoreRadioTapped
         case radioPicker(PresentationAction<RadioPickerFeature.Action>)
         /// MeshCore Settings' Generate button: the store makes and saves a new channel key. Handled
         /// in `MeshCoreSettingsReducer`, like the two below. No MeshCore action carries a key.
@@ -2902,7 +2906,7 @@ public struct AppFeature {
                 return .none
 
             // The Meshtastic picker arms live in `MeshtasticSettingsReducer` (AppFeature+Meshtastic.swift).
-            case .chooseRadioTapped, .radioPicker:
+            case .chooseRadioTapped, .chooseMeshCoreRadioTapped, .radioPicker:
                 return .none
 
             // The MeshCore key arms live in `MeshCoreSettingsReducer` (AppFeature+MeshCore.swift).
