@@ -143,7 +143,16 @@ public struct MeshCoreKeyStore: Sendable {
     public static func live(ops: KeychainOps,
                             randomKey: @escaping @Sendable () -> Data = { MeshCoreKeyStore.systemRandomKey() })
         -> MeshCoreKeyStore {
-        MeshCoreKeyStore(
+        // Serialises every read-modify-write of the two items: the driver's `forgetRetired` on
+        // connect must not interleave with a key change from Settings, or a newly retired key could
+        // be written over. Explicit lock/unlock: `Mutex` needs iOS 18.
+        let lock = NSLock()
+        @Sendable func locked<T>(_ body: () -> T) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return body()
+        }
+        return MeshCoreKeyStore(
             presence: {
                 switch ops.read(keyLocation) {
                 case let .found(data, _):
@@ -158,29 +167,34 @@ public struct MeshCoreKeyStore: Sendable {
             generate: {
                 let key = randomKey()
                 guard MeshCoreKeyRules.isAcceptable(key) else { return .storageFailed }
-                return change(to: key, ops: ops)
+                return locked { change(to: key, ops: ops) }
             },
             paste: { text in
                 guard let key = MeshCoreKeyRules.parse(text.reveal()) else { return .invalid }
-                return change(to: key, ops: ops)
+                return locked { change(to: key, ops: ops) }
             },
             exportText: {
                 guard case let .found(data, _) = ops.read(keyLocation), data.count == keyLength else { return nil }
                 return MeshCoreKeyText(data.hexString)
             },
             secrets: {
-                guard case let .found(current, _) = ops.read(keyLocation), current.count == keyLength,
-                      let retired = readRetired(ops)
-                else { return nil }
-                // A crash between the retire write and the key write leaves the current key on the
-                // retired list; it must never be reported as retired, or the driver would clear it.
-                return MeshCoreSecrets(current: current, retired: retired)
+                // Locked so the two reads never straddle a key change.
+                locked {
+                    guard case let .found(current, _) = ops.read(keyLocation), current.count == keyLength,
+                          let retired = readRetired(ops)
+                    else { return nil }
+                    // A crash between the retire write and the key write leaves the current key on the
+                    // retired list; it must never be reported as retired, or the driver would clear it.
+                    return MeshCoreSecrets(current: current, retired: retired)
+                }
             },
             forgetRetired: { keys in
-                guard let retired = readRetired(ops) else { return }
-                let kept = retired.filter { !keys.contains($0) }
-                guard kept != retired else { return }
-                _ = writeRetired(kept, ops: ops)
+                locked {
+                    guard let retired = readRetired(ops) else { return }
+                    let kept = retired.filter { !keys.contains($0) }
+                    guard kept != retired else { return }
+                    _ = writeRetired(kept, previous: retired, ops: ops)
+                }
             })
     }
 
@@ -205,14 +219,22 @@ public struct MeshCoreKeyStore: Sendable {
         var next = retired.filter { $0 != key }
         if let old, !next.contains(old) { next.append(old) }
         if next != retired {
-            guard writeRetired(next, ops: ops) else { return .storageFailed }
+            guard writeRetired(next, previous: retired, ops: ops) else { return .storageFailed }
         }
 
         switch ops.delete(keyLocation) {
         case .deleted, .notFound: break
         case .failed: return .storageFailed
         }
-        guard ops.add(keyLocation, key) == .added else { return .storageFailed }
+        guard ops.add(keyLocation, key) == .added else {
+            // Roll back, best effort: the old key goes back in place, and only once it is back does
+            // the retired list return to what it was. If the old key can't be re-added it stays on
+            // the retired list, so it is at least never forgotten.
+            if let old, ops.add(keyLocation, old) == .added, next != retired {
+                _ = writeRetired(retired, previous: next, ops: ops)
+            }
+            return .storageFailed
+        }
         return .changed
     }
 
@@ -231,14 +253,22 @@ public struct MeshCoreKeyStore: Sendable {
         }
     }
 
-    /// `KeychainOps` has no update: delete, then add. An empty list deletes the item.
-    private static func writeRetired(_ keys: [Data], ops: KeychainOps) -> Bool {
+    /// `KeychainOps` has no update: delete, then add. An empty list deletes the item. When the add
+    /// fails, `previous` (the list the item held) is re-added, best effort, so a failed write never
+    /// forgets keys that were already retired.
+    private static func writeRetired(_ keys: [Data], previous: [Data], ops: KeychainOps) -> Bool {
         switch ops.delete(retiredLocation) {
         case .deleted, .notFound: break
         case .failed: return false
         }
         guard !keys.isEmpty else { return true }
-        return ops.add(retiredLocation, keys.reduce(Data(), +)) == .added
+        guard ops.add(retiredLocation, keys.reduce(Data(), +)) == .added else {
+            if !previous.isEmpty {
+                _ = ops.add(retiredLocation, previous.reduce(Data(), +))
+            }
+            return false
+        }
+        return true
     }
 }
 

@@ -11,6 +11,36 @@ private let keyA = Data(hexString: mcHexA)!
 private let keyB = Data(hexString: mcHexB)!
 private let keyC = Data(repeating: 0x5C, count: 16)
 
+/// Fails the next `add` at one location, once; every other call goes to the in-memory Keychain.
+/// (`InMemoryKeychain.failAdd` fails every add until cleared, so a rollback could never land.)
+private final class FailNextAdd: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: Set<IdentityKeychain.Location> = []
+
+    func arm(_ location: IdentityKeychain.Location) {
+        lock.lock()
+        pending.insert(location)
+        lock.unlock()
+    }
+
+    func take(_ location: IdentityKeychain.Location) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return pending.remove(location) != nil
+    }
+
+    func ops(over keychain: InMemoryKeychain) -> KeychainOps {
+        let inner = keychain.ops
+        return KeychainOps(
+            read: inner.read,
+            add: { [self] location, data in
+                take(location) ? .failed(errSecNotAvailable) : inner.add(location, data)
+            },
+            delete: inner.delete,
+            deleteItem: inner.deleteItem)
+    }
+}
+
 /// The four generic printing paths a secret could leak through.
 private func printings(_ value: Any) -> [String] {
     var dumped = ""
@@ -202,6 +232,33 @@ func mcKeyStorePasteRejects(_ text: String) {
     #expect(keychain.item(at: MeshCoreKeyStore.keyLocation) == keyA)
 }
 
+@Test func mcKeyStoreFailedKeyWriteKeepsTheOldKey() {
+    let keychain = InMemoryKeychain()
+    let failures = FailNextAdd()
+    let store = MeshCoreKeyStore.live(ops: failures.ops(over: keychain))
+    #expect(store.paste(MeshCoreKeyText(mcHexA)) == .changed)
+    failures.arm(MeshCoreKeyStore.keyLocation)
+    #expect(store.paste(MeshCoreKeyText(mcHexB)) == .storageFailed)
+    #expect(keychain.item(at: MeshCoreKeyStore.keyLocation) == keyA)
+    // The rollback also returns the retired list to what it was: A is current, so not retired.
+    #expect(keychain.item(at: MeshCoreKeyStore.retiredLocation) == nil)
+}
+
+@Test func mcKeyStoreFailedRetiredWriteKeepsThePreviousRetiredList() {
+    let keychain = InMemoryKeychain()
+    let failures = FailNextAdd()
+    let store = MeshCoreKeyStore.live(ops: failures.ops(over: keychain))
+    #expect(store.paste(MeshCoreKeyText(mcHexA)) == .changed)
+    #expect(store.paste(MeshCoreKeyText(mcHexB)) == .changed)
+    #expect(keychain.item(at: MeshCoreKeyStore.retiredLocation) == keyA)
+    failures.arm(MeshCoreKeyStore.retiredLocation)
+    #expect(store.paste(MeshCoreKeyText(keyC.hexString)) == .storageFailed)
+    #expect(keychain.item(at: MeshCoreKeyStore.retiredLocation) == keyA)
+    #expect(keychain.item(at: MeshCoreKeyStore.keyLocation) == keyB)
+}
+
+/// Every add at the key location fails, so the rollback can't put A back either: A must then stay
+/// on the retired list, so it is never forgotten.
 @Test func mcKeyStoreFailedKeyWriteReportsFailure() {
     let (keychain, store) = mcKeychain()
     #expect(store.paste(MeshCoreKeyText(mcHexA)) == .changed)
