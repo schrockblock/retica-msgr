@@ -154,8 +154,8 @@ public struct MeshCoreKeyStore: Sendable {
         }
         return MeshCoreKeyStore(
             presence: {
-                // Locked: a key change deletes the item before adding the new one, and in that window
-                // an unlocked read would say `.absent` (lane D would then remove the channel).
+                // Locked, so a read never lands between a key change's two writes (the retired list,
+                // then the key). The key item itself is updated in place and is never missing.
                 locked {
                     switch ops.read(keyLocation) {
                     case let .found(data, _):
@@ -178,7 +178,7 @@ public struct MeshCoreKeyStore: Sendable {
                 return locked { change(to: key, ops: ops) }
             },
             exportText: {
-                // Locked for the same delete-then-add window as `presence`.
+                // Locked for the same reason as `presence`.
                 locked {
                     guard case let .found(data, _) = ops.read(keyLocation), data.count == keyLength else { return nil }
                     return MeshCoreKeyText(data.hexString)
@@ -200,7 +200,7 @@ public struct MeshCoreKeyStore: Sendable {
                     guard let retired = readRetired(ops) else { return }
                     let kept = retired.filter { !keys.contains($0) }
                     guard kept != retired else { return }
-                    _ = writeRetired(kept, previous: retired, ops: ops)
+                    _ = writeRetired(kept, ops: ops)
                 }
             })
     }
@@ -226,23 +226,30 @@ public struct MeshCoreKeyStore: Sendable {
         var next = retired.filter { $0 != key }
         if let old, !next.contains(old) { next.append(old) }
         if next != retired {
-            guard writeRetired(next, previous: retired, ops: ops) else { return .storageFailed }
+            guard writeRetired(next, ops: ops) else { return .storageFailed }
         }
 
-        switch ops.delete(keyLocation) {
-        case .deleted, .notFound: break
-        case .failed: return .storageFailed
-        }
-        guard ops.add(keyLocation, key) == .added else {
-            // Roll back, best effort: the old key goes back in place, and only once it is back does
-            // the retired list return to what it was. If the old key can't be re-added it stays on
-            // the retired list, so it is at least never forgotten.
-            if let old, ops.add(keyLocation, old) == .added, next != retired {
-                _ = writeRetired(retired, previous: next, ops: ops)
+        guard replace(keyLocation, with: key, ops: ops) else {
+            // A failed write changes nothing, so the old key is still in place: the retired list
+            // goes back to what it was, best effort. If that fails too, the old key stays on the
+            // retired list as well, which `MeshCoreSecrets` filters out of `retired`.
+            if next != retired {
+                _ = writeRetired(retired, ops: ops)
             }
             return .storageFailed
         }
         return .changed
+    }
+
+    /// Update in place, adding only when there is no item yet. Unlike a delete then an add, the
+    /// item is never missing, so a kill mid-write leaves the old value or the new one. A failure
+    /// changes nothing.
+    private static func replace(_ location: IdentityKeychain.Location, with data: Data, ops: KeychainOps) -> Bool {
+        switch ops.update(location, data) {
+        case .updated: return true
+        case .failed: return false
+        case .notFound: return ops.add(location, data) == .added
+        }
     }
 
     /// The retired keys, [] when there is no item, nil when the read fails.
@@ -260,22 +267,16 @@ public struct MeshCoreKeyStore: Sendable {
         }
     }
 
-    /// `KeychainOps` has no update: delete, then add. An empty list deletes the item. When the add
-    /// fails, `previous` (the list the item held) is re-added, best effort, so a failed write never
-    /// forgets keys that were already retired.
-    private static func writeRetired(_ keys: [Data], previous: [Data], ops: KeychainOps) -> Bool {
-        switch ops.delete(retiredLocation) {
-        case .deleted, .notFound: break
-        case .failed: return false
-        }
-        guard !keys.isEmpty else { return true }
-        guard ops.add(retiredLocation, keys.reduce(Data(), +)) == .added else {
-            if !previous.isEmpty {
-                _ = ops.add(retiredLocation, previous.reduce(Data(), +))
+    /// Updated in place (`replace`), so a failed or interrupted write never forgets keys that were
+    /// already retired. An empty list deletes the item: nothing is retired then, so nothing is lost.
+    private static func writeRetired(_ keys: [Data], ops: KeychainOps) -> Bool {
+        guard !keys.isEmpty else {
+            switch ops.delete(retiredLocation) {
+            case .deleted, .notFound: return true
+            case .failed: return false
             }
-            return false
         }
-        return true
+        return replace(retiredLocation, with: keys.reduce(Data(), +), ops: ops)
     }
 }
 

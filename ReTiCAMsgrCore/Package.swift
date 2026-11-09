@@ -48,6 +48,9 @@ let package = Package(
             name: "ReTiCAMsgrPushService",
             dependencies: [
                 .product(name: "ReTiCAPushExtension", package: "ReTiCAPush"),
+                // The own ratchet ring's read-only Keychain read. ReTiCAPushExtension already links
+                // this module, so the extension links nothing new.
+                .product(name: "ReTiCAKeychain", package: "ReTiCA"),
             ]
         ),
         .testTarget(

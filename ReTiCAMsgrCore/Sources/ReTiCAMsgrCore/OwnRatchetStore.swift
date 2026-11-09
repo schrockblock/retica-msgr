@@ -1,23 +1,21 @@
 import Foundation
 import Dependencies
 import ReTiCAKeychain
+import ReTiCAMsgrPushService
 
 /// The own ratchet ring of a destination of ours: X25519 PRIVATE keys, newest first, as ReTiCA
 /// reports them with `.ratchetsChanged` and takes them back with `.enableRatchets` (ReTiCA README,
-/// "Own ratchets"). The ring lives in the Keychain, one item per destination. Outside this store it
-/// is in the actions that carry it and in Transport's state. The app never logs it.
-///
-/// **Format: the keys concatenated, 32 bytes each, newest first.** Every entry has the same fixed
-/// length, so no framing is needed. It is the format `MeshCoreKeyStore`'s retired-key item already
-/// uses, and reading it back involves no decoder. A trailing partial key is ignored, and ReTiCA
-/// drops any entry that is not a usable key, so a damaged item cannot trap the read. At ReTiCA's cap
-/// of 512 keys (`Transport.ratchetCount`) the item is 16 KiB.
+/// "Own ratchets"). The ring lives in the Keychain, one item per destination; the location and
+/// the format are `OwnRatchetRing`'s, shared with the Notification Service Extension, which only
+/// reads it. Outside the Keychain it is in the actions that carry it and in Transport's state
+/// (redacted when printed, see `OwnRatchetRedaction.swift`). The app never logs it.
 public struct OwnRatchetStore: Sendable {
     /// The saved ring for a destination hash: `[]` when there is no item, nil when the Keychain
     /// read failed (or matched an item it refuses to pick). Nil is never "no ring": treating it
     /// that way would start a new ring and the next rotation would overwrite the saved one.
     public var load: @Sendable (_ destinationHash: Data) -> [Data]?
-    /// Replaces the saved ring for a destination hash. False when the write failed.
+    /// Replaces the saved ring for a destination hash. False when the write failed, or when the
+    /// ring is empty (refused, see `write`).
     public var save: @Sendable (_ destinationHash: Data, _ ring: [Data]) -> Bool
 
     public init(load: @escaping @Sendable (Data) -> [Data]?,
@@ -26,15 +24,11 @@ public struct OwnRatchetStore: Sendable {
         self.save = save
     }
 
-    public static let keyLength = 32
+    public static var keyLength: Int { OwnRatchetRing.keyLength }
 
-    /// One item per destination, in the identity's access group (which both entitlement files
-    /// already list). The service names the destination, so it can't collide with the identity's
-    /// item or the MeshCore keys.
+    /// In the identity's access group, which both entitlement files list.
     public static func location(destinationHash: Data) -> IdentityKeychain.Location {
-        IdentityKeychain.Location(
-            service: "co.lithobyte.reticamsgr.ratchets.\(destinationHash.hexString)",
-            accessGroup: SharedIdentityLocation.accessGroup)
+        OwnRatchetRing.location(destinationHash: destinationHash, accessGroup: SharedIdentityLocation.accessGroup)
     }
 
     /// Holds nothing and touches no Keychain: the test value, and `AppRuntime`'s default. Its
@@ -42,8 +36,8 @@ public struct OwnRatchetStore: Sendable {
     public static let inert = OwnRatchetStore(load: { _ in nil }, save: { _, _ in false })
 
     public static func live(ops: KeychainOps) -> OwnRatchetStore {
-        // `KeychainOps` has no update, so a save is a delete then an add. The lock keeps a load from
-        // landing between the two and reading "no ring".
+        // Serialises this process's writes, so an update and its add-if-missing can't interleave
+        // with another save. Explicit lock/unlock: `Mutex` needs iOS 18.
         let lock = NSLock()
         @Sendable func locked<T>(_ body: () -> T) -> T {
             lock.lock()
@@ -52,42 +46,33 @@ public struct OwnRatchetStore: Sendable {
         }
         return OwnRatchetStore(
             load: { hash in
-                locked { read(location(destinationHash: hash), ops: ops) }
+                locked { OwnRatchetRing.read(location(destinationHash: hash), ops: ops) }
             },
             save: { hash, ring in
                 locked { write(ring, to: location(destinationHash: hash), ops: ops) }
             })
     }
 
-    static func read(_ location: IdentityKeychain.Location, ops: KeychainOps) -> [Data]? {
-        switch ops.read(location) {
-        case let .found(data, _):
-            let bytes = [UInt8](data)
-            return stride(from: 0, to: bytes.count - bytes.count % keyLength, by: keyLength).map {
-                Data(bytes[$0 ..< $0 + keyLength])
-            }
-        case .notFound:
-            return []
-        case .failed, .rejected:
-            return nil
-        }
-    }
-
-    /// Delete, then add. When the add fails, the ring the item held is re-added, best effort, so a
-    /// failed write does not lose the saved ring. A crash between the delete and the add does lose
-    /// it; `KeychainOps` offers no atomic replace.
+    /// Update in place, and add only when there is no item yet (`.notFound`). An update replaces
+    /// the data without the item ever being missing, so a kill mid-write leaves the old ring or the
+    /// new one, never none (a delete-then-add left none between the two calls). A failed update or
+    /// add changes nothing, so no restore is needed: the previous ring stays as it was.
+    ///
+    /// An empty ring is refused, so it can never erase a saved one. Transport never reports one
+    /// (each rotation inserts a key), so an empty ring here would be a defect elsewhere.
     static func write(_ ring: [Data], to location: IdentityKeychain.Location, ops: KeychainOps) -> Bool {
-        let previous = ops.read(location).data
-        switch ops.delete(location) {
-        case .deleted, .notFound: break
-        case .failed: return false
-        }
-        guard !ring.isEmpty else { return true }
-        guard ops.add(location, ring.reduce(Data(), +)) == .added else {
-            if let previous { _ = ops.add(location, previous) }
+        guard !ring.isEmpty else { return false }
+        let data = ring.reduce(Data(), +)
+        switch ops.update(location, data) {
+        case .updated:
+            return true
+        case .failed:
             return false
+        case .notFound:
+            // First save. `.duplicate` means an item appeared between the update and the add (not
+            // from this process, which holds the lock): report failure rather than overwrite it.
+            return ops.add(location, data) == .added
         }
-        return true
     }
 }
 

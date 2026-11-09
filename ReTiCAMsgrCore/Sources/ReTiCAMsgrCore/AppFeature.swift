@@ -3049,6 +3049,9 @@ public struct AppFeature {
                 // at most once per `Transport.ratchetInterval` (30 min), so this synchronous
                 // Keychain write is rare. A failure is logged (never the keys) and the next
                 // rotation writes the whole ring again.
+                // An empty ring is ignored: it must never replace a saved one. Transport never
+                // reports one (each rotation inserts a key); the store refuses it too.
+                guard !ring.isEmpty else { return .none }
                 if !ownRatchetStore.save(destinationHash, ring) {
                     AppFeature.inbound.error("own ratchet ring not saved: \(ring.count, privacy: .public) keys would be lost on relaunch")
                 }

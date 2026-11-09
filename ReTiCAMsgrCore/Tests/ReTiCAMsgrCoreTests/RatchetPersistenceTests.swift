@@ -9,6 +9,8 @@ import ReTiCAInterfaces
 import ReTiCANode
 import ReTiCATransport
 import ReTiCAPush
+import ReTiCAPushCore
+@testable import ReTiCAMsgrPushService
 @testable import ReTiCAMsgrCore
 
 // Ratchets plan Task 4: the delivery destination's own ratchet ring lives in the Keychain and is
@@ -178,7 +180,8 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
     #expect(store1.state.node.client.endpoint.knownDestinations[peerHash]?.ratchet == ratchet,
             "precondition: Transport accepted the seeded ratchet")
     await store1.send(.backgrounded)
-    try await Task.sleep(nanoseconds: 50_000_000)
+    // `finish()` (in `settle`) waits for every in-flight effect, the flush's write included, so the
+    // table is written once it returns. No sleep.
     await settle(store1)
 
     let row = try #require(try await db.read { try KnownDestinationRow.all.fetchAll($0) }.first)
@@ -210,8 +213,8 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
     #expect(row.ratchetHex == nil)
 }
 
-/// Fails the next `add` at one location, once; every other call goes to the in-memory Keychain.
-private final class FailNextRingAdd: @unchecked Sendable {
+/// Fails the next write (`add` or `update`), once; every other call goes to the in-memory Keychain.
+private final class FailNextRingWrite: @unchecked Sendable {
     private let lock = NSLock()
     private var armed = false
 
@@ -234,15 +237,17 @@ private final class FailNextRingAdd: @unchecked Sendable {
             read: inner.read,
             add: { [self] location, data in take() ? .failed(errSecNotAvailable) : inner.add(location, data) },
             delete: inner.delete,
-            deleteItem: inner.deleteItem)
+            deleteItem: inner.deleteItem,
+            update: { [self] location, data in take() ? .failed(errSecNotAvailable) : inner.update(location, data) })
     }
 }
 
 /// The store reads back what it saved (newest first, `[]` with no item, a partial trailing key
-/// ignored, one item per destination), and a failed write keeps the ring it replaced.
+/// ignored, one item per destination), a failed write keeps the ring it replaced, and an empty
+/// ring is refused and never erases the saved one.
 @Test func ownRatchetStoreRoundTripsAndKeepsTheRingWhenAWriteFails() {
     let keychain = InMemoryKeychain()
-    let failing = FailNextRingAdd()
+    let failing = FailNextRingWrite()
     let store = OwnRatchetStore.live(ops: failing.ops(over: keychain))
     let hashA = Data(repeating: 0xA1, count: 16)
     let hashB = Data(repeating: 0xB2, count: 16)
@@ -257,6 +262,100 @@ private final class FailNextRingAdd: @unchecked Sendable {
     #expect(!store.save(hashA, [SecureRandom.bytes(32)] + ring))
     #expect(store.load(hashA) == ring, "a failed write must leave the previous ring in place")
 
+    #expect(!store.save(hashA, []))
+    #expect(store.load(hashA) == ring, "an empty ring must never erase the saved one")
+
     keychain.set(ring.reduce(Data(), +) + Data([1, 2, 3]), at: OwnRatchetStore.location(destinationHash: hashB))
     #expect(store.load(hashB) == ring, "a trailing partial key is ignored")
+}
+
+/// After the first save the ring item is never missing, checked after EVERY Keychain call: a later
+/// save updates it in place (a failing add can't touch it), and a failing update leaves the old
+/// ring. A delete-then-add would leave no copy between its two calls, which a kill could land in.
+@Test func ownRatchetSaveNeverLeavesTheItemMissing() {
+    let keychain = InMemoryKeychain()
+    let hash = Data(repeating: 0xC3, count: 16)
+    let location = OwnRatchetStore.location(destinationHash: hash)
+    let watching = LockIsolated(false)
+    let missing = LockIsolated(false)
+    let inner = keychain.ops
+    @Sendable func check() {
+        if watching.value, keychain.item(at: location) == nil { missing.setValue(true) }
+    }
+    let ops = KeychainOps(
+        read: { let r = inner.read($0); check(); return r },
+        add: { let r = inner.add($0, $1); check(); return r },
+        delete: { let r = inner.delete($0); check(); return r },
+        deleteItem: { let r = inner.deleteItem($0); check(); return r },
+        update: { let r = inner.update($0, $1); check(); return r })
+    let store = OwnRatchetStore.live(ops: ops)
+    let first = [SecureRandom.bytes(32)]
+    let second = [SecureRandom.bytes(32)] + first
+
+    #expect(store.save(hash, first))
+    watching.setValue(true)
+    keychain.failAdd(at: location, status: errSecNotAvailable)
+    #expect(store.save(hash, second), "an existing ring is updated, never re-added")
+    #expect(store.load(hash) == second)
+    keychain.failUpdate(at: location, status: errSecNotAvailable)
+    #expect(!store.save(hash, [SecureRandom.bytes(32)] + second))
+    #expect(!missing.value, "the ring item was missing after some Keychain call")
+    #expect(keychain.item(at: location) == second.reduce(Data(), +))
+}
+
+/// An empty `.ratchetsChanged` is ignored by the reducer: the store is never asked to save it.
+@MainActor @Test func emptyRatchetsChangedIsNotSaved() async throws {
+    let saves = LockIsolated<[[Data]]>([])
+    let spy = OwnRatchetStore(load: { _ in [] }, save: { _, ring in
+        saves.withValue { $0.append(ring) }
+        return true
+    })
+    let store = ratchetStore(try AppDatabase.makeInMemory(), identity: Identity(), ratchets: spy)
+    let hash = Data(repeating: 0xD4, count: 16)
+    await store.send(.node(.client(.endpoint(.delegate(.ratchetsChanged(destinationHash: hash, ring: []))))))
+    let ring = [SecureRandom.bytes(32)]
+    await store.send(.node(.client(.endpoint(.delegate(.ratchetsChanged(destinationHash: hash, ring: ring))))))
+    await settle(store)
+    #expect(saves.value == [ring])
+}
+
+/// Printing our own ratchets (as a TestStore diff, `dump` or a log of state would) never shows the
+/// keys: every path says the ring is redacted and carries no key hex.
+@Test func ownRatchetsPrintRedacted() {
+    let key = SecureRandom.bytes(32)
+    let own = Transport.State.OwnRatchets(ring: [key, SecureRandom.bytes(32)])
+    var dumped = ""
+    dump(own, to: &dumped)
+    for printed in [String(describing: own), String(reflecting: own), String(customDumping: own), dumped] {
+        // Booleans only, so a failure message never carries the printed text.
+        let leaks = printed.lowercased().contains(key.hexString)
+        let redacted = printed.contains("redacted")
+        #expect(!leaks, "a printing path shows a ratchet key")
+        #expect(redacted, "a printing path does not redact the ring")
+    }
+}
+
+/// The Notification Service Extension's handler reads the ring the app saved (same location, same
+/// access group) for our delivery hash, and only reads: no Keychain write. No ring, or an
+/// unreadable one, gives nil (attribute with the identity key only).
+@Test func extensionReadsTheSavedRingReadOnly() {
+    let keychain = InMemoryKeychain()
+    let me = Identity()
+    let deliveryHash = LXMessage.deliveryHash(identityHash: me.hash)
+    let ring = [SecureRandom.bytes(32), SecureRandom.bytes(32)]
+    #expect(OwnRatchetStore.live(ops: keychain.ops).save(deliveryHash, ring))
+    let saved = keychain.item(at: OwnRatchetStore.location(destinationHash: deliveryHash))
+    let adds = keychain.addCount
+
+    let storage = PushStorage.temporary()
+    storage.settings.save(SharedPushSettings(keychainService: SharedIdentityLocation.service,
+                                             keychainAccessGroup: SharedIdentityLocation.accessGroup))
+    let handler = ReTiCAMsgrPush.makeServiceHandler(storage: storage, ops: keychain.ops)
+    #expect(handler.loadRatchets(deliveryHash) == ring)
+    #expect(handler.loadRatchets(Data(repeating: 0xEE, count: 16)) == nil, "no ring for that hash")
+    #expect(keychain.addCount == adds)
+    #expect(keychain.item(at: OwnRatchetStore.location(destinationHash: deliveryHash)) == saved)
+
+    keychain.failRead(at: OwnRatchetStore.location(destinationHash: deliveryHash), status: errSecInteractionNotAllowed)
+    #expect(handler.loadRatchets(deliveryHash) == nil)
 }

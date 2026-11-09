@@ -1,4 +1,5 @@
 import Foundation
+import ReTiCAKeychain
 // Re-exported so callers that only `import ReTiCAMsgrPushService` (e.g. the Notification Service
 // Extension) still see `PushServiceHandler`'s members under the MemberImportVisibility upcoming
 // feature, without importing ReTiCAPushExtension directly.
@@ -16,8 +17,16 @@ public enum ReTiCAMsgrPush {
     }
 
     /// The extension's handler: inbox and settings from the app group, identity from the shared
-    /// Keychain location the app wrote into the settings, proofs over one TCP connection.
+    /// Keychain location the app wrote into the settings, proofs over one TCP connection. The own
+    /// ratchet ring is read (never written) from the same access group, so a blocked sender who
+    /// encrypts to one of our ratchets is still attributed.
     public static func makeServiceHandler() -> PushServiceHandler? {
-        storage().map(PushServiceHandler.live(storage:))
+        storage().map { makeServiceHandler(storage: $0) }
+    }
+
+    static func makeServiceHandler(storage: PushStorage, ops: KeychainOps = .live) -> PushServiceHandler {
+        let accessGroup = storage.settings.load().keychainAccessGroup
+        return PushServiceHandler.live(storage: storage,
+                                       loadRatchets: OwnRatchetRing.reader(accessGroup: accessGroup, ops: ops))
     }
 }

@@ -11,9 +11,10 @@ private let keyA = Data(hexString: mcHexA)!
 private let keyB = Data(hexString: mcHexB)!
 private let keyC = Data(repeating: 0x5C, count: 16)
 
-/// Fails the next `add` at one location, once; every other call goes to the in-memory Keychain.
-/// (`InMemoryKeychain.failAdd` fails every add until cleared, so a rollback could never land.)
-private final class FailNextAdd: @unchecked Sendable {
+/// Fails the next write (`add` or `update`) at one location, once; every other call goes to the
+/// in-memory Keychain. (`InMemoryKeychain.failAdd` / `failUpdate` fail every write until cleared,
+/// so a rollback could never land.)
+private final class FailNextWrite: @unchecked Sendable {
     private let lock = NSLock()
     private var pending: Set<IdentityKeychain.Location> = []
 
@@ -37,7 +38,10 @@ private final class FailNextAdd: @unchecked Sendable {
                 take(location) ? .failed(errSecNotAvailable) : inner.add(location, data)
             },
             delete: inner.delete,
-            deleteItem: inner.deleteItem)
+            deleteItem: inner.deleteItem,
+            update: { [self] location, data in
+                take(location) ? .failed(errSecNotAvailable) : inner.update(location, data)
+            })
     }
 }
 
@@ -234,7 +238,7 @@ func mcKeyStorePasteRejects(_ text: String) {
 
 @Test func mcKeyStoreFailedKeyWriteKeepsTheOldKey() {
     let keychain = InMemoryKeychain()
-    let failures = FailNextAdd()
+    let failures = FailNextWrite()
     let store = MeshCoreKeyStore.live(ops: failures.ops(over: keychain))
     #expect(store.paste(MeshCoreKeyText(mcHexA)) == .changed)
     failures.arm(MeshCoreKeyStore.keyLocation)
@@ -246,7 +250,7 @@ func mcKeyStorePasteRejects(_ text: String) {
 
 @Test func mcKeyStoreFailedRetiredWriteKeepsThePreviousRetiredList() {
     let keychain = InMemoryKeychain()
-    let failures = FailNextAdd()
+    let failures = FailNextWrite()
     let store = MeshCoreKeyStore.live(ops: failures.ops(over: keychain))
     #expect(store.paste(MeshCoreKeyText(mcHexA)) == .changed)
     #expect(store.paste(MeshCoreKeyText(mcHexB)) == .changed)
@@ -257,14 +261,45 @@ func mcKeyStorePasteRejects(_ text: String) {
     #expect(keychain.item(at: MeshCoreKeyStore.keyLocation) == keyB)
 }
 
-/// Every add at the key location fails, so the rollback can't put A back either: A must then stay
-/// on the retired list, so it is never forgotten.
+/// Every write at the key location fails and the retired list can't be rolled back either: A is
+/// still the current key (a failed update changes nothing), and it stays on the retired list too,
+/// which `secrets()` never reports as retired. Nothing is forgotten.
 @Test func mcKeyStoreFailedKeyWriteReportsFailure() {
     let (keychain, store) = mcKeychain()
     #expect(store.paste(MeshCoreKeyText(mcHexA)) == .changed)
-    keychain.failAdd(at: MeshCoreKeyStore.keyLocation, status: errSecNotAvailable)
+    keychain.failUpdate(at: MeshCoreKeyStore.keyLocation, status: errSecNotAvailable)
+    keychain.failDelete(at: MeshCoreKeyStore.retiredLocation, status: errSecNotAvailable)
     #expect(store.paste(MeshCoreKeyText(mcHexB)) == .storageFailed)
+    keychain.clearFailures()
+    #expect(keychain.item(at: MeshCoreKeyStore.keyLocation) == keyA)
     #expect(keychain.item(at: MeshCoreKeyStore.retiredLocation) == keyA)
+    #expect(store.secrets() == MeshCoreSecrets(current: keyA, retired: []))
+}
+
+/// A key change never leaves the key item missing, even when the write fails: the key is updated
+/// in place, and with a delete then an add a kill in between would have left no key at all.
+@Test func mcKeyStoreKeyChangeNeverLeavesTheKeyMissing() {
+    let keychain = InMemoryKeychain()
+    let missing = LockIsolated(false)
+    let inner = keychain.ops
+    @Sendable func check() {
+        if keychain.item(at: MeshCoreKeyStore.keyLocation) == nil { missing.setValue(true) }
+    }
+    let ops = KeychainOps(
+        read: { let r = inner.read($0); check(); return r },
+        add: { let r = inner.add($0, $1); check(); return r },
+        delete: { let r = inner.delete($0); check(); return r },
+        deleteItem: { let r = inner.deleteItem($0); check(); return r },
+        update: { let r = inner.update($0, $1); check(); return r })
+    keychain.set(keyA, at: MeshCoreKeyStore.keyLocation)
+    let store = MeshCoreKeyStore.live(ops: ops)
+    #expect(store.paste(MeshCoreKeyText(mcHexB)) == .changed)
+    keychain.failAdd(at: MeshCoreKeyStore.keyLocation, status: errSecNotAvailable)
+    #expect(store.paste(MeshCoreKeyText(mcHexA)) == .changed, "an existing key is updated, never re-added")
+    keychain.failUpdate(at: MeshCoreKeyStore.keyLocation, status: errSecNotAvailable)
+    #expect(store.paste(MeshCoreKeyText(mcHexB)) == .storageFailed)
+    #expect(!missing.value, "the key item was missing after some Keychain call")
+    #expect(keychain.item(at: MeshCoreKeyStore.keyLocation) == keyA)
 }
 
 @Test func mcKeyStoreKeyTextNeverPrintsTheKey() {
