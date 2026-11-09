@@ -938,6 +938,34 @@ public struct AppFeature {
                     } catch: { error, _ in
                         AppFeature.inbound.error("blocked peers failed to load, node starts with an empty ignore list: \(String(describing: error), privacy: .public)")
                     },
+                    .run { [database, expiryCutoff = date.now.addingTimeInterval(-AppFeature.knownDestinationExpiry)] send in
+                        // Restore the known-destination table so each peer's network-stamp link cost
+                        // and ratchet survive the relaunch (see KnownDestinationRow). It sits BEFORE
+                        // `.endpoint(.start)`, not in the `.merge` below: an orphaned `sending` row
+                        // resends at `interfaceConnected`, and a resend that beat this restore would
+                        // encrypt to the peer's identity key, which a peer enforcing ratchets drops
+                        // silently. The cost is one SQLite prune and read ahead of the start, as
+                        // `reloadBlockedPeers` above already is. Prune BEFORE the read, for the same
+                        // reason as the learned table below: Transport.maintenanceTick bounds the
+                        // in-memory table on this cutoff, nothing bounds the disk copy but this.
+                        // Cutoff from `\.date` in the capture list, as below.
+                        let cutoff = expiryCutoff
+                        let knownRows = try await database.write { db in
+                            try KnownDestinationRow
+                                .where { $0.lastHeard < cutoff }
+                                .delete().execute(db)
+                            return try KnownDestinationRow.all.fetchAll(db)
+                        }
+                        var known: [Data: KnownDestination] = [:]
+                        for row in knownRows {
+                            guard let pair = row.toKnownDestination() else { continue }
+                            known[pair.hash] = pair.destination
+                        }
+                        guard !known.isEmpty else { return }
+                        await send(.node(.client(.endpoint(.transport(.rehydrateKnownDestinations(known))))))
+                    } catch: { error, _ in
+                        AppFeature.inbound.error("known destinations failed to load, peers' ratchets are unknown until they announce: \(String(describing: error), privacy: .public)")
+                    },
                     .merge(
                     // Removals first (`.concatenate`): a departing slot must be gone before
                     // `.start` could dial it.
@@ -1042,27 +1070,6 @@ public struct AppFeature {
                         // just restored, re-check every sender with stored unverified bytes.
                         let pending = try await UnverifiedRecheck.pendingPeers(database)
                         if !pending.isEmpty { await send(._recheckUnverified(pending)) }
-                    },
-                    .run { [database, expiryCutoff = date.now.addingTimeInterval(-AppFeature.knownDestinationExpiry)] send in
-                        // Restore the known-destination table so each peer's network-stamp link cost
-                        // survives the relaunch (see KnownDestinationRow). Prune BEFORE the read, for
-                        // the same reason as the learned table above: Transport.maintenanceTick bounds
-                        // the in-memory table on this cutoff, nothing bounds the disk copy but this.
-                        // Cutoff from `\.date` in the capture list, as above.
-                        let cutoff = expiryCutoff
-                        let knownRows = try await database.write { db in
-                            try KnownDestinationRow
-                                .where { $0.lastHeard < cutoff }
-                                .delete().execute(db)
-                            return try KnownDestinationRow.all.fetchAll(db)
-                        }
-                        var known: [Data: KnownDestination] = [:]
-                        for row in knownRows {
-                            guard let pair = row.toKnownDestination() else { continue }
-                            known[pair.hash] = pair.destination
-                        }
-                        guard !known.isEmpty else { return }
-                        await send(.node(.client(.endpoint(.transport(.rehydrateKnownDestinations(known))))))
                     },
                     .run { [database, now = date.now.timeIntervalSince1970] send in
                         // Restore the stamp tickets peers gave us, so the first message to such a peer
@@ -1221,6 +1228,11 @@ public struct AppFeature {
                         }
                     }
                     .cancellable(id: CancelID.backgroundTask)
+                // Save the ring again: a save that failed after a rotation (`.ratchetsChanged`) is
+                // otherwise retried only by the next rotation, up to 30 minutes later, and a kill
+                // before then loses a key the announce already published. In the reducer, as the
+                // rotation's own save is, so the two can't be written out of order.
+                saveOwnRatchetRing(state)
                 return .merge(
                     .cancel(id: CancelID.learnedDebounce),
                     closeOrFinishSending,
@@ -3048,7 +3060,7 @@ public struct AppFeature {
                 // the reducer, so two rotations can't be written out of order. A rotation happens
                 // at most once per `Transport.ratchetInterval` (30 min), so this synchronous
                 // Keychain write is rare. A failure is logged (never the keys) and the next
-                // rotation writes the whole ring again.
+                // rotation, or `.backgrounded`, writes the whole ring again.
                 // An empty ring is ignored: it must never replace a saved one. Transport never
                 // reports one (each rotation inserts a key); the store refuses it too.
                 guard !ring.isEmpty else { return .none }
@@ -4628,7 +4640,10 @@ extension AppFeature {
     /// When the Keychain read fails, ratchets stay off for this run: enabling with `[]` would start a
     /// new ring, and its first rotation would overwrite the saved one, so messages peers encrypted to
     /// the old ratchets (some held days at a propagation node) could never be decrypted. Off, the
-    /// saved ring is untouched for the next launch.
+    /// saved ring is untouched for the next launch. But messages encrypted to it that arrive in this
+    /// run are lost for good: a propagation sync marks every downloaded entry as downloaded (and has
+    /// the node purge it) before the decrypt, and the push-inbox drain drops a packet that does not
+    /// decrypt after the extension has already proven it to the sender.
     ///
     /// `.setEnforceRatchets` is deliberately never sent. Reference's default is off, and enforcing
     /// would drop every message a peer encrypts to the identity key (a peer that has not heard a
@@ -4642,6 +4657,17 @@ extension AppFeature {
         }
         state.ownRatchetsEnabled = true
         return .send(.node(.client(.endpoint(.enableRatchets(destinationHash: deliveryHash, ring: ring)))))
+    }
+
+    /// Writes Transport's current ring for the delivery destination to the Keychain, if there is
+    /// one (none when ratchets are off for the run, and an empty ring is never written).
+    func saveOwnRatchetRing(_ state: State) {
+        let deliveryHash = LXMessage.deliveryHash(identityHash: state.identity.hash)
+        guard let ring = state.node.client.endpoint.transport.ownRatchets[deliveryHash]?.ring,
+              !ring.isEmpty else { return }
+        if !ownRatchetStore.save(deliveryHash, ring) {
+            AppFeature.inbound.error("own ratchet ring not saved: \(ring.count, privacy: .public) keys would be lost on relaunch")
+        }
     }
 }
 

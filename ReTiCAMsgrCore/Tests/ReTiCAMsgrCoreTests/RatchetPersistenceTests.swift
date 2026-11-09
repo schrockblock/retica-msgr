@@ -26,6 +26,7 @@ private enum Seen: Equatable {
     case enableRatchets(destinationHash: Data, ring: [Data])
     case start
     case registerDelivery
+    case rehydrateKnownDestinations
 }
 
 /// An `AppFeature` store over `db` and `ratchets`, with a recorder in front of the reducer, so the
@@ -44,6 +45,8 @@ private func ratchetStore(_ db: any DatabaseWriter, identity: Identity, ratchets
                     log.withValue { $0.append(.start) }
                 case .node(.client(.registerDelivery)):
                     log.withValue { $0.append(.registerDelivery) }
+                case .node(.client(.endpoint(.transport(.rehydrateKnownDestinations)))):
+                    log.withValue { $0.append(.rehydrateKnownDestinations) }
                 default:
                     break
                 }
@@ -164,7 +167,8 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
 }
 
 /// A peer's ratchet and its receive time are written to `knownDestinationRows` and restored to
-/// Transport by the next launch.
+/// Transport by the next launch, before `.endpoint(.start)` (so before any interface can come up and
+/// resend a `sending` row to the peer's identity key instead of its ratchet).
 @MainActor @Test func peerRatchetSurvivesRelaunchViaKnownDestinationRow() async throws {
     let db = try AppDatabase.makeInMemory()
     let me = Identity()
@@ -189,7 +193,8 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
     #expect(row.ratchetReceived == received)
 
     // --- Session 2: relaunch, same database ---
-    let store2 = ratchetStore(db, identity: me, ratchets: .inert)
+    let log2 = LockIsolated<[Seen]>([])
+    let store2 = ratchetStore(db, identity: me, ratchets: .inert, log: log2)
     await store2.send(.onLaunch)
     await store2.receive {
         if case .node(.client(.endpoint(.transport(.rehydrateKnownDestinations)))) = $0 { return true }
@@ -199,6 +204,9 @@ private func settle(_ store: TestStoreOf<AppFeature>) async {
     #expect(restored?.ratchet == ratchet)
     #expect(restored?.ratchetReceived == received)
     await settle(store2)
+    let rehydrateAt = try #require(log2.value.firstIndex(of: .rehydrateKnownDestinations))
+    let startAt = try #require(log2.value.firstIndex(of: .start))
+    #expect(rehydrateAt < startAt, "the peers' ratchets must reach Transport before .endpoint(.start)")
 }
 
 /// `LearnedDestinationRow` no longer writes the deprecated ratchet: the row built for a learned
@@ -317,6 +325,29 @@ private final class FailNextRingWrite: @unchecked Sendable {
     await store.send(.node(.client(.endpoint(.delegate(.ratchetsChanged(destinationHash: hash, ring: ring))))))
     await settle(store)
     #expect(saves.value == [ring])
+}
+
+/// A save that fails after a rotation is retried when the app goes to the background, not only by
+/// the next rotation: the Keychain holds the live ring afterwards.
+@MainActor @Test func backgroundingResavesTheRingAfterAFailedRotationSave() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let keychain = InMemoryKeychain()
+    let failing = FailNextRingWrite()
+    let ratchets = OwnRatchetStore.live(ops: failing.ops(over: keychain))
+    let me = Identity()
+    let deliveryHash = LXMessage.deliveryHash(identityHash: me.hash)
+    let location = OwnRatchetStore.location(destinationHash: deliveryHash)
+
+    failing.arm()
+    let store = ratchetStore(db, identity: me, ratchets: ratchets)
+    await launchAndConnect(store)
+    let ring = await receiveRotation(store)
+    #expect(ring.count == 1)
+    #expect(keychain.item(at: location) == nil, "precondition: the rotation's save failed")
+
+    await store.send(.backgrounded)
+    await settle(store)
+    #expect(keychain.item(at: location) == ring.reduce(Data(), +), "backgrounding must re-save the ring")
 }
 
 /// Printing our own ratchets (as a TestStore diff, `dump` or a log of state would) never shows the

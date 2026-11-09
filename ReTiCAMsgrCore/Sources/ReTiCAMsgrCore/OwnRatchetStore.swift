@@ -8,7 +8,7 @@ import ReTiCAMsgrPushService
 /// "Own ratchets"). The ring lives in the Keychain, one item per destination; the location and
 /// the format are `OwnRatchetRing`'s, shared with the Notification Service Extension, which only
 /// reads it. Outside the Keychain it is in the actions that carry it and in Transport's state
-/// (redacted when printed, see `OwnRatchetRedaction.swift`). The app never logs it.
+/// (redacted when printed, by ReTiCA's `Transport.State.OwnRatchets`). The app never logs it.
 public struct OwnRatchetStore: Sendable {
     /// The saved ring for a destination hash: `[]` when there is no item, nil when the Keychain
     /// read failed (or matched an item it refuses to pick). Nil is never "no ring": treating it
