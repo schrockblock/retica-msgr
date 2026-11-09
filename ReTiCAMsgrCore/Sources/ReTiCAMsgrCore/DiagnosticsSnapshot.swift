@@ -64,6 +64,9 @@ public struct DiagnosticsSnapshot: Equatable {
         if state.meshCoreAvailable {
             layers.append(Self.meshCoreLayer(state))
         }
+        if state.rnodeAvailable {
+            layers.append(Self.rnodeLayer(state))
+        }
         layers += [
             Self.identityLayer(state),
             Self.pathsLayer(state),
@@ -386,6 +389,110 @@ extension DiagnosticsSnapshot {
         let hz = params.bandwidthHz
         let khz = hz % 1000 == 0 ? String(hz / 1000) : String(Double(hz) / 1000)
         return "SF\(params.spreadingFactor) / \(khz) kHz / CR\(params.codingRate)"
+    }
+}
+
+// MARK: - RNode
+
+extension DiagnosticsSnapshot {
+    /// The RNode radio (spec 2026-11-08 §6), fed from `AppFeature.State.rnodeStatus` and the stored
+    /// settings. Present only while the Release gate (`rnodeAvailable`) is on.
+    ///
+    /// UNTRUSTED TEXT: the advertised name from the picker (`rnodeRadioLabel`), the radio's own name
+    /// (`radioName`), its firmware string and the `.other` adapter payload are rendered in ROWS only,
+    /// which `text` escapes. Never in `reason`, which it does not
+    /// (`rnDiagAHostileRadioNameCannotForgeLines`).
+    static func rnodeLayer(_ state: AppFeature.State) -> Layer {
+        let title = "RNode"
+        let enabled = state.rnodeEnabled
+        var rows = [Row("rnode", enabled ? "on" : "off")]
+        guard enabled else {
+            // Off by choice is not a fault.
+            return Layer(title: title, health: .ok, reason: nil, rows: rows)
+        }
+
+        let status = state.rnodeStatus
+        let settings = state.rnodeSettings
+        let radio = state.rnodeRadioUUID
+        rows.append(Row("settings", settings.frequencyHz == nil ? "incomplete" : describe(settings)))
+        rows.append(Row("radio", radio == nil ? "(none chosen)" : state.rnodeRadioLabel))
+        if let radio { rows.append(Row("radio id", radio.uuidString)) }
+        rows.append(Row("status", status.online ? "online" : "offline"))
+        rows.append(Row("radio name", status.radioName ?? "unknown"))
+        rows.append(Row("firmware", status.firmware ?? "unknown"))
+        rows.append(Row("platform", rnodePlatformName(status.platform)))
+        rows.append(Row("reported", status.reported.map(describe) ?? "unknown"))
+        rows.append(Row("bitrate", status.bitrate.map { "\($0) bps" } ?? "unknown"))
+        rows.append(Row("last RSSI", status.lastRSSI.map { "\($0) dBm" } ?? "unknown"))
+        rows.append(Row("last SNR", status.lastSNR.map { String(format: "%.2f dB", $0) } ?? "unknown"))
+        rows.append(Row("channel load", rnodePercentPair(status.channelLoadShort, status.channelLoadLong)))
+        rows.append(Row("airtime", rnodePercentPair(status.airtimeShort, status.airtimeLong)))
+        rows.append(Row("noise floor", status.noiseFloor.map { "\($0) dBm" } ?? "unknown"))
+        if let reason = status.offlineReason { rows.append(Row("offline reason", reason)) }
+        if let cause = status.adapterUnavailable { rows.append(Row("adapter", describeMeshtastic(cause))) }
+        if let code = status.lastHardwareError {
+            rows.append(Row("last hardware error", rnodeHardwareErrorName(code)))
+        }
+        let counters = status.counters
+        rows.append(contentsOf: [
+            Row("received", String(counters.received)),
+            Row("sent", String(counters.sent)),
+            Row("oversize", String(counters.oversize)),
+            Row("queue full", String(counters.queueFull)),
+            Row("send failed", String(counters.sendFailed)),
+            Row("hardware errors", String(counters.hardwareErrors)),
+        ])
+
+        guard state.rnodeSettingsProblems.isEmpty else {
+            return Layer(title: title, health: .warn,
+                         reason: "radio settings incomplete — set them in Settings", rows: rows)
+        }
+        return radioLinkLayer(title: title, rows: rows, radioChosen: radio != nil,
+                              adapterUnavailable: status.adapterUnavailable != nil, online: status.online)
+    }
+
+    /// `868.1 MHz / 62.5 kHz / SF8 / CR6 / 0 dBm`.
+    static func describe(_ params: RNodeStatus.Params) -> String {
+        "\(RNodeRadioSettings.megahertzText(params.frequencyHz)) MHz"
+            + " / \(RNodeRadioSettings.kilohertzText(params.bandwidthHz)) kHz"
+            + " / SF\(params.spreadingFactor) / CR\(params.codingRate) / \(params.txPowerDBm) dBm"
+    }
+
+    /// The stored settings in `describe(_: RNodeStatus.Params)`'s form; the caller shows `incomplete`
+    /// while there is no frequency.
+    static func describe(_ settings: RNodeRadioSettings) -> String {
+        describe(RNodeStatus.Params(frequencyHz: settings.frequencyHz ?? 0, bandwidthHz: settings.bandwidthHz,
+                                    spreadingFactor: settings.spreadingFactor, codingRate: settings.codingRate,
+                                    txPowerDBm: settings.txPowerDBm))
+    }
+
+    static func rnodePlatformName(_ platform: UInt8?) -> String {
+        guard let platform else { return "unknown" }
+        switch platform {
+        case 0x80: return "ESP32"
+        case 0x70: return "nRF52"
+        default:   return "unknown (\(rnodeHex(platform)))"
+        }
+    }
+
+    static func rnodeHardwareErrorName(_ code: UInt8) -> String {
+        let names: [UInt8: String] = [0x01: "radio init failed", 0x02: "transmit failed", 0x03: "EEPROM locked",
+                                      0x04: "queue full", 0x05: "memory low", 0x06: "modem timeout"]
+        return names[code] ?? "code \(rnodeHex(code))"
+    }
+
+    /// Uppercase, two digits: `0x0A`.
+    static func rnodeHex(_ value: UInt8) -> String {
+        String(format: "0x%02X", value)
+    }
+
+    /// `2.15% / 0.80%` (short / long); `unknown` when neither is known.
+    static func rnodePercentPair(_ short: Double?, _ long: Double?) -> String {
+        guard short != nil || long != nil else { return "unknown" }
+        func percent(_ value: Double?) -> String {
+            value.map { String(format: "%.2f%%", $0) } ?? "unknown"
+        }
+        return "\(percent(short)) / \(percent(long))"
     }
 }
 

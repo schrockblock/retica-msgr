@@ -35,7 +35,7 @@ extension AppFeature.State {
 }
 
 /// Opens the radio picker for `kind` on `selected` and pauses a running BLE interface. Shared by
-/// the Meshtastic, MeshCore and RNode "Choose radio…" arms: BLE pauses the same way for both.
+/// the Meshtastic, MeshCore and RNode "Choose radio…" arms: BLE pauses the same way for every kind.
 func openRadioPicker(_ state: inout AppFeature.State, kind: RadioKind, selected: UUID?) -> Effect<AppFeature.Action> {
     guard state.radioPicker == nil else { return .none }
     state.radioPicker = RadioPickerFeature.State(kind: kind, selectedID: selected)

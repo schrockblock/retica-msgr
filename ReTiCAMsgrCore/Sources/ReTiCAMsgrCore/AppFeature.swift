@@ -363,6 +363,8 @@ public struct AppFeature {
         @Shared(.appStorage("rnodeTXPowerDBm")) public var rnodeTXPowerDBm: Int = 0
         /// The RNode Release gate. Stored so tests can turn it off (`swift test` always compiles DEBUG).
         public var rnodeAvailable = RNodeReleaseGate.isCompiledIn
+        /// The RNode radio's state for Diagnostics and Settings. Lane D fills it. Session-only.
+        public var rnodeStatus = RNodeStatus()
         /// Typed text the parser couldn't read, in field order. Session-only: the stored value stays
         /// what it was (bandwidth) or nil (frequency).
         public var rnodeTextProblems: [RNodeSettingsProblem] = []
