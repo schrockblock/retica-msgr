@@ -345,6 +345,27 @@ public struct AppFeature {
         public var meshCoreAvailable = MeshCoreReleaseGate.isCompiledIn
         /// The MeshCore radio's state for Diagnostics and Settings. Lane D fills it. Session-only.
         public var meshCoreStatus = MeshCoreStatus()
+        /// Opt-in: also reach Reticulum through an RNode. OFF by default. Read at connect time by
+        /// lane D; see `rnodeWillDial`.
+        @Shared(.appStorage("rnodeEnabled")) public var rnodeEnabled: Bool = false
+        /// The chosen RNode's peripheral UUID as a string, nil when none is chosen. Read it through
+        /// `rnodeRadioUUID`, which treats a non-UUID string as no radio.
+        @Shared(.appStorage("rnodeRadioID")) public var rnodeRadioID: String? = nil
+        /// The chosen RNode's advertised name, for the Settings row only. Unauthenticated text from
+        /// the air: never put it in a diagnostics reason.
+        @Shared(.appStorage("rnodeRadioName")) public var rnodeRadioName: String? = nil
+        /// The RNode radio parameters (spec 2026-11-08 §6). Read them through `rnodeSettings`; a
+        /// stored value outside RNS's ranges shows in `rnodeSettingsProblems` and stops the dial.
+        @Shared(.appStorage("rnodeFrequencyHz")) public var rnodeFrequencyHz: Int? = nil
+        @Shared(.appStorage("rnodeBandwidthHz")) public var rnodeBandwidthHz: Int = 62_500
+        @Shared(.appStorage("rnodeSpreadingFactor")) public var rnodeSpreadingFactor: Int = 8
+        @Shared(.appStorage("rnodeCodingRate")) public var rnodeCodingRate: Int = 6
+        @Shared(.appStorage("rnodeTXPowerDBm")) public var rnodeTXPowerDBm: Int = 0
+        /// The RNode Release gate. Stored so tests can turn it off (`swift test` always compiles DEBUG).
+        public var rnodeAvailable = RNodeReleaseGate.isCompiledIn
+        /// Typed text the parser couldn't read, in field order. Session-only: the stored value stays
+        /// what it was (bandwidth) or nil (frequency).
+        public var rnodeTextProblems: [RNodeSettingsProblem] = []
         /// The radio picker sheet (spec 2026-10-16 §7), nil when closed. Closed ONLY through
         /// `.radioPicker(.dismiss)` (swipe, Cancel, or a pick), which is where paused BLE resumes:
         /// never set this to nil directly.
@@ -799,6 +820,14 @@ public struct AppFeature {
         case meshCoreCopyKeyTapped
         /// A key change finished: Generate's effect, or the paste sheet after it called the store.
         case meshCoreKeyDidChange(MeshCoreKeyChangeResult)
+        /// RNode Settings' frequency field (MHz text). Handled in `RNodeSettingsReducer`, like the
+        /// four below; editing writes defaults only and sends nothing to a running radio.
+        case rnodeFrequencyTextChanged(String)
+        /// RNode Settings' bandwidth field (kHz text).
+        case rnodeBandwidthTextChanged(String)
+        case rnodeSpreadingFactorChanged(Int)
+        case rnodeCodingRateChanged(Int)
+        case rnodeTXPowerChanged(Int)
         case node(LXMFServiceNode.Action)
         case binding(BindingAction<State>)
     }
@@ -3026,6 +3055,11 @@ public struct AppFeature {
             case .meshCoreGenerateKeyTapped, .meshCorePasteKeyOpened, .meshCoreCopyKeyTapped,
                  .meshCoreKeyDidChange:
                 return .none
+
+            // The RNode settings arms live in `RNodeSettingsReducer` (AppFeature+RNode.swift).
+            case .rnodeFrequencyTextChanged, .rnodeBandwidthTextChanged, .rnodeSpreadingFactorChanged,
+                 .rnodeCodingRateChanged, .rnodeTXPowerChanged:
+                return .none
             }
         }
 
@@ -3142,6 +3176,7 @@ public struct AppFeature {
         ProfilePhotoReducer()
         MeshtasticSettingsReducer()
         MeshCoreSettingsReducer()
+        RNodeSettingsReducer()
         MeshtasticRadioReducer()
         MeshCoreRadioReducer()
         BLESlotReducer()
