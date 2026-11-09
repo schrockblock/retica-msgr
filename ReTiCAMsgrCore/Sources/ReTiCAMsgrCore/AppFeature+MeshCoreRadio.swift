@@ -39,6 +39,16 @@ public struct MeshCoreSlotSwap: Equatable, Sendable {
     }
 }
 
+extension AppFeature.State {
+    /// What the MeshCore slot should be built for: the chosen radio and the current key generation
+    /// while `meshCoreWillDial`, else nil. `syncMeshCoreSlot` acts on a slot whose identity differs
+    /// from this (its rule 2).
+    var meshCoreWantedIdentity: MeshCoreSlotIdentity? {
+        guard meshCoreWillDial, let radio = meshCoreRadioUUID else { return nil }
+        return MeshCoreSlotIdentity(radio: radio, keyGeneration: meshCoreKeyGeneration)
+    }
+}
+
 /// `.node(.client(.endpoint(.meshCore(action))))`.
 private func meshCore(_ action: MeshCoreEndpoint.Action) -> Effect<AppFeature.Action> {
     .send(.node(.client(.endpoint(.meshCore(action)))))
@@ -55,9 +65,7 @@ func syncMeshCoreSlot(_ state: inout AppFeature.State) -> Effect<AppFeature.Acti
     state.meshCoreKeyPresence = keyStore.presence()
     // Read the @Shared settings into locals first: mutating `state.node…` while reading a shared
     // value in the same statement is an exclusive-access violation.
-    let willDial = state.meshCoreWillDial
     let radio = state.meshCoreRadioUUID
-    let keyGeneration = state.meshCoreKeyGeneration
     // 0. On, with a radio, but the key didn't read as present (a Keychain error, or `.absent`, which
     // no user action produces: a key change replaces the item under the store's lock). That is not a
     // turn-off, so it must not remove our channel (only turning MeshCore off does, plan Contract
@@ -66,7 +74,7 @@ func syncMeshCoreSlot(_ state: inout AppFeature.State) -> Effect<AppFeature.Acti
     if state.meshCoreAvailable, state.meshCoreEnabled, radio != nil, state.meshCoreKeyPresence != .present {
         return .none
     }
-    let wanted = willDial ? radio.map { MeshCoreSlotIdentity(radio: $0, keyGeneration: keyGeneration) } : nil
+    let wanted = state.meshCoreWantedIdentity
 
     // 1. A stop (or removal) is already in flight: only retarget what follows it. Another `.stop`
     // or a `.start` now would race it. A removal keeps going; its `.channelRemoved` sends the stop.

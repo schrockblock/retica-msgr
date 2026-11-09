@@ -22,6 +22,12 @@ extension AppFeature.State {
     /// A Meshtastic radio will dial at Connect / foreground: the setting is on AND a radio is chosen.
     var meshtasticWillDial: Bool { meshtasticEnabled && meshtasticRadioUUID != nil }
 
+    /// What the radio slot should run: the chosen radio while `meshtasticWillDial`, else nil.
+    /// `syncMeshtasticSlot` replaces a slot whose config differs from this.
+    var meshtasticWantedConfig: MeshtasticDriverConfig? {
+        meshtasticWillDial ? meshtasticRadioUUID.map { MeshtasticDriverConfig(radio: $0) } : nil
+    }
+
     /// Amendment A10 ("only show Connecting… when something will actually dial"), now including
     /// the radios. The single definition behind onLaunch, Connect and the foreground re-dial. A
     /// MeshCore radio held back by a policy failure, or an RNode by a failure only the user can fix,
@@ -37,9 +43,7 @@ extension AppFeature.State {
 func syncMeshtasticSlot(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
     // Read the @Shared settings into locals first: mutating `state.node…` while reading a shared
     // value in the same statement is an exclusive-access violation.
-    let willDial = state.meshtasticWillDial
-    let radio = state.meshtasticRadioUUID
-    let wanted: MeshtasticDriverConfig? = willDial ? radio.map { MeshtasticDriverConfig(radio: $0) } : nil
+    let wanted = state.meshtasticWantedConfig
     if state.meshtasticSwap != nil {
         // A stop is already in flight: only retarget what replaces the old slot. Another `.stop`
         // or a `.start` now would race the in-flight `driver.stop()`.

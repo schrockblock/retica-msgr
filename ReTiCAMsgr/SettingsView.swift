@@ -419,7 +419,8 @@ struct SettingsView: View {
             LabeledContent("Radio", value: store.meshtasticRadioLabel)
             // A standard Form button row is hittable across its width already.
             Button("Choose radio…") { store.send(.chooseRadioTapped) }
-            radioConnectRow(.meshtastic, connect: "Connect Meshtastic radio", connecting: "Connecting…")
+            radioConnectRow(.meshtastic, connect: MeshtasticCopy.connectButton,
+                            connecting: MeshtasticCopy.connecting, apply: MeshtasticCopy.applyChanges)
         } header: {
             Text("Meshtastic")
         } footer: {
@@ -517,18 +518,28 @@ struct SettingsView: View {
     }
 
     /// A radio section's own Connect button: shown while the radio is set up and not online,
-    /// disabled with `connecting` while it dials. The label spans the row and is its hit shape, so a
-    /// tap anywhere on the row connects.
+    /// disabled with `connecting` while it dials, and `apply` while the running radio differs from
+    /// Settings. The label spans the row and is its hit shape, so a tap anywhere on the row connects.
     @ViewBuilder
-    private func radioConnectRow(_ kind: RadioKind, connect: String, connecting: String) -> some View {
+    private func radioConnectRow(_ kind: RadioKind, connect: String, connecting: String,
+                                 apply: String) -> some View {
         let button = store.state.radioConnectButton(kind)
         if button != .hidden {
             Button { store.send(.radioConnectTapped(kind)) } label: {
-                Text(button == .connecting ? connecting : connect)
+                Text(radioConnectLabel(button, connect: connect, connecting: connecting, apply: apply))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
             .disabled(button == .connecting)
+        }
+    }
+
+    private func radioConnectLabel(_ button: RadioConnectButton, connect: String, connecting: String,
+                                   apply: String) -> String {
+        switch button {
+        case .hidden, .connect: return connect
+        case .connecting: return connecting
+        case .applyChanges: return apply
         }
     }
 
@@ -552,7 +563,8 @@ struct SettingsView: View {
             LabeledContent(MeshCoreCopy.radioRow, value: store.meshCoreRadioLabel)
             // A standard Form button row is hittable across its width already.
             Button(MeshCoreCopy.chooseRadio) { store.send(.chooseMeshCoreRadioTapped) }
-            radioConnectRow(.meshCore, connect: MeshCoreCopy.connectButton, connecting: MeshCoreCopy.connecting)
+            radioConnectRow(.meshCore, connect: MeshCoreCopy.connectButton, connecting: MeshCoreCopy.connecting,
+                            apply: MeshCoreCopy.applyChanges)
             if store.meshCoreRadioUUID != nil {
                 meshCoreNote(MeshCoreCopy.radioChangeNotice)
             }
@@ -609,7 +621,8 @@ struct SettingsView: View {
             LabeledContent(RNodeCopy.radioRow, value: store.rnodeRadioLabel)
             // A standard Form button row is hittable across its width already.
             Button(RNodeCopy.chooseRadio) { store.send(.chooseRNodeRadioTapped) }
-            radioConnectRow(.rnode, connect: RNodeCopy.connectButton, connecting: RNodeCopy.connecting)
+            radioConnectRow(.rnode, connect: RNodeCopy.connectButton, connecting: RNodeCopy.connecting,
+                            apply: RNodeCopy.applyChanges)
             rnodeNumberRow(RNodeCopy.frequencyRow, prompt: RNodeCopy.frequencyPrompt,
                            text: $rnodeFrequencyText, field: .rnodeFrequency)
                 .onChange(of: rnodeFrequencyText) { _, text in

@@ -11,11 +11,13 @@ public enum RNodeCopy {
     /// The section's own Connect button (`radioConnectTapped(.rnode)`), and its label while dialling.
     public static let connectButton = "Connect RNode"
     public static let connecting = "Connecting…"
+    /// The same button while the radio is online but Settings wants another radio or parameters.
+    public static let applyChanges = "Apply changes"
 
     /// The footer's last sentence: what applies a change.
     public static let changesApply =
-        "Changes take effect when you tap Connect RNode or Connect, and again whenever this app "
-        + "reconnects by itself, like when you come back to it or a notification wakes it."
+        "Changes take effect when you tap Connect RNode, Apply changes or Connect, or when this app "
+        + "reconnects by itself."
 
     public static let frequencyRow = "Frequency (MHz)"
     public static let frequencyPrompt = "Required, e.g. 868.1"
@@ -70,7 +72,7 @@ public enum RNodeCopy {
 
     /// Every string above, for the test that no copy names the app.
     public static let all: [String] = [
-        header, toggle, radioRow, chooseRadio, connectButton, connecting, changesApply,
+        header, toggle, radioRow, chooseRadio, connectButton, connecting, applyChanges, changesApply,
         frequencyRow, frequencyPrompt, bandwidthRow, spreadingFactorRow, codingRateRow, txPowerRow,
         incompleteNotice,
         frequencyMissing, frequencyUnreadable, frequencyOutOfRange, bandwidthUnreadable,

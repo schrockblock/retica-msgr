@@ -170,7 +170,8 @@ private func rcParamsTX(_ dBm: UInt8) -> RNodeLoRaParams {
 }
 
 /// Meshtastic's own Connect restarts only Meshtastic: the RNode and MeshCore radios stay online and
-/// their drivers see nothing new.
+/// their drivers see nothing new, though both have a pending change (new RNode parameters, a new
+/// MeshCore key) that a sync of every slot would apply.
 @MainActor @Test func rcMeshtasticConnectRestartsOnlyMeshtastic() async {
     let radio = RNodeRadioHarness()
     let meshtastic = MeshRadioHarness()
@@ -185,15 +186,83 @@ private func rcParamsTX(_ dBm: UInt8) -> RNodeLoRaParams {
     await store.receive(isMeshtasticUnavailable, timeout: .seconds(20))
     #expect(store.state.radioConnectButton(.meshtastic) == .connect)
     #expect(store.state.radioConnectButton(.rnode) == .hidden)
+    await store.send(.rnodeFrequencyTextChanged("869.525"))
+    await store.send(.meshCoreKeyDidChange(.changed))
 
     await store.send(.radioConnectTapped(.meshtastic))
+    #expect(store.state.rnodeSwap == nil)
+    #expect(store.state.meshCoreSwap == nil)
     #expect(await rcWait { meshtastic.startCount >= 2 }, "calls: \(meshtastic.calls.value)")
     await rcSettle(store)
     #expect(meshtastic.calls.value == [.start(meshSlotRadioA), .start(meshSlotRadioA)])
     #expect(radio.calls.value == [rcStartA1])
-    #expect(meshCore.startCount == 1)
+    #expect(meshCore.calls.value.count == 1, "calls: \(meshCore.calls.value)")
+    #expect(store.state.node.client.endpoint.rnode?.interface.config.params == rcParamsF1)
     #expect(store.state.node.client.endpoint.rnode?.interface.isOnline == true)
     #expect(store.state.node.client.endpoint.meshCore?.interface.isOnline == true)
+}
+
+// MARK: - Apply changes
+
+/// The RNode is online and the hub may be up, so neither Connect is on screen: a parameter change
+/// shows Apply changes, and the tap swaps the slot to the new parameters.
+@MainActor @Test func rcRNodeApplyChangesSwapsAnOnlineRadio() async {
+    let radio = RNodeRadioHarness()
+    let store = rnRadioStore(radio: rnRadioIDA, radioHarness: radio)
+    await store.send(.connectTapped)
+    await rnBringRadioOnline(store, radio, id: rnSlotIDA)
+    #expect(store.state.radioConnectButton(.rnode) == .hidden)
+    await store.send(.rnodeFrequencyTextChanged("869.525"))
+    #expect(store.state.radioConnectButton(.rnode) == .applyChanges)
+    await store.send(.radioConnectTapped(.rnode))
+    #expect(await rcWait { radio.startCount >= 2 }, "calls: \(radio.calls.value)")
+    #expect(await rnEventually(store) { store.state.rnodeSwap == nil })
+    await rcSettle(store)
+    let paramsF2 = RNodeLoRaParams(frequencyHz: 869_525_000, bandwidthHz: 62_500, txPowerDBm: 0,
+                                   spreadingFactor: 8, codingRate: 6)
+    #expect(radio.calls.value == [rcStartA1, .stop, .start(RNodeDriverConfig(radio: rnRadioIDA, params: paramsF2))])
+    #expect(store.state.node.client.endpoint.rnode?.interface.config.params == paramsF2)
+}
+
+/// A different Meshtastic radio chosen while one is online: Apply changes, and the tap swaps to it.
+@MainActor @Test func rcMeshtasticApplyChangesSwapsAnOnlineRadio() async {
+    let radio = MeshRadioHarness()
+    let store = meshRadioStore(radio: meshSlotRadioA, harness: radio)
+    await store.send(.connectTapped)
+    await meshBringRadioOnline(store, radio, id: meshSlotIDA)
+    #expect(store.state.radioConnectButton(.meshtastic) == .hidden)
+    await store.send(.binding(.set(\.meshtasticRadioID, meshSlotRadioB.uuidString)))
+    #expect(store.state.radioConnectButton(.meshtastic) == .applyChanges)
+    await store.send(.radioConnectTapped(.meshtastic))
+    #expect(await rcWait { radio.startCount >= 2 }, "calls: \(radio.calls.value)")
+    #expect(await rnEventually(store) { store.state.meshtasticSwap == nil })
+    await rcSettle(store)
+    #expect(radio.calls.value == [.start(meshSlotRadioA), .stop, .start(meshSlotRadioB)])
+    #expect(store.state.node.client.endpoint.meshtastic?.interface.config.radio == meshSlotRadioB)
+}
+
+/// A new MeshCore key while the radio is online: Apply changes, and the tap stops the slot and
+/// restarts it for the new key generation.
+@MainActor @Test func rcMeshCoreApplyChangesRestartsAnOnlineRadioForANewKey() async {
+    let radio = MeshCoreRadioHarness()
+    let store = mcRadioStore(radio: mcRadioIDA, radioHarness: radio)
+    await store.send(.connectTapped)
+    await mcBringRadioOnline(store, radio, id: mcSlotIDA)
+    #expect(store.state.radioConnectButton(.meshCore) == .hidden)
+    await store.send(.meshCoreKeyDidChange(.changed))
+    #expect(store.state.radioConnectButton(.meshCore) == .applyChanges)
+    await store.send(.radioConnectTapped(.meshCore))
+    #expect(await rcWait { radio.startCount >= 2 }, "calls: \(radio.calls.value)")
+    #expect(await rnEventually(store) { store.state.meshCoreSwap == nil })
+    #expect(store.state.meshCoreSlotIdentity == MeshCoreSlotIdentity(radio: mcRadioIDA, keyGeneration: 1))
+    #expect(radio.calls.value.contains(.stop), "calls: \(radio.calls.value)")
+}
+
+/// The Meshtastic button's labels (no Meshtastic copy file existed; these live in Core so they're pinned).
+@Test func rcMeshtasticCopyLabels() {
+    #expect(MeshtasticCopy.connectButton == "Connect Meshtastic radio")
+    #expect(MeshtasticCopy.connecting == "Connecting…")
+    #expect(MeshtasticCopy.applyChanges == "Apply changes")
 }
 
 /// MeshCore's own Connect clears a policy failure and retries; with nothing else up it shows

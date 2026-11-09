@@ -12,12 +12,14 @@ public enum MeshCoreCopy {
     /// The section's own Connect button (`radioConnectTapped(.meshCore)`), and its label while dialling.
     public static let connectButton = "Connect MeshCore radio"
     public static let connecting = "Connecting…"
+    /// The same button while the radio is online but Settings wants another radio or key.
+    public static let applyChanges = "Apply changes"
 
-    /// The footer's last sentence: what applies a change.
+    /// The footer's last sentence: what applies a change. Turning MeshCore off acts at once, so it
+    /// names only what waits.
     public static let changesApply =
-        "Turning this on, or changing the radio or key, takes effect when you tap Connect MeshCore radio "
-        + "or Connect, and again whenever this app reconnects by itself, like when you come back to it "
-        + "or a notification wakes it."
+        "Turning this on or changing the radio or key takes effect when you tap Connect MeshCore radio, "
+        + "Apply changes or Connect, or when this app reconnects by itself."
 
     public static let keyRow = "Channel key"
     public static let keySet = "Set"
@@ -70,7 +72,7 @@ public enum MeshCoreCopy {
 
     /// Every string above, for the test that no copy names the app.
     public static let all: [String] = [
-        header, toggle, radioRow, chooseRadio, connectButton, connecting, changesApply,
+        header, toggle, radioRow, chooseRadio, connectButton, connecting, applyChanges, changesApply,
         keyRow, keySet, keyNotSet, keyUnreadable, generateKey, pasteKey, copyKey, shareKey,
         replaceTitle, replaceMessage, replaceButton, cancelButton,
         requiredWarning, footer, turnOffNotice, radioChangeNotice, noKeyNotice, channelLeftNotice,
