@@ -161,6 +161,10 @@ public struct AppFeature {
         /// Hashes of sends handed to the node and not yet settled: inserted on `sendMessage`,
         /// removed by every terminal delegate (an unknown hash is a no-op). Session-only.
         public var inFlightSends: Set<Data> = []
+        /// Hex hashes of sends that reported `deliveryPreparing` (`.waitingForPeer` / `.stamping`)
+        /// and have since neither reached `.handedOver` nor ended in a terminal outcome. In memory
+        /// only: a relaunch starts empty, so a still-sending row reads "Sending…" until it reports again.
+        public var preparingHashes: Set<String> = []
         /// Sends reserved by the reducer whose effect has not yet handed them to the node (a send
         /// builds and stores its message first). Ended by `.handOverEnded`, or by a failure action
         /// that sends nothing (`attachmentSendFailed`). Counts as in flight for `.backgrounded`.
@@ -2417,6 +2421,13 @@ public struct AppFeature {
                 }
                 return .merge(pathRequest, .concatenate(storeMessage, recheckNow))
 
+            case let .node(.client(.delegate(.deliveryPreparing(hash, phase)))):
+                switch phase {
+                case .waitingForPeer, .stamping: state.preparingHashes.insert(hash.hexString)
+                case .handedOver: state.preparingHashes.remove(hash.hexString)
+                }
+                return .none
+
             case let .node(.client(.delegate(.deliveryFailed(hash)))):
                 return markUndeliverable(&state, hash, status: MessageStatus.failed, reason: nil)
 
@@ -2655,6 +2666,7 @@ public struct AppFeature {
 
             case let .node(.client(.delegate(.propagationAccepted(hash)))):
                 let hex = hash.hexString
+                state.preparingHashes.remove(hex)
                 state.inFlightSends.remove(hash)
                 let finished = finishSendingInBackground(&state)
                 let openPeer = state.openPeerHex
@@ -2700,6 +2712,7 @@ public struct AppFeature {
                 // forever, because a proving peer never yields a later `deliveryFailed`.
                 let hex = hash.hexString
                 state.outgoingProgress[hex] = nil
+                state.preparingHashes.remove(hex)
                 // Idempotent: the propagated copy can also be accepted, before or after this.
                 state.inFlightSends.remove(hash)
                 let finished = finishSendingInBackground(&state)
@@ -3170,6 +3183,7 @@ public struct AppFeature {
     private func markUndeliverable(_ state: inout State, _ hash: Data, status: String, reason: String?) -> Effect<Action> {
         let hex = hash.hexString
         state.outgoingProgress[hex] = nil
+        state.preparingHashes.remove(hex)
         state.inFlightSends.remove(hash)
         state.retriedSends[hash] = nil
         let finished = finishSendingInBackground(&state)

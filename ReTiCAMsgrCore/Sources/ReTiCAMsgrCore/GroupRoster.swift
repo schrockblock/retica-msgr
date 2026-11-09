@@ -59,11 +59,20 @@ public enum GroupRoster {
 
     /// The bubble's status text (spec §4): "Delivered to d of n" while some but not all members
     /// proved receipt, else the derived status word.
-    public static func statusLabel(_ rows: [GroupDelivery]) -> String {
+    public static func statusLabel(_ rows: [GroupDelivery], preparing: Set<String> = []) -> String {
         let delivered = rows.filter { $0.status == MessageStatus.delivered }.count
         if delivered > 0, delivered < rows.count {
             return "Delivered to \(delivered) of \(rows.count)"
         }
-        return MessageStatusLabel.text(for: derivedStatus(rows))
+        let status = derivedStatus(rows)
+        return MessageStatusLabel.text(for: status, preparing: status == MessageStatus.sending
+            && allUnfinishedPreparing(rows, preparing))
+    }
+
+    /// Every copy still waiting or sending has a hash in `preparing`. A waiting copy has no hash
+    /// yet, so one such copy keeps the post at "Sending…".
+    static func allUnfinishedPreparing(_ rows: [GroupDelivery], _ preparing: Set<String>) -> Bool {
+        let unfinished = rows.filter { $0.status == GroupDeliveryStatus.waiting || $0.status == MessageStatus.sending }
+        return !unfinished.isEmpty && unfinished.allSatisfy { $0.messageHash.map(preparing.contains) ?? false }
     }
 }

@@ -4,6 +4,12 @@ import Foundation
 /// only what the sender knows: the propagation node holds the message. Whether a push alert went
 /// out is unknowable here, so no label claims it.
 public enum MessageStatusLabel {
+    /// `text(for:)`, except a `sending` row whose send is waiting for the peer's stamp cost or
+    /// computing its stamp reads "Preparing…". Every other status ignores `preparing`.
+    public static func text(for status: String, preparing: Bool) -> String {
+        status == MessageStatus.sending && preparing ? "Preparing…" : text(for: status)
+    }
+
     public static func text(for status: String) -> String {
         switch status {
         case MessageStatus.sending: return "Sending…"

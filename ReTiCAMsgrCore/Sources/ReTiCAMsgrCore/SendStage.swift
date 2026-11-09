@@ -44,7 +44,8 @@ public enum SendStage: Equatable, Sendable {
     /// that holds wins, most concrete activity first; the pickup copy outranks a delivery retry
     /// because once it is under way it is the work actually happening.
     public static func current(messageHash: Data, recipient: Data,
-                               client: LXMFNode.State, connection: AppFeature.Connection) -> SendStage {
+                               client: LXMFNode.State, connection: AppFeature.Connection,
+                               reportedPreparing: Bool = false) -> SendStage {
         let router = client.router
         let delivery = router.pendingDeliveries[.delivery(messageHash)]
         if delivery?.phase == .transferring {
@@ -65,7 +66,9 @@ public enum SendStage: Equatable, Sendable {
             return .tryingAgain(attempt: delivery.attempts, of: LXMFDelivery.maxAttempts)
         }
         if connection != .connected || router.held { return .waitingForConnection }
-        if client.inFlightDeliveryStamps.contains(messageHash) { return .preparing }
+        // `reportedPreparing`: the node said this send is waiting for the peer's stamp cost or
+        // stamping, which `inFlightDeliveryStamps` does not cover (the wait).
+        if reportedPreparing || client.inFlightDeliveryStamps.contains(messageHash) { return .preparing }
         return .inProgress
     }
 
@@ -88,6 +91,7 @@ extension AppFeature.State {
               let hash = Data(hexString: message.messageHash), !hash.isEmpty,
               let recipient = Data(hexString: message.peerHex), recipient.count == 16
         else { return nil }
-        return SendStage.current(messageHash: hash, recipient: recipient, client: node.client, connection: connection)
+        return SendStage.current(messageHash: hash, recipient: recipient, client: node.client, connection: connection,
+                                 reportedPreparing: preparingHashes.contains(message.messageHash))
     }
 }

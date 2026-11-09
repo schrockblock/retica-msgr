@@ -417,7 +417,7 @@ struct ChatView: View {
             if let stage = store.state.sendStage(for: message) { return stage.label }
             return MessageStatusLabel.text(for: message.status)
         }
-        return GroupRoster.statusLabel(rows)
+        return GroupRoster.statusLabel(rows, preparing: store.state.preparingHashes)
     }
 
     /// What the status ⓘ explains: the live stage while sending, or the two settled states that
