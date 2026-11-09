@@ -45,6 +45,12 @@ extension AppFeature.State {
         rnodeAvailable && rnodeEnabled && rnodeRadioUUID != nil && rnodeSettingsProblems.isEmpty
     }
 
+    /// "Enter a frequency to turn this on." shows only for a plainly empty frequency: with a text
+    /// problem standing, that problem's own message already says what to fix.
+    public var rnodeIncompleteNoticeVisible: Bool {
+        rnodeFrequencyHz == nil && rnodeTextProblems.isEmpty
+    }
+
     /// Settings' RNode toggle can't be turned on while a problem stands, but can always be turned off.
     public var rnodeToggleDisabled: Bool {
         !rnodeEnabled && !rnodeSettingsProblems.isEmpty

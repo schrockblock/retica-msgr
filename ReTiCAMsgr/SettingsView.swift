@@ -38,11 +38,15 @@ struct SettingsView: View {
     @State private var showingMeshCorePaste = false
     /// A Generate or Paste over an existing key, waiting for "Replace".
     @State private var meshCorePendingReplace: MeshCoreKeyReplacement?
+    /// The RNode frequency and bandwidth fields' text, seeded from the stored values when the
+    /// section appears. Typing sends the text to the reducer, which stores what it can read.
+    @State private var rnodeFrequencyText = ""
+    @State private var rnodeBandwidthText = ""
     #endif
     @Environment(\.openURL) private var openURL
     @FocusState private var focusedField: Field?
 
-    private enum Field { case name, listenPort, propagationNode }
+    private enum Field { case name, listenPort, propagationNode, rnodeFrequency, rnodeBandwidth }
 
     private var pushStatusIsFailure: Bool {
         if case .failed = store.push.status { return true }
@@ -427,6 +431,7 @@ struct SettingsView: View {
 
         #if DEBUG
         meshCoreSection
+        rnodeSection
         #endif
 
         Section("Direct Connections") {
@@ -562,6 +567,91 @@ struct SettingsView: View {
             .foregroundStyle(color)
     }
 
+    // MARK: - RNode (Debug-only until lane E)
+
+    private var rnodeSection: some View {
+        Section {
+            // Standard Toggle in a Form row: the whole row is already hittable. It stays enabled
+            // while on (`rnodeToggleDisabled`), so stale defaults can still be turned off.
+            Toggle(RNodeCopy.toggle, isOn: $store.rnodeEnabled)
+                .disabled(store.rnodeToggleDisabled)
+            if store.rnodeIncompleteNoticeVisible {
+                rnodeNote(RNodeCopy.incompleteNotice)
+            }
+            if let message = store.rnodeStatus.userMessage {
+                rnodeNote(message, color: .red)
+            }
+            LabeledContent(RNodeCopy.radioRow, value: store.rnodeRadioLabel)
+            // A standard Form button row is hittable across its width already.
+            Button(RNodeCopy.chooseRadio) { store.send(.chooseRNodeRadioTapped) }
+            rnodeNumberRow(RNodeCopy.frequencyRow, prompt: RNodeCopy.frequencyPrompt,
+                           text: $rnodeFrequencyText, field: .rnodeFrequency)
+                .onChange(of: rnodeFrequencyText) { _, text in
+                    store.send(.rnodeFrequencyTextChanged(text))
+                }
+            rnodeNumberRow(RNodeCopy.bandwidthRow, prompt: "", text: $rnodeBandwidthText,
+                           field: .rnodeBandwidth)
+                .onChange(of: rnodeBandwidthText) { _, text in
+                    store.send(.rnodeBandwidthTextChanged(text))
+                }
+            Stepper(value: Binding(get: { store.rnodeSpreadingFactor },
+                                   set: { store.send(.rnodeSpreadingFactorChanged($0)) }),
+                    in: RNodeRadioSettings.spreadingFactorRange) {
+                Text("\(RNodeCopy.spreadingFactorRow): \(store.rnodeSpreadingFactor)")
+            }
+            Stepper(value: Binding(get: { store.rnodeCodingRate },
+                                   set: { store.send(.rnodeCodingRateChanged($0)) }),
+                    in: RNodeRadioSettings.codingRateRange) {
+                Text("\(RNodeCopy.codingRateRow): \(store.rnodeCodingRate)")
+            }
+            Stepper(value: Binding(get: { store.rnodeTXPowerDBm },
+                                   set: { store.send(.rnodeTXPowerChanged($0)) }),
+                    in: RNodeRadioSettings.txPowerRange) {
+                Text("\(RNodeCopy.txPowerRow): \(store.rnodeTXPowerDBm)")
+            }
+            ForEach(store.rnodeSettingsProblems, id: \.self) { problem in
+                rnodeNote(RNodeCopy.problemMessage(problem), color: .red)
+            }
+            rnodeNote(RNodeCopy.boardsNotice)
+            rnodeNote(RNodeCopy.pairingNotice)
+        } header: {
+            Text(RNodeCopy.header)
+        } footer: {
+            Text(RNodeCopy.footer)
+        }
+        .onAppear {
+            // Re-seed the fields from the stored values and send both texts, which clears a text
+            // problem left over from an earlier visit (the field no longer shows that text).
+            rnodeFrequencyText = store.rnodeFrequencyHz.map(RNodeRadioSettings.megahertzText) ?? ""
+            rnodeBandwidthText = RNodeRadioSettings.kilohertzText(store.rnodeBandwidthHz)
+            store.send(.rnodeFrequencyTextChanged(rnodeFrequencyText))
+            store.send(.rnodeBandwidthTextChanged(rnodeBandwidthText))
+        }
+    }
+
+    /// A labelled number field. A bare `TextField` in a Form hides its title once it has text (and
+    /// next to a prompt), so the label is its own `Text`; the row is a custom tappable row and
+    /// focuses the field from anywhere across its width.
+    private func rnodeNumberRow(_ label: String, prompt: String, text: Binding<String>,
+                                field: Field) -> some View {
+        HStack {
+            Text(label)
+            TextField(label, text: text, prompt: Text(prompt))
+                .multilineTextAlignment(.trailing)
+                .rnodeNumberField()
+                .focused($focusedField, equals: field)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { focusedField = field }
+    }
+
+    private func rnodeNote(_ text: String, color: Color = .secondary) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(color)
+    }
+
     /// Over an existing key, Generate and Paste ask first; otherwise they go straight ahead.
     private func meshCoreKeyChangeTapped(_ replacement: MeshCoreKeyReplacement) {
         if meshCoreKeyIsPresent {
@@ -583,6 +673,21 @@ struct SettingsView: View {
 }
 
 #if DEBUG
+private extension View {
+    /// The RNode frequency and bandwidth fields: a keyboard with a "." (`.numbersAndPunctuation`, not
+    /// `.decimalPad`, which types "," in comma-decimal locales and would strand "868,1" users), and no
+    /// autocorrection or capitalization.
+    func rnodeNumberField() -> some View {
+        #if os(iOS)
+        self.keyboardType(.numbersAndPunctuation)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+        #else
+        self.autocorrectionDisabled()
+        #endif
+    }
+}
+
 /// Which key change the "Replace the channel key?" confirmation is for.
 private enum MeshCoreKeyReplacement {
     case generate, paste

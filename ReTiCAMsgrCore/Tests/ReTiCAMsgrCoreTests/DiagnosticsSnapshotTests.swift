@@ -1240,14 +1240,24 @@ private func rnDiagState(enabled: Bool = true, frequencyHz: Int? = 868_100_000, 
 @MainActor @Test func rnDiagRowsShowTelemetry() {
     let status = RNodeStatus(online: true, bitrate: 1302, lastRSSI: -97, lastSNR: 6.25,
                              channelLoadShort: 2.15, channelLoadLong: 0.8,
-                             airtimeShort: 2.15, airtimeLong: 0.8, noiseFloor: -117)
+                             airtimeShort: 1.5, airtimeLong: 0.25, noiseFloor: -117)
     let layer = rnDiagLayer(rnDiagState(status: status))
     #expect(rnDiagRow(layer, "last RSSI") == "-97 dBm")
     #expect(rnDiagRow(layer, "last SNR") == "6.25 dB")
     #expect(rnDiagRow(layer, "channel load") == "2.15% / 0.80%")
-    #expect(rnDiagRow(layer, "airtime") == "2.15% / 0.80%")
+    // Distinct from the channel load values, so crossed fields fail.
+    #expect(rnDiagRow(layer, "airtime") == "1.50% / 0.25%")
     #expect(rnDiagRow(layer, "noise floor") == "-117 dBm")
     #expect(rnDiagRow(layer, "bitrate") == "1302 bps")
+}
+
+/// Only one side of a pair known: that side shows, the other reads unknown.
+@MainActor @Test func rnDiagHalfKnownPercentPairShowsTheKnownSide() {
+    let status = RNodeStatus(online: true, channelLoadShort: 2.15, channelLoadLong: nil,
+                             airtimeShort: nil, airtimeLong: 0.25)
+    let layer = rnDiagLayer(rnDiagState(status: status))
+    #expect(rnDiagRow(layer, "channel load") == "2.15% / unknown")
+    #expect(rnDiagRow(layer, "airtime") == "unknown / 0.25%")
 }
 
 @MainActor @Test func rnDiagPlatformNames() {
