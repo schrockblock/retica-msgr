@@ -58,6 +58,14 @@ func syncMeshCoreSlot(_ state: inout AppFeature.State) -> Effect<AppFeature.Acti
     let willDial = state.meshCoreWillDial
     let radio = state.meshCoreRadioUUID
     let keyGeneration = state.meshCoreKeyGeneration
+    // 0. On, with a radio, but the key didn't read as present (a Keychain error, or `.absent`, which
+    // no user action produces: a key change replaces the item under the store's lock). That is not a
+    // turn-off, so it must not remove our channel (only turning MeshCore off does, plan Contract
+    // issue 4) or stop a running radio, which already holds the key it read at its start. Leave the
+    // slot and any swap as they are; the next sync that reads the key acts as usual.
+    if state.meshCoreAvailable, state.meshCoreEnabled, radio != nil, state.meshCoreKeyPresence != .present {
+        return .none
+    }
     let wanted = willDial ? radio.map { MeshCoreSlotIdentity(radio: $0, keyGeneration: keyGeneration) } : nil
 
     // 1. A stop (or removal) is already in flight: only retarget what follows it. Another `.stop`
@@ -74,8 +82,9 @@ func syncMeshCoreSlot(_ state: inout AppFeature.State) -> Effect<AppFeature.Acti
     // 3. No slot, or one with nothing running (never started, or stopped and its `driver.stop()`
     // returned): act now.
     if slot == nil || slot?.interface.isIdle == true {
-        if wanted == nil, slot != nil {
-            // An idle slot can't reach the radio, so our channel stays on it.
+        if wanted == nil, slot != nil, !state.meshCoreChannelKnownAbsent {
+            // An idle slot can't reach the radio, so our channel stays on it (unless it never got
+            // there: see `meshCoreChannelKnownAbsent`).
             state.meshCoreStatus.channelLeftOnRadio = true
         }
         if slot != nil, let wanted, wanted.radio == state.meshCoreSlotIdentity?.radio {
@@ -93,8 +102,9 @@ func syncMeshCoreSlot(_ state: inout AppFeature.State) -> Effect<AppFeature.Acti
         state.meshCoreSwap = MeshCoreSlotSwap(next: nil, startNext: true, removingChannel: true)
         return meshCore(.removeChannel)
     }
-    if wanted == nil {
-        // 5. Turned off while the radio isn't online: the channel can't be removed.
+    if wanted == nil, !state.meshCoreChannelKnownAbsent {
+        // 5. Turned off while the radio isn't online: the channel can't be removed. Not claimed
+        // when the last attempt found no free slot or old firmware: nothing was written.
         state.meshCoreStatus.channelLeftOnRadio = true
     }
     // 5 and 6. Stop, and finish at `.radioOffline`. A key change never removes the channel.
@@ -140,6 +150,7 @@ func finishMeshCoreSwap(_ state: inout AppFeature.State) -> Effect<AppFeature.Ac
 private func keepMeshCoreSlot(_ state: inout AppFeature.State, _ identity: MeshCoreSlotIdentity) {
     state.meshCoreSlotIdentity = identity
     state.meshCorePolicyFailed = false
+    state.meshCoreChannelKnownAbsent = false
     let live = state.node.client.endpoint.meshCore.map { MeshCoreStatus.Counters($0.counters) }
         ?? MeshCoreStatus.Counters()
     state.meshCoreStatus = MeshCoreStatus(counters: state.meshCoreRetiredCounters + live)
@@ -163,6 +174,7 @@ func installMeshCoreSlot(_ state: inout AppFeature.State, _ identity: MeshCoreSl
     // A different radio (or key) may succeed where a policy failure stopped the old one.
     if identity != nil {
         state.meshCorePolicyFailed = false
+        state.meshCoreChannelKnownAbsent = false
     }
     // A turn-off's outcome stays visible while there's no slot; a new slot clears it.
     let keepRecord = identity == nil
@@ -236,6 +248,8 @@ struct MeshCoreRadioReducer: Reducer {
             state.meshCoreStatus.channelSlot = details?.channelSlot
             state.meshCoreStatus.offlineReason = nil
             state.meshCoreStatus.adapterUnavailable = nil
+            // Online means our channel is in a slot on the radio.
+            state.meshCoreChannelKnownAbsent = false
             return .none
 
         case let .node(.client(.endpoint(.meshCore(.delegate(.radioOffline(reason)))))):
@@ -255,6 +269,11 @@ struct MeshCoreRadioReducer: Reducer {
                 return .none
             }
             state.meshCorePolicyFailed = true
+            // No free slot means the radio doesn't hold our key (the policy uses our slot when it
+            // finds one), and old firmware never gets a channel written. A refused or misplaced
+            // write may have left something, so it keeps the turn-off's "left on the radio" claim.
+            state.meshCoreChannelKnownAbsent = text == MeshCoreLiveMessage.noFreeSlot
+                || text == MeshCoreLiveMessage.firmwareTooOld
             // Amendment A10: "Connecting…" only while something will dial. With nothing up and
             // nothing else dialing, this radio was the only dial, and it won't retry until
             // Connect, so show Disconnected and its Connect button. (A Meshtastic or other

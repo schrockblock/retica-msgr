@@ -5,6 +5,7 @@ import ComposableArchitecture
 import ReTiCAInterfaces
 import ReTiCANode
 import ReTiCAKeychain
+import ReTiCAMeshCoreLive
 @testable import ReTiCAMsgrCore
 
 // The MeshCore radio slot (lane D Task 7). Every store here runs the real reducers down to
@@ -612,4 +613,107 @@ private func bothRadios(_ state: inout AppFeature.State) {
     #expect(slot(store) != nil)
     #expect(await mcWait { radio.startCount >= 1 })
     #expect(radio.calls.value == [startA])
+}
+
+/// Final-review Minor 1: a key that fails to read during a sync is not a turn-off. With the radio
+/// online, the sync leaves our channel on it and the radio running; once the key reads again,
+/// turn-off removes the channel as usual.
+@MainActor @Test func mcSlotKeyReadFailureWhileOnlineKeepsTheChannel() async {
+    let radio = MeshCoreRadioHarness()
+    let keychain = mcKeyedKeychain()
+    let removals = LockIsolated(0)
+    let store = await connectedStore(radio: radio, keychain: keychain, removeChannelSends: removals)
+    keychain.failRead(at: MeshCoreKeyStore.keyLocation, status: errSecInteractionNotAllowed)
+    await store.send(.foregrounded)
+    #expect(store.state.meshCoreKeyPresence == .unreadable)
+    #expect(store.state.meshCoreSwap == nil, "a key read failure started a removal or stop")
+    await mcSettle(store)
+    #expect(removals.value == 0, "a .removeChannel on a key read failure")
+    #expect(radio.calls.value == [startA])
+    #expect(slot(store)?.interface.isOnline == true)
+    #expect(!store.state.meshCoreStatus.channelRemoved)
+    #expect(!store.state.meshCoreStatus.channelLeftOnRadio)
+
+    keychain.clearFailures()
+    await store.send(.foregrounded)
+    #expect(store.state.meshCoreKeyPresence == .present)
+    await mcSettle(store)
+    #expect(radio.calls.value == [startA], "a good read with nothing changed leaves the radio running")
+    await store.send(.binding(.set(\.meshCoreEnabled, false)))
+    #expect(await mcEventually(store) { slot(store) == nil })
+    #expect(radio.calls.value == [startA, .removeChannel, .stop])
+    #expect(removals.value == 1)
+    #expect(store.state.meshCoreStatus.channelRemoved)
+}
+
+/// The connecting half of Minor 1: a key read failure doesn't stop a radio that is still connecting
+/// or claim a channel was left on it; a good read and a real turn-off then stop it.
+@MainActor @Test func mcSlotKeyReadFailureWhileConnectingDoesNotStop() async {
+    let radio = MeshCoreRadioHarness()
+    let keychain = mcKeyedKeychain()
+    let store = mcRadioStore(radio: mcRadioIDA, radioHarness: radio, keychain: keychain)
+    await store.send(.connectTapped)
+    #expect(await mcWait { radio.startCount >= 1 })
+    keychain.failRead(at: MeshCoreKeyStore.keyLocation, status: errSecInteractionNotAllowed)
+    await store.send(.foregrounded)
+    #expect(store.state.meshCoreSwap == nil, "a key read failure stopped the radio")
+    await mcSettle(store)
+    #expect(radio.calls.value == [startA])
+    #expect(slot(store) != nil)
+    #expect(!store.state.meshCoreStatus.channelLeftOnRadio)
+
+    keychain.clearFailures()
+    await store.send(.binding(.set(\.meshCoreEnabled, false)))
+    #expect(await mcEventually(store) { slot(store) == nil })
+    #expect(radio.calls.value == [startA, .stop])
+    #expect(store.state.meshCoreStatus.channelLeftOnRadio)
+}
+
+// MARK: - Turn-off after a policy failure (final-review Minor 3)
+
+/// Fails the newest attempt on `message`, as the live adapter does: yield, then finish.
+@MainActor
+private func failOnPolicy(_ store: TestStoreOf<AppFeature>, _ radio: MeshCoreRadioHarness, _ message: String) async {
+    radio.yieldToLatest(.unavailable(.other(message)))
+    radio.finishLatest()
+    #expect(await mcEventually(store) { store.state.meshCorePolicyFailed })
+}
+
+/// No free slot: the radio doesn't hold our key, so turning off claims nothing was left on it.
+@MainActor @Test func mcSlotTurningOffAfterNoFreeSlotClaimsNoChannelLeft() async {
+    let radio = MeshCoreRadioHarness()
+    let store = mcRadioStore(radio: mcRadioIDA, radioHarness: radio)
+    await store.send(.connectTapped)
+    #expect(await mcWait { radio.startCount >= 1 })
+    await failOnPolicy(store, radio, MeshCoreLiveMessage.noFreeSlot)
+    await store.send(.binding(.set(\.meshCoreEnabled, false)))
+    #expect(await mcEventually(store) { slot(store) == nil })
+    #expect(!store.state.meshCoreStatus.channelLeftOnRadio)
+    #expect(!store.state.meshCoreStatus.channelRemoved)
+}
+
+/// Old firmware, then Disconnect (an idle slot at turn-off): still nothing was written.
+@MainActor @Test func mcSlotTurningOffAfterFirmwareTooOldAndDisconnectClaimsNoChannelLeft() async {
+    let radio = MeshCoreRadioHarness()
+    let store = mcRadioStore(radio: mcRadioIDA, radioHarness: radio)
+    await store.send(.connectTapped)
+    #expect(await mcWait { radio.startCount >= 1 })
+    await failOnPolicy(store, radio, MeshCoreLiveMessage.firmwareTooOld)
+    await store.send(.disconnectTapped)
+    #expect(await mcEventually(store) { slot(store)?.interface.isIdle == true })
+    await store.send(.binding(.set(\.meshCoreEnabled, false)))
+    #expect(slot(store) == nil)
+    #expect(!store.state.meshCoreStatus.channelLeftOnRadio)
+}
+
+/// A refused channel write may have left something on the radio, so the claim stays.
+@MainActor @Test func mcSlotTurningOffAfterChannelSetupFailedClaimsTheChannelLeft() async {
+    let radio = MeshCoreRadioHarness()
+    let store = mcRadioStore(radio: mcRadioIDA, radioHarness: radio)
+    await store.send(.connectTapped)
+    #expect(await mcWait { radio.startCount >= 1 })
+    await failOnPolicy(store, radio, MeshCoreLiveMessage.channelSetupFailed)
+    await store.send(.binding(.set(\.meshCoreEnabled, false)))
+    #expect(await mcEventually(store) { slot(store) == nil })
+    #expect(store.state.meshCoreStatus.channelLeftOnRadio)
 }

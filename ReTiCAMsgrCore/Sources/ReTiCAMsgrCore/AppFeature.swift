@@ -376,6 +376,11 @@ public struct AppFeature {
         /// leave it alone. Cleared by Connect and by installing or restarting the slot for a
         /// different radio or key. Session-only, so a fresh launch tries once.
         public var meshCorePolicyFailed = false
+        /// The radio is known not to hold our channel: the last attempt failed on no free slot or
+        /// firmware too old, so nothing was written, and a turn-off doesn't claim it left a channel
+        /// on the radio. Cleared wherever `meshCorePolicyFailed` is (each of those lets a new attempt
+        /// write) and at `.radioOnline`. Session-only.
+        public var meshCoreChannelKnownAbsent = false
 
         /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
         /// link write. The one source for "what do we call this peer" when a link exists.
@@ -1282,6 +1287,7 @@ public struct AppFeature {
                 // have freed a slot or updated it): `.endpoint(.start)` below restarts it. This
                 // drains the radio's queue, which Settings' `requiredWarning` covers.
                 state.meshCorePolicyFailed = false
+                state.meshCoreChannelKnownAbsent = false
                 // Amendment A10 (final-review M1): only show "Connecting…" when something will
                 // actually dial.
                 if state.somethingWillDial {
