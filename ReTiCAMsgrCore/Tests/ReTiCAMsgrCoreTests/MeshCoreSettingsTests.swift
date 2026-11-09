@@ -222,6 +222,25 @@ private func mcSettingsWillDialNeedsEveryCondition(_ c: MCDialCase) {
     #expect(MeshCoreCopy.footer.contains("Everyone on the tunnel needs the same channel key"))
 }
 
+/// The radio's own button (or Connect) applies a change, and so does any reconnect the app makes by
+/// itself (a foreground or a push wake re-syncs the slot).
+@Test func mcCopyFooterSaysWhatAppliesAChange() {
+    #expect(MeshCoreCopy.changesApply == "Turning this on, or changing the radio or key, takes effect when you "
+            + "tap Connect MeshCore radio or Connect, and again whenever this app reconnects by itself, like "
+            + "when you come back to it or a notification wakes it.")
+    #expect(MeshCoreCopy.footer.hasSuffix(" " + MeshCoreCopy.changesApply))
+    #expect(MeshCoreCopy.changesApply.contains(MeshCoreCopy.connectButton))
+    #expect(!MeshCoreCopy.footer.contains("next Connect"))
+}
+
+/// The section sits last under "Experimental"; the toggle still names the radio.
+@Test func mcCopyHeaderIsExperimentalAndTheToggleNamesMeshCore() {
+    #expect(MeshCoreCopy.header == "Experimental")
+    #expect(MeshCoreCopy.toggle.contains("MeshCore"))
+    #expect(MeshCoreCopy.connectButton == "Connect MeshCore radio")
+    #expect(MeshCoreCopy.connecting == "Connecting…")
+}
+
 @Test func mcCopyTurnOffSaysWhatHappensWhenNotConnected() {
     #expect(MeshCoreCopy.turnOffNotice.contains("may stay on the radio"))
     #expect(MeshCoreCopy.turnOffNotice.contains("MeshCore app"))
@@ -243,7 +262,8 @@ private func mcSettingsWillDialNeedsEveryCondition(_ c: MCDialCase) {
 @Test func mcCopyAllListsTheNotices() {
     for text in [MeshCoreCopy.footer, MeshCoreCopy.requiredWarning, MeshCoreCopy.turnOffNotice,
                  MeshCoreCopy.radioChangeNotice, MeshCoreCopy.noKeyNotice, MeshCoreCopy.channelLeftNotice,
-                 MeshCoreCopy.shareBody, MeshCoreCopy.replaceMessage] {
+                 MeshCoreCopy.shareBody, MeshCoreCopy.replaceMessage, MeshCoreCopy.header,
+                 MeshCoreCopy.connectButton, MeshCoreCopy.connecting, MeshCoreCopy.changesApply] {
         #expect(MeshCoreCopy.all.contains(text), "\(text)")
     }
 }

@@ -4,10 +4,20 @@ import Foundation
 /// The MeshCore Settings section's user-facing text (spec 2026-11-07 §6). Debug-only, like the
 /// section itself: lane E removes the gate. Says "this app", never the app's name, which is pending.
 public enum MeshCoreCopy {
-    public static let header = "MeshCore"
+    /// The section sits last in Settings under this header; the toggle still names MeshCore.
+    public static let header = "Experimental"
     public static let toggle = "Connect through a MeshCore radio"
     public static let radioRow = "Radio"
     public static let chooseRadio = "Choose radio…"
+    /// The section's own Connect button (`radioConnectTapped(.meshCore)`), and its label while dialling.
+    public static let connectButton = "Connect MeshCore radio"
+    public static let connecting = "Connecting…"
+
+    /// The footer's last sentence: what applies a change.
+    public static let changesApply =
+        "Turning this on, or changing the radio or key, takes effect when you tap Connect MeshCore radio "
+        + "or Connect, and again whenever this app reconnects by itself, like when you come back to it "
+        + "or a notification wakes it."
 
     public static let keyRow = "Channel key"
     public static let keySet = "Set"
@@ -34,7 +44,7 @@ public enum MeshCoreCopy {
         + requiredWarning
         + " The radio must not be connected to another app, such as the MeshCore app, at the same time. "
         + "Choosing a radio pauses Bluetooth connections to nearby devices until the list closes. "
-        + "Off by default. Turning this on, or changing the radio or key, takes effect on the next Connect."
+        + "Off by default. " + changesApply
 
     public static let turnOffNotice =
         "Turning this off removes this app's channel from the radio if it's connected. "
@@ -60,7 +70,7 @@ public enum MeshCoreCopy {
 
     /// Every string above, for the test that no copy names the app.
     public static let all: [String] = [
-        header, toggle, radioRow, chooseRadio,
+        header, toggle, radioRow, chooseRadio, connectButton, connecting, changesApply,
         keyRow, keySet, keyNotSet, keyUnreadable, generateKey, pasteKey, copyKey, shareKey,
         replaceTitle, replaceMessage, replaceButton, cancelButton,
         requiredWarning, footer, turnOffNotice, radioChangeNotice, noKeyNotice, channelLeftNotice,

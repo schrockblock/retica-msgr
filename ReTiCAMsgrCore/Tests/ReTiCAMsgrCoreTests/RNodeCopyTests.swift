@@ -14,6 +14,7 @@ import Testing
 @Test func rnCopyAllListsEveryString() {
     let constants = [
         RNodeCopy.header, RNodeCopy.toggle, RNodeCopy.radioRow, RNodeCopy.chooseRadio,
+        RNodeCopy.connectButton, RNodeCopy.connecting, RNodeCopy.changesApply,
         RNodeCopy.frequencyRow, RNodeCopy.frequencyPrompt, RNodeCopy.bandwidthRow,
         RNodeCopy.spreadingFactorRow, RNodeCopy.codingRateRow, RNodeCopy.txPowerRow,
         RNodeCopy.incompleteNotice, RNodeCopy.boardsNotice, RNodeCopy.pairingNotice, RNodeCopy.footer,
@@ -91,7 +92,19 @@ import Testing
     #expect(RNodeCopy.pairingNotice.contains("reconnects by itself"))
 }
 
-@Test func rnCopyFooterSaysChangesWaitForConnect() {
-    #expect(RNodeCopy.footer.hasSuffix("Changes take effect on the next Connect."))
+/// The radio's own button (or Connect) applies a change, and so does any reconnect the app makes by
+/// itself (a foreground or a push wake re-syncs the slot).
+@Test func rnCopyFooterSaysWhatAppliesAChange() {
+    #expect(RNodeCopy.changesApply == "Changes take effect when you tap Connect RNode or Connect, and again "
+            + "whenever this app reconnects by itself, like when you come back to it or a notification wakes it.")
+    #expect(RNodeCopy.footer.hasSuffix(" " + RNodeCopy.changesApply))
+    #expect(RNodeCopy.changesApply.contains(RNodeCopy.connectButton))
+    #expect(!RNodeCopy.footer.contains("next Connect"))
+}
+
+@Test func rnCopyConnectButtonLabels() {
+    #expect(RNodeCopy.connectButton == "Connect RNode")
+    #expect(RNodeCopy.connecting == "Connecting…")
+    #expect(RNodeCopy.pairingNotice.contains("tap Connect RNode"))
 }
 #endif

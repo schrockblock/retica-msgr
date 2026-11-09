@@ -656,6 +656,9 @@ public struct AppFeature {
         case push(PushFeature.Action)
         case connectTapped
         case disconnectTapped
+        /// A radio section's own Connect button in Settings: restarts that one radio with the
+        /// current settings, and nothing else (`connectRadio`).
+        case radioConnectTapped(RadioKind)
         case openConversation(String)
         /// A tap on a group row: opens it as a group thread.
         case openGroupConversation(String)
@@ -1401,6 +1404,11 @@ public struct AppFeature {
                 state.meshCoreSwap?.startNext = false
                 state.rnodeSwap?.startNext = false
                 return .send(.node(.client(.endpoint(.stop))))
+
+            case let .radioConnectTapped(kind):
+                // Dropped under the radio picker, as Connect is: the button sits behind the sheet.
+                guard state.radioPicker == nil else { return .none }
+                return connectRadio(kind, &state)
 
             case let .node(.client(.endpoint(.transport(.interfaceConnected(interfaceID, _))))):
                 // Per-interface tracking (A4): record WHICH interface came up. TCP client, each
@@ -4063,27 +4071,9 @@ private func propagationSyncEffect(_ state: AppFeature.State) -> Effect<AppFeatu
 /// the user can fix).
 private func redialDownNodes(_ state: inout AppFeature.State, restartListener: Bool) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
-    // Restart a stopped or unavailable radio (spec 2026-10-16 §7 lane E). `.start` is ignored by a
-    // connecting or online interface, and MeshtasticKit reconnects a dropped radio itself. Never
-    // the slot a swap is replacing: a `.start` reaching it during its `driver.stop()` would restart
-    // the old radio. Unlike BLE it is not deferred while the picker is open: a MeshtasticSession
-    // connects by retrieval and never scans.
-    let radioRestart: Effect<AppFeature.Action> =
-        state.meshtasticSwap == nil && state.node.client.endpoint.meshtastic != nil
-            ? .send(.node(.client(.endpoint(.meshtastic(.start))))) : .none
-    // The MeshCore radio the same way (spec 2026-11-07 §6, lane D), and not after a policy failure
-    // (no free slot, old firmware, a refused channel write): every attempt's handshake drains the
-    // radio's queue and can't succeed until the user acts. Only Connect, or a new radio or key,
-    // retries it. A MeshCore session never scans either, so the picker doesn't defer this.
-    let meshCoreRestart: Effect<AppFeature.Action> =
-        state.meshCoreSwap == nil && state.node.client.endpoint.meshCore != nil && !state.meshCorePolicyFailed
-            ? .send(.node(.client(.endpoint(.meshCore(.start))))) : .none
-    // The RNode the same way (spec 2026-11-08 §6, lane D), and not after a failure only the user can
-    // fix (`rnodeNeedsUserAction`): only Connect, or a new radio or parameters, retries it. An RNode
-    // session never scans either, so the picker doesn't defer this.
-    let rnodeRestart: Effect<AppFeature.Action> =
-        state.rnodeSwap == nil && state.node.client.endpoint.rnode != nil && !state.rnodeNeedsUserAction
-            ? .send(.node(.client(.endpoint(.rnode(.start))))) : .none
+    let radioRestart = radioRestartEffect(.meshtastic, state)
+    let meshCoreRestart = radioRestartEffect(.meshCore, state)
+    let rnodeRestart = radioRestartEffect(.rnode, state)
     let down = tcpDownIDs(state)
     let noClientSlots = state.node.client.endpoint.tcpClients.isEmpty
     guard !down.isEmpty || noClientSlots else {
@@ -4114,6 +4104,67 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
     }
     return .concatenate(sync.removals, sync.radios, .merge(dials + [radioRestart, meshCoreRestart, rnodeRestart]),
                         heldPushSyncEffects(state))
+}
+
+/// The `.start` a re-dial (and a radio's own Connect) sends one radio slot, or `.none`.
+///
+/// Restart a stopped or unavailable radio (spec 2026-10-16 §7 lane E). `.start` is ignored by a
+/// connecting or online interface, and MeshtasticKit reconnects a dropped radio itself. Never the
+/// slot a swap is replacing: a `.start` reaching it during its `driver.stop()` would restart the old
+/// radio. Unlike BLE it is not deferred while the picker is open: a MeshtasticSession connects by
+/// retrieval and never scans.
+///
+/// The MeshCore radio the same way (spec 2026-11-07 §6, lane D), and not after a policy failure (no
+/// free slot, old firmware, a refused channel write): every attempt's handshake drains the radio's
+/// queue and can't succeed until the user acts. Only Connect, or a new radio or key, retries it. A
+/// MeshCore session never scans either, so the picker doesn't defer this.
+///
+/// The RNode the same way (spec 2026-11-08 §6, lane D), and not after a failure only the user can fix
+/// (`rnodeNeedsUserAction`): only Connect, or a new radio or parameters, retries it. An RNode session
+/// never scans either, so the picker doesn't defer this.
+private func radioRestartEffect(_ kind: RadioKind, _ state: AppFeature.State) -> Effect<AppFeature.Action> {
+    let endpoint = state.node.client.endpoint
+    switch kind {
+    case .meshtastic:
+        return state.meshtasticSwap == nil && endpoint.meshtastic != nil
+            ? .send(.node(.client(.endpoint(.meshtastic(.start))))) : .none
+    case .meshCore:
+        return state.meshCoreSwap == nil && endpoint.meshCore != nil && !state.meshCorePolicyFailed
+            ? .send(.node(.client(.endpoint(.meshCore(.start))))) : .none
+    case .rnode:
+        return state.rnodeSwap == nil && endpoint.rnode != nil && !state.rnodeNeedsUserAction
+            ? .send(.node(.client(.endpoint(.rnode(.start))))) : .none
+    }
+}
+
+/// A radio section's own Connect in Settings: that one radio, with the current settings, whether or
+/// not anything else is connected. Clears the radio's "needs the user" flags (the user may have
+/// paired, updated or reconfigured it), syncs its slot as `syncEndpointNodes` does (install, swap or
+/// remove), then restarts it as a re-dial does. TCP nodes, the listener, BLE and the other radios
+/// are left alone. Shows Connecting… only from Disconnected, and only when this radio will dial
+/// (amendment A10); anything else up keeps the overall state as it is.
+private func connectRadio(_ kind: RadioKind, _ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
+    let sync: Effect<AppFeature.Action>
+    let willDial: Bool
+    switch kind {
+    case .meshtastic:
+        sync = syncMeshtasticSlot(&state)
+        willDial = state.meshtasticWillDial
+    case .meshCore:
+        state.meshCorePolicyFailed = false
+        state.meshCoreChannelKnownAbsent = false
+        // After the sync: it re-reads the key's presence, which `meshCoreWillDial` checks.
+        sync = syncMeshCoreSlot(&state)
+        willDial = state.meshCoreWillDial
+    case .rnode:
+        state.rnodeNeedsUserAction = false
+        sync = syncRNodeSlot(&state)
+        willDial = state.rnodeWillDial
+    }
+    if state.connection == .disconnected, willDial {
+        state.connection = .connecting
+    }
+    return .concatenate(sync, radioRestartEffect(kind, state))
 }
 
 // Seed `reachablePeers` (the Send gate, "a send would route now") from learned destinations that
