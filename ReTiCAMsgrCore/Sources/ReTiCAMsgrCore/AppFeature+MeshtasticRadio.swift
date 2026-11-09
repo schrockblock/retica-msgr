@@ -28,7 +28,7 @@ extension AppFeature.State {
     /// (Connect clears the flag before reading this).
     var somethingWillDial: Bool {
         !enabledNodes.isEmpty || listenEnabled || bleEnabled || meshtasticWillDial
-            || (meshCoreWillDial && !meshCorePolicyFailed)
+            || (meshCoreWillDial && !meshCorePolicyFailed) || rnodeWillDial
     }
 }
 

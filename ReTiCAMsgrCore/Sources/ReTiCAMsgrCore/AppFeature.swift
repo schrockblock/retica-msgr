@@ -411,6 +411,12 @@ public struct AppFeature {
         /// on the radio. Cleared wherever `meshCorePolicyFailed` is (each of those lets a new attempt
         /// write) and at `.radioOnline`. Session-only.
         public var meshCoreChannelKnownAbsent = false
+        /// An RNode slot replacement in flight (spec 2026-11-08 Contract 3): the old slot was sent
+        /// `.stop` and is dropped at its `.radioOffline` (`finishRNodeSwap`). Session-only.
+        public var rnodeSwap: RNodeSlotSwap? = nil
+        /// Counters of RNode slots already replaced, so Diagnostics stays cumulative since launch.
+        /// Session-only.
+        public var rnodeRetiredCounters = RNodeStatus.Counters()
 
         /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
         /// link write. The one source for "what do we call this peer" when a link exists.
@@ -3258,6 +3264,7 @@ public struct AppFeature {
         RNodeSettingsReducer()
         MeshtasticRadioReducer()
         MeshCoreRadioReducer()
+        RNodeRadioReducer()
         BLESlotReducer()
     }
 
@@ -3853,7 +3860,7 @@ private func migrateNodesIfNeeded(_ state: inout AppFeature.State, makeID: () ->
 /// still has an enabled entry kept as it is, so a re-dial never tears down a live socket. The
 /// listener and BLE slots follow their settings exactly as before (a running BLE slot is stopped
 /// before it is dropped). Returns the removal effects, including that BLE `.stop` (callers
-/// `.concatenate` them before any dial), the ids of the slots added, and the two radio
+/// `.concatenate` them before any dial), the ids of the slots added, and the three radio
 /// slots' effects, merged (run with the removals).
 private func syncEndpointNodes(_ state: inout AppFeature.State)
     -> (removals: Effect<AppFeature.Action>, added: [InterfaceID], radios: Effect<AppFeature.Action>) {
@@ -3913,8 +3920,10 @@ private func syncEndpointNodes(_ state: inout AppFeature.State)
     // §7 lane E). Dropping a running slot is the amended Contract 3 protocol — `.stop`, wait for
     // `.radioOffline`, then replace — so it is an effect the caller runs, never a direct `= nil`.
     // The MeshCore slot follows `meshCoreWillDial` the same way (spec 2026-11-07 §6, lane D). Each
-    // radio's swap is its own, so one radio's stop never touches the other.
-    let radios: Effect<AppFeature.Action> = .merge(syncMeshtasticSlot(&state), syncMeshCoreSlot(&state))
+    // radio's swap is its own, so one radio's stop never touches the other. The RNode slot follows
+    // `rnodeWantedConfig` with Meshtastic's replace-on-change swap (spec 2026-11-08 §6, lane D).
+    let radios: Effect<AppFeature.Action> = .merge(syncMeshtasticSlot(&state), syncMeshCoreSlot(&state),
+                                                   syncRNodeSlot(&state))
 
     let removals: Effect<AppFeature.Action> = .merge(stale.map {
         .send(.node(.client(.endpoint(.removeTCPClient($0)))))

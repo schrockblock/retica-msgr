@@ -41,6 +41,13 @@ public struct RNodeStatus: Equatable, Sendable {
             self.hardwareErrors = hardwareErrors
         }
 
+        /// The RNode endpoint's counters (`RNodeEndpoint.State.counters`), field by field.
+        public init(_ counters: RNodeCounters) {
+            self.init(received: counters.received, sent: counters.sent, oversize: counters.oversize,
+                      queueFull: counters.queueFull, sendFailed: counters.sendFailed,
+                      hardwareErrors: counters.hardwareErrors)
+        }
+
         public static func + (lhs: Self, rhs: Self) -> Self {
             Self(received: lhs.received + rhs.received, sent: lhs.sent + rhs.sent,
                  oversize: lhs.oversize + rhs.oversize, queueFull: lhs.queueFull + rhs.queueFull,
