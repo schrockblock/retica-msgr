@@ -82,3 +82,7 @@ struct RadioPickerView: View {
 #Preview("MeshCore") {
     RadioPickerView(store: Store(initialState: RadioPickerFeature.State(kind: .meshCore)) { RadioPickerFeature() })
 }
+
+#Preview("RNode") {
+    RadioPickerView(store: Store(initialState: RadioPickerFeature.State(kind: .rnode)) { RadioPickerFeature() })
+}

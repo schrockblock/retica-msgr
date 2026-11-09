@@ -33,8 +33,15 @@ public struct RadioPickerFeature {
 
         /// The footer while a scan runs.
         public var scanningMessage: String {
-            let name = kind == .meshCore ? "MeshCore" : "Meshtastic"
-            return "Scanning for \(name) radios… Make sure the radio is on and not connected to another app."
+            switch kind {
+            case .meshtastic:
+                "Scanning for Meshtastic radios… Make sure the radio is on and not connected to another app."
+            case .meshCore:
+                "Scanning for MeshCore radios… Make sure the radio is on and not connected to another app."
+            case .rnode:
+                "Scanning for RNodes… Only RNodes with Bluetooth LE appear. Make sure the radio is on, its "
+                    + "Bluetooth is on, and it isn't connected to another app."
+            }
         }
 
         /// The footer when the scan ended without finding anything.
@@ -44,6 +51,9 @@ public struct RadioPickerFeature {
                 RadioPickerFeature.scanEndedEmptyMessage
             case .meshCore:
                 "Scanning stopped before any radio was found. MeshCore support may not be installed in "
+                    + "this build, or Bluetooth may be off or not allowed."
+            case .rnode:
+                "Scanning stopped before any radio was found. RNode support may not be installed in "
                     + "this build, or Bluetooth may be off or not allowed."
             }
         }

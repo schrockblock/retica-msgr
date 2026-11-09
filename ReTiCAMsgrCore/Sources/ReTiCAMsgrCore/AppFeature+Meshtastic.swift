@@ -71,6 +71,7 @@ struct MeshtasticSettingsReducer: Reducer {
                 case .meshtastic:
                     state.$meshtasticRadioID.withLock { $0 = radio.id.uuidString }
                     state.$meshtasticRadioName.withLock { $0 = radio.name }
+                case .rnode: break  // stored by Task 3
                 case nil:
                     // A swipe dismiss landed before this delegate: no picker, so no kind to store under.
                     break
