@@ -335,6 +335,16 @@ public enum AppDatabase {
                 t.column("stampValue", .double)         // nullable — absent when no network stamp
             }
         }
+        m.registerMigration("createTickets") { db in
+            // Stamp tickets peers gave us (LXMF 1.3.0): mirrors LXMFNode.State.outboundTickets, one
+            // row per peer (see TicketRow). Written per event, pruned at launch before the read.
+            // `expires` is REAL: the peer sends it as a float.
+            try db.create(table: "ticketRows") { t in
+                t.primaryKey("destinationHashHex", .text).notNull()
+                t.column("ticket", .blob).notNull()
+                t.column("expires", .double).notNull()
+            }
+        }
         return m
     }
 

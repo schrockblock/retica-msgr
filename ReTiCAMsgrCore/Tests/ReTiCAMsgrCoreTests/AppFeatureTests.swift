@@ -1378,6 +1378,99 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(reconstructed.stamp != nil, "Sent message must carry a delivery stamp (cost \(stampCost) was persisted and rehydrated)")
 }
 
+/// A ticket a peer gave us survives a restart and the next send to that peer is stamped with it.
+///
+/// Anti-vacuity (one mutation per clause):
+///   "a received ticket is written": the `TicketRow` exists after session 1.
+///     Mutation 1: drop the write in the `.ticketReceived` handler → no row → first #expect fails.
+///   "survives the restart and is used": the session-2 send carries the ticket stamp.
+///     Mutation 2: drop the `.rehydrateTickets` forward at launch → the send is unstamped
+///     (no cost known, no ticket) → stamp is nil → the stamp #expect fails.
+@MainActor @Test func receivedTicketSurvivesRestartAndStampsTheNextSend() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let peer = Identity()
+    let peerHash = LXMessage.deliveryHash(identityHash: peer.hash)
+    let peerHex = peerHash.hexString
+    let ticketBytes = Data((0..<16).map { UInt8(0xA0 + $0) })
+    let expires = Date(timeIntervalSince1970: 1700000000 + 86_400)
+
+    // --- Session 1: the peer's ticket arrives ---
+    let store1 = makeStore(db, identity: me)
+    await store1.send(.node(.client(.delegate(.ticketReceived(
+        destinationHash: peerHash, ticket: LXMFNode.Ticket(ticket: ticketBytes, expires: expires))))))
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store1.finish()
+
+    let rows = try await db.read { try TicketRow.all.fetchAll($0) }
+    #expect(rows == [TicketRow(destinationHashHex: peerHex, ticket: ticketBytes,
+                               expires: expires.timeIntervalSince1970)],
+            "the received ticket must be written, one row for the peer")
+
+    // --- Session 2: relaunch on the same DB ---
+    let store2 = makeStore(db, identity: me) { s in
+        s.openPeerHex = peerHex
+        s.draft = "hi"
+        s.reachablePeers.insert(peerHex)
+    }
+    await store2.send(.onLaunch)
+    await store2.receive { if case .node(.client(.rehydrateTickets)) = $0 { return true }; return false }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store2.skipReceivedActions(strict: false)
+    #expect(store2.state.node.client.outboundTickets[peerHash]?.ticket == ticketBytes)
+
+    await store2.send(.sendTapped)
+    var opportunisticPayload: Data?
+    await store2.receive { action in
+        if case let .node(.client(.router(.delegate(.sendOpportunistic(dest, payload, _))))) = action,
+           dest == peerHash {
+            opportunisticPayload = payload
+            return true
+        }
+        return false
+    }
+    await store2.finish()
+    await store2.skipReceivedActions(strict: false)
+
+    let payload = try #require(opportunisticPayload, "sendOpportunistic must have fired")
+    let sent = try #require(LXMessage.fromOpportunistic(destinationHash: peerHash, payload: payload))
+    let stamp = try #require(sent.stamp, "the send must carry a stamp")
+    #expect(stamp.count == 16)
+    #expect(stamp == LXMessage.ticketStamp(ticket: ticketBytes, messageHash: sent.hash),
+            "the stamp must be the ticket stamp, not proof-of-work")
+}
+
+/// An expired ticket row is deleted at launch and not rehydrated; an unexpired one is.
+///
+/// Anti-vacuity: Mutation 1: drop the `delete` before the read → the expired row stays on disk
+/// → the row-count #expect fails. Mutation 2: drop the `.rehydrateTickets` forward → the `receive`
+/// fails and the fresh ticket is absent from state. The library also drops an expired ticket, so
+/// the state #expect on the expired peer would not catch a missing delete; the row-count one does.
+@MainActor @Test func expiredTicketRowIsPrunedAtLaunch() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let expiredPeer = LXMessage.deliveryHash(identityHash: Identity().hash)
+    let freshPeer = LXMessage.deliveryHash(identityHash: Identity().hash)
+    let ticketBytes = Data(repeating: 0x5C, count: 16)
+    try await db.write { db in
+        try TicketRow.insert { TicketRow(destinationHashHex: expiredPeer.hexString, ticket: ticketBytes,
+                                         expires: 1700000000 - 1) }.execute(db)
+        try TicketRow.insert { TicketRow(destinationHashHex: freshPeer.hexString, ticket: ticketBytes,
+                                         expires: 1700000000 + 3600) }.execute(db)
+    }
+
+    let store = makeStore(db, identity: Identity())
+    await store.send(.onLaunch)
+    await store.receive { if case .node(.client(.rehydrateTickets)) = $0 { return true }; return false }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store.skipReceivedActions(strict: false)
+
+    let remaining = try await db.read { try TicketRow.all.fetchAll($0) }
+    #expect(remaining.map(\.destinationHashHex) == [freshPeer.hexString],
+            "the expired row must be deleted at launch, the unexpired one kept")
+    #expect(store.state.node.client.outboundTickets[expiredPeer] == nil)
+    #expect(store.state.node.client.outboundTickets[freshPeer]?.ticket == ticketBytes)
+}
+
 // MARK: - Public keys (announce row tap)
 //
 // The tap reads the key from the peer's announce in the learned table; it sends nothing. The former

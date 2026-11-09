@@ -1055,6 +1055,24 @@ public struct AppFeature {
                         guard !known.isEmpty else { return }
                         await send(.node(.client(.endpoint(.transport(.rehydrateKnownDestinations(known))))))
                     },
+                    .run { [database, now = date.now.timeIntervalSince1970] send in
+                        // Restore the stamp tickets peers gave us, so the first message to such a peer
+                        // after a relaunch needs no proof-of-work. Prune BEFORE the read: the library
+                        // drops an expired ticket on rehydration but cannot delete the row, so without
+                        // this delete it would be re-read and re-skipped at every launch.
+                        let rows = try await database.write { db in
+                            try TicketRow.where { $0.expires < now }.delete().execute(db)
+                            return try TicketRow.all.fetchAll(db)
+                        }
+                        var outbound: [Data: LXMFNode.Ticket] = [:]
+                        for row in rows {
+                            guard let hash = Data(hexString: row.destinationHashHex), row.expires.isFinite else { continue }
+                            outbound[hash] = LXMFNode.Ticket(ticket: row.ticket,
+                                                             expires: Date(timeIntervalSince1970: row.expires))
+                        }
+                        guard !outbound.isEmpty else { return }
+                        await send(.node(.client(.rehydrateTickets(outbound: outbound, inbound: [:], lastDeliveries: [:]))))
+                    },
                     .run { [database, attachmentStore, attachmentCacheEvictor, now = date.now] send in
                         // Nothing ran while suspended or dead: purge what fell due and arm the sleeper.
                         try await purgeAndReschedule(database, attachmentStore, attachmentCacheEvictor, now: now, send)
@@ -1336,6 +1354,10 @@ public struct AppFeature {
                 // still announces as nil.
                 let launchName = state.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
                 let alreadyRegistered = state.node.client.deliveryDestinationHash != nil
+                // The app deliberately does not enable ticket issuing (`.setIssueTickets` stays at its
+                // default, off): it advertises no stamp cost of its own (`stampCost: nil` below), so a
+                // ticket from it would save a peer nothing. It only remembers tickets peers give it
+                // (`TicketRow`).
                 var effects: [Effect<Action>] = [
                     .send(.node(.client(.setDisplayName(launchName.isEmpty ? nil : launchName, stampCost: nil)))),
                     // Contract 4 (spec 2026-10-16): only the FIRST interface registers the delivery
@@ -2135,6 +2157,21 @@ public struct AppFeature {
                     },
                     groupDispatch
                 )
+
+            case let .node(.client(.delegate(.ticketReceived(destinationHash, ticket)))):
+                // A peer gave us a stamp ticket; the library already holds it in `outboundTickets`
+                // and stamps the next send to that peer with it. Persist it (one row per peer, the
+                // newest replaces the old) so that survives a relaunch. See `TicketRow`.
+                guard ticket.expires.timeIntervalSince1970.isFinite else { return .none }
+                let row = TicketRow(destinationHashHex: destinationHash.hexString,
+                                    ticket: ticket.ticket,
+                                    expires: ticket.expires.timeIntervalSince1970)
+                return .run { [database] _ in
+                    try await database.write { db in
+                        try TicketRow.where { $0.destinationHashHex.eq(row.destinationHashHex) }.delete().execute(db)
+                        try TicketRow.insert { row }.execute(db)
+                    }
+                }
 
             case let .node(.client(.delegate(.messageReceived(m, validated, method)))):
                 let incomingPeer = m.sourceHash.hexString
