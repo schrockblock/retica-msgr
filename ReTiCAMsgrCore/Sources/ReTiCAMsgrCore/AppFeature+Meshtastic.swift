@@ -35,7 +35,7 @@ extension AppFeature.State {
 }
 
 /// Opens the radio picker for `kind` on `selected` and pauses a running BLE interface. Shared by
-/// the Meshtastic and MeshCore "Choose radio…" arms: BLE pauses the same way for both.
+/// the Meshtastic, MeshCore and RNode "Choose radio…" arms: BLE pauses the same way for both.
 func openRadioPicker(_ state: inout AppFeature.State, kind: RadioKind, selected: UUID?) -> Effect<AppFeature.Action> {
     guard state.radioPicker == nil else { return .none }
     state.radioPicker = RadioPickerFeature.State(kind: kind, selectedID: selected)
@@ -62,6 +62,10 @@ struct MeshtasticSettingsReducer: Reducer {
                 guard state.meshCoreAvailable else { return .none }
                 return openRadioPicker(&state, kind: .meshCore, selected: state.meshCoreRadioUUID)
 
+            case .chooseRNodeRadioTapped:
+                guard state.rnodeAvailable else { return .none }
+                return openRadioPicker(&state, kind: .rnode, selected: state.rnodeRadioUUID)
+
             case let .radioPicker(.presented(.delegate(.selected(radio)))):
                 // The child state is still present here: dismiss comes after the delegate action.
                 switch state.radioPicker?.kind {
@@ -71,7 +75,9 @@ struct MeshtasticSettingsReducer: Reducer {
                 case .meshtastic:
                     state.$meshtasticRadioID.withLock { $0 = radio.id.uuidString }
                     state.$meshtasticRadioName.withLock { $0 = radio.name }
-                case .rnode: break  // stored by Task 3
+                case .rnode:
+                    state.$rnodeRadioID.withLock { $0 = radio.id.uuidString }
+                    state.$rnodeRadioName.withLock { $0 = radio.name }
                 case nil:
                     // A swipe dismiss landed before this delegate: no picker, so no kind to store under.
                     break
