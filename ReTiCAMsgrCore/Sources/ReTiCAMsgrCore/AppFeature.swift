@@ -427,7 +427,7 @@ public struct AppFeature {
             self.node = LXMFServiceNode.State(
                 identity: identity,
                 endpoint: TransportEndpoint.State(),
-                minStampCost: LXMFPropagation.defaultPropagationStampCost
+                targetStampCost: LXMFPropagation.defaultPropagationStampCost
             )
             self.push = PushFeature.State(
                 identity: identity, bundleID: bundleID, environment: pushEnvironment, storage: pushStorage,

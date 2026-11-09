@@ -355,6 +355,20 @@ public enum AppDatabase {
                 t.add(column: "ratchetReceived", .datetime)
             }
         }
+        m.registerMigration("learnedPeerStampCostToReal") { db in
+            // Stamp costs are fractional since LXMF 1.3.0 (8.5 is a valid cost), so the column
+            // becomes REAL. Existing INTEGER values are copied across as the same number.
+            try db.alter(table: "learnedPeerRows") { t in
+                t.add(column: "stampCostReal", .double)
+            }
+            try db.execute(sql: "UPDATE learnedPeerRows SET stampCostReal = CAST(stampCost AS REAL)")
+            try db.alter(table: "learnedPeerRows") { t in
+                t.drop(column: "stampCost")
+            }
+            try db.alter(table: "learnedPeerRows") { t in
+                t.rename(column: "stampCostReal", to: "stampCost")
+            }
+        }
         return m
     }
 

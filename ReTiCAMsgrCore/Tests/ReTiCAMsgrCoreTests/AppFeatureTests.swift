@@ -713,11 +713,11 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 /// This pins advertised-equals-enforced: the same constant feeds both the announce app-data and
 /// the inbound-offer validator (see LXMFServiceNode.State.init comment).
 /// `LXMFServiceNode.State.minStampCost` was removed in `08f1931` (single source of truth lives at
-/// `pn.store.minStampCost`); test updated accordingly (`AppFeatureTests`, `defaultStampCostIsProductionDefault`).
+/// `pn.store.targetStampCost`); test updated accordingly (`AppFeatureTests`, `defaultStampCostIsProductionDefault`).
 @MainActor @Test func defaultStampCostIsProductionDefault() async throws {
     let db = try AppDatabase.makeInMemory()
     let store = makeStore(db, identity: Identity())
-    #expect(store.state.node.pn.store.minStampCost == LXMFPropagation.defaultPropagationStampCost)
+    #expect(store.state.node.pn.store.targetStampCost == LXMFPropagation.defaultPropagationStampCost)
 }
 
 /// Turning node-mode on enables serving and registers/announces lxmf.propagation.
@@ -1094,8 +1094,8 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
         // Lower enforcement to match the cheap fixture stamp — this test is about rehydrate
         // mechanics, not the stamp cost policy (see defaultStampCostIsProductionDefault for that).
         // `LXMFServiceNode.State.minStampCost` was removed in `08f1931`; the single source of
-        // truth is `pn.store.minStampCost` (`propagationStoreRehydratesOnLaunch`).
-        $0.node.pn.store.minStampCost = 4
+        // truth is `pn.store.targetStampCost` (`propagationStoreRehydratesOnLaunch`).
+        $0.node.pn.store.targetStampCost = 4
     }
     await store.send(.setNodeMode(true))
 
@@ -1307,7 +1307,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let peer = Identity()
     let peerDeliveryHash = LXMessage.deliveryHash(identityHash: peer.hash)
     let peerDeliveryHex = peerDeliveryHash.hexString
-    let stampCost = 8    // low cost — fast generation, well below the 20-round ceiling
+    let stampCost = 8.0    // low cost — fast generation, well below the 20-round ceiling
 
     // --- Session 1: simulate an announce from peer (writes LearnedPeerRow) ---
     let store1 = makeStore(db, identity: me)

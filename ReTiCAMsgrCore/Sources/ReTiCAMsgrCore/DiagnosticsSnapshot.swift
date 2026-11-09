@@ -457,6 +457,15 @@ extension DiagnosticsSnapshot {
 // MARK: - Peers
 
 extension DiagnosticsSnapshot {
+    /// A stamp cost for display: whole numbers without a trailing ".0" (8 -> "8"), fractional
+    /// ones as Swift prints them (8.5 -> "8.5"). Non-finite values print as Swift prints them.
+    static func formatStampCost(_ cost: Double) -> String {
+        if cost.isFinite, cost == cost.rounded(), abs(cost) < 1e15 {
+            return String(Int64(cost))
+        }
+        return String(cost)
+    }
+
     /// F20 cross-check. `learnedPeers` is persisted by the app; the path table that holds the
     /// peer's IDENTITY and route is not. After a cold launch the Announce tab can list peers
     /// the app cannot message — opportunistic send needs the identity, `openLink` needs the
@@ -470,7 +479,7 @@ extension DiagnosticsSnapshot {
         let entries = peers
             .map { hash, peer -> (hash: Data, hasPath: Bool, row: Row) in
                 let hasPath = learned[hash] != nil
-                let cost = peer.stampCost.map(String.init) ?? "-"
+                let cost = peer.stampCost.map(formatStampCost) ?? "-"
                 // `heard` is the whole point of the cross-check below: it separates "announced
                 // 3s ago and we simply have not filed the path yet" from "restored from disk 40
                 // days ago and this peer may not exist any more". Derived from the INJECTED

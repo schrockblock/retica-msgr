@@ -26,14 +26,14 @@ public struct LearnedPeerRow: Equatable, Sendable {
     /// Display name from the peer's announce app-data, or nil if absent.
     public var displayName: String?
     /// Stamp cost the peer advertised, or nil.
-    public var stampCost: Int?
+    public var stampCost: Double?
     /// Whether the peer's announce indicated compression support.
     public var supportsCompression: Bool
     /// Wall-clock time the entry was last written. Consumed by `LXMFNode.rehydrateLearnedPeers`
     /// to sweep entries older than `LXMFNode.stampCostExpiry`.
     public var learnedAt: Date
 
-    public init(destinationHashHex: String, displayName: String?, stampCost: Int?,
+    public init(destinationHashHex: String, displayName: String?, stampCost: Double?,
                 supportsCompression: Bool, learnedAt: Date) {
         self.destinationHashHex = destinationHashHex
         self.displayName = displayName
