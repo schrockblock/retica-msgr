@@ -25,12 +25,16 @@ extension AppFeature.State {
                            txPowerDBm: rnodeTXPowerDBm)
     }
 
-    /// Text problems first, then range problems. An unreadable frequency is stored as nil, so its
-    /// `.frequencyMissing` is left out: the field's one message is that the text can't be read.
+    /// Text problems first, then range problems. A field with unreadable text gets that one message:
+    /// an unreadable frequency is stored as nil, so its `.frequencyMissing` is left out, and an
+    /// unreadable bandwidth's `.bandwidthOutOfRange` is about a stored value the field doesn't show.
     public var rnodeSettingsProblems: [RNodeSettingsProblem] {
         var range = rnodeSettings.problems
         if rnodeTextProblems.contains(.frequencyUnreadable) {
             range.removeAll { $0 == .frequencyMissing }
+        }
+        if rnodeTextProblems.contains(.bandwidthUnreadable) {
+            range.removeAll { $0 == .bandwidthOutOfRange }
         }
         return rnodeTextProblems + range
     }

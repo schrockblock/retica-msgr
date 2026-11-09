@@ -225,10 +225,25 @@ func rnSettingsBandwidthTextRejects(_ text: String) {
     #expect(store.state.rnodeSettingsProblems == [.frequencyMissing])
 }
 
+/// A non-default bandwidth is planted, so "keeps" can't pass as "resets to the default".
 @MainActor @Test func rnSettingsUnreadableBandwidthKeepsTheStoredValue() async {
-    let store = rnStore()
+    let defaults = UserDefaults.inMemory
+    defaults.set(125_000, forKey: "rnodeBandwidthHz")
+    let store = rnStore(defaults: defaults)
+    #expect(store.state.rnodeBandwidthHz == 125_000)
     await store.send(.rnodeBandwidthTextChanged("x"))
-    #expect(store.state.rnodeBandwidthHz == 62_500)
+    #expect(store.state.rnodeBandwidthHz == 125_000)
+    #expect(store.state.rnodeSettingsProblems == [.bandwidthUnreadable, .frequencyMissing])
+}
+
+/// A stale out-of-range stored bandwidth under unreadable text: one message for the field.
+@MainActor @Test func rnSettingsUnreadableBandwidthHidesTheStoredRangeProblem() async {
+    let defaults = UserDefaults.inMemory
+    defaults.set(1_000, forKey: "rnodeBandwidthHz")
+    let store = rnStore(defaults: defaults)
+    #expect(store.state.rnodeSettingsProblems == [.frequencyMissing, .bandwidthOutOfRange])
+    await store.send(.rnodeBandwidthTextChanged("x"))
+    #expect(store.state.rnodeBandwidthHz == 1_000)
     #expect(store.state.rnodeSettingsProblems == [.bandwidthUnreadable, .frequencyMissing])
 }
 
@@ -312,11 +327,36 @@ private func rnSettingsWillDialNeedsEveryCondition(_ c: RNDialCase) {
     #expect(state.rnodeRadioLabel == "None")
 }
 
+@MainActor @Test func rnSettingsRadioLabelShowsTheName() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(rnRadioA.id.uuidString, forKey: "rnodeRadioID")
+    defaults.set("Base camp", forKey: "rnodeRadioName")
+    #expect(rnStore(defaults: defaults).state.rnodeRadioLabel == "Base camp")
+}
+
+@MainActor @Test func rnSettingsRadioLabelFallsBackToTheIDForABlankName() {
+    let defaults = UserDefaults.inMemory
+    defaults.set(rnRadioA.id.uuidString, forKey: "rnodeRadioID")
+    defaults.set("   ", forKey: "rnodeRadioName")
+    #expect(rnStore(defaults: defaults).state.rnodeRadioLabel == rnRadioA.id.uuidString)
+}
+
+/// A name never shows without a valid radio behind it.
+@MainActor @Test func rnSettingsRadioLabelIsNoneForABadIDEvenWithAName() {
+    let defaults = UserDefaults.inMemory
+    defaults.set("not-a-uuid", forKey: "rnodeRadioID")
+    defaults.set("Base camp", forKey: "rnodeRadioName")
+    #expect(rnStore(defaults: defaults).state.rnodeRadioLabel == "None")
+}
+
 /// Exhaustive: each edit changes state only. No effect runs and no action is received, so nothing
 /// reaches a running radio until the next Connect.
 @MainActor @Test func rnSettingsEditingSendsNoEndpointAction() async {
     let store = rnStore()
     store.exhaustivity = .on
+    // Mirrors the app's `$store.rnodeEnabled` Toggle binding (a `.set` on the plain key path, as
+    // MeshCore's). Binding `\.$rnodeEnabled` would swap the Shared reference instead, which the app
+    // never does, so the setter's deprecation warning is accepted here.
     await store.send(.binding(.set(\.rnodeEnabled, true))) {
         $0.$rnodeEnabled.withLock { $0 = true }
     }
@@ -349,8 +389,18 @@ private func rnSettingsWillDialNeedsEveryCondition(_ c: RNDialCase) {
     #endif
 }
 
+/// `swift test` compiles DEBUG only, so `rnodeAvailable = true` can't fail this here; the `#else`
+/// branch states the Release expectation. A Release test build of this target doesn't compile today
+/// (existing MeshCore tests use the DEBUG-only `MeshCoreCopy`), so the Release default is guarded by
+/// Task 5's Release-binary grep and review.
 @MainActor @Test func rnSettingsAvailableDefaultsToTheGate() {
-    #expect(rnStore().state.rnodeAvailable == RNodeReleaseGate.isCompiledIn)
+    let state = rnStore().state
+    #expect(state.rnodeAvailable == RNodeReleaseGate.isCompiledIn)
+    #if DEBUG
+    #expect(state.rnodeAvailable)
+    #else
+    #expect(!state.rnodeAvailable)
+    #endif
 }
 
 /// Review Focus 2: stale defaults with a problem can still be turned off.
