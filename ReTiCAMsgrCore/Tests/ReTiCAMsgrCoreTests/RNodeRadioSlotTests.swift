@@ -58,13 +58,18 @@ private func connectedStore(radio: RNodeRadioHarness,
 
 // MARK: - Connect
 
+/// A nonzero TX power (17 dBm), so every field of the conversion is pinned: the shared fixture's is 0.
 @MainActor @Test func rnSlotConnectStartsTheChosenRadioWithItsParams() async {
     let radio = RNodeRadioHarness()
-    let store = rnRadioStore(radio: rnRadioIDA, radioHarness: radio)
+    var settings = rnCompleteSettings
+    settings.txPowerDBm = 17
+    let params = RNodeLoRaParams(frequencyHz: 868_100_000, bandwidthHz: 62_500, txPowerDBm: 17,
+                                 spreadingFactor: 8, codingRate: 6)
+    let store = rnRadioStore(radio: rnRadioIDA, settings: settings, radioHarness: radio)
     await store.send(.connectTapped)
     #expect(await rnWait { radio.startCount >= 1 })
-    #expect(radio.calls.value.first == .start(RNodeDriverConfig(radio: rnRadioIDA, params: paramsF1)))
-    #expect(slot(store)?.interface.config == RNodeDriverConfig(radio: rnRadioIDA, params: paramsF1))
+    #expect(radio.calls.value.first == .start(RNodeDriverConfig(radio: rnRadioIDA, params: params)))
+    #expect(slot(store)?.interface.config == RNodeDriverConfig(radio: rnRadioIDA, params: params))
 }
 
 @MainActor @Test func rnSlotConnectWithRNodeOffBuildsNoSlot() async {
