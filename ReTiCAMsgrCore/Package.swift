@@ -70,6 +70,7 @@ let package = Package(
                 .product(name: "MeshtasticKit", package: "MeshtasticKit"),
                 .product(name: "ReTiCAMeshCoreLive", package: "ReTiCA"),
                 .product(name: "MeshCoreKit", package: "MeshCoreKit"),
+                .product(name: "ReTiCARNodeLive", package: "ReTiCA"),
                 .product(name: "RNodeKit", package: "RNodeKit"),
             ]
         ),

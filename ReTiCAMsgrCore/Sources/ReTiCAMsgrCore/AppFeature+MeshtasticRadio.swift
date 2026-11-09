@@ -24,11 +24,11 @@ extension AppFeature.State {
 
     /// Amendment A10 ("only show Connecting… when something will actually dial"), now including
     /// the radios. The single definition behind onLaunch, Connect and the foreground re-dial. A
-    /// MeshCore radio held back by a policy failure won't dial on a re-dial, so it doesn't count
-    /// (Connect clears the flag before reading this).
+    /// MeshCore radio held back by a policy failure, or an RNode by a failure only the user can fix,
+    /// won't dial on a re-dial, so it doesn't count (Connect clears both flags before reading this).
     var somethingWillDial: Bool {
         !enabledNodes.isEmpty || listenEnabled || bleEnabled || meshtasticWillDial
-            || (meshCoreWillDial && !meshCorePolicyFailed) || rnodeWillDial
+            || (meshCoreWillDial && !meshCorePolicyFailed) || (rnodeWillDial && !rnodeNeedsUserAction)
     }
 }
 

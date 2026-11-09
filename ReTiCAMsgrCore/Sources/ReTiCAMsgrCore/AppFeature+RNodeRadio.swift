@@ -2,6 +2,7 @@ import Foundation
 import ComposableArchitecture
 import ReTiCAInterfaces
 import ReTiCANode
+import ReTiCARNodeLive
 
 /// An RNode slot replacement in flight (spec 2026-11-08 Contract 3): the old slot was sent `.stop`
 /// and is dropped only at its `.radioOffline`, which the interface reports once `driver.stop()` has
@@ -98,20 +99,41 @@ func installRNodeSlot(_ state: inout AppFeature.State, _ config: RNodeDriverConf
         state.rnodeRetiredCounters += RNodeStatus.Counters(old.counters)
     }
     state.node.client.endpoint.rnode = config.map { RNodeEndpoint.State(config: $0) }
+    // A different radio or new parameters may succeed where the old config needed the user.
+    if config != nil {
+        state.rnodeNeedsUserAction = false
+    }
     state.rnodeStatus = RNodeStatus(counters: state.rnodeRetiredCounters)
     guard config != nil, start else { return .none }
     return .send(.node(.client(.endpoint(.rnode(.start)))))
 }
 
-/// The RNode slot's app-side arms: swap completion at `.radioOffline`. The other delegates come in
-/// lane D Task 9. There is no immediate turn-off arm: like Meshtastic, every change waits for
-/// Connect. Composed into `AppFeature.body` after `MeshCoreRadioReducer`.
+/// The RNode slot's app-side arms: swap completion at `.radioOffline`, and recording a failure only
+/// the user can fix. The other delegates come in lane D Task 9. There is no immediate turn-off arm:
+/// like Meshtastic, every change waits for Connect. Composed into `AppFeature.body` after
+/// `MeshCoreRadioReducer`.
 struct RNodeRadioReducer: Reducer {
     var body: some ReducerOf<AppFeature> {
         Reduce { state, action in
             switch action {
             case .node(.client(.endpoint(.rnode(.delegate(.radioOffline))))):
                 return finishRNodeSwap(&state)
+            case let .node(.client(.endpoint(.rnode(.delegate(.adapterUnavailable(cause)))))):
+                // Old firmware, an unfinished or removed pairing, or settings the radio rejected:
+                // another attempt can't succeed until the user acts, so re-dials stop until Connect
+                // or a new radio or parameters. Other causes ("radio not found", no text, an
+                // adapter cause) may clear on their own and keep being re-dialled.
+                guard case let .other(text?) = cause, RNodeLiveMessage.needsUserAction(text) else {
+                    return .none
+                }
+                state.rnodeNeedsUserAction = true
+                // Amendment A10, as MeshCore's policy failure: with nothing up and nothing else
+                // dialing, this radio was the only dial and won't retry until Connect, so show
+                // Disconnected and its Connect button.
+                if state.connectedInterfaces.isEmpty, !state.somethingWillDial {
+                    state.connection = .disconnected
+                }
+                return .none
             default:
                 return .none
             }
