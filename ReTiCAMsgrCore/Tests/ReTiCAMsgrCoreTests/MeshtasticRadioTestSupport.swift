@@ -111,6 +111,7 @@ func meshRadioStore(radio: UUID?, enabled: Bool = true, harness: MeshRadioHarnes
     }
     initial.$meshtasticEnabled.withLock { $0 = enabled }
     initial.$meshtasticRadioID.withLock { $0 = radio?.uuidString }
+    initial.$listenEnabled.withLock { $0 = false }   // isolate the radio: no LAN listener
     configure?(&initial)
     let db = try! AppDatabase.makeInMemory()
     let store = TestStore(initialState: initial) {

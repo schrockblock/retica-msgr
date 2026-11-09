@@ -288,11 +288,11 @@ public struct AppFeature {
         public var profilePhotoMayRide: Bool {
             connectedInterfaces.contains { !AppFeature.isLoRaRadio($0) }
         }
-        /// Opt-in: also run a TCP listener so other nodes on the LAN can dial THIS device
-        /// directly (peer-to-peer, no shared rnsd). OFF by default — a listening socket is an
+        /// On by default: also run a TCP listener so other nodes on the LAN can dial THIS device
+        /// directly (peer-to-peer, no shared rnsd). A listening socket is an
         /// attack surface the dialling-only client never was (see the Settings caption). The
         /// natural home for Tier 7 admission-control settings when they arrive.
-        @Shared(.appStorage("listenEnabled")) public var listenEnabled: Bool = false
+        @Shared(.appStorage("listenEnabled")) public var listenEnabled: Bool = true
         /// The local port the opt-in listener binds. A DEDICATED setting, not a reuse of `port`:
         /// `port` is the REMOTE rnsd port we dial OUT to; the listener binds a LOCAL port we
         /// accept IN on. Conflating them would bind the listener to whatever remote port the user

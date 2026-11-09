@@ -438,7 +438,7 @@ struct SettingsView: View {
                 .focused($focusedField, equals: .listenPort)
                 .disabled(!store.listenEnabled)
             Text("Lets other Reticulum nodes on your local Wi-Fi connect directly to this "
-                 + "device — anyone on the same network can reach it. Off by default.")
+                 + "device — anyone on the same network can reach it. On by default.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

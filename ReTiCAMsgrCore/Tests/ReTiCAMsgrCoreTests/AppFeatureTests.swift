@@ -156,12 +156,22 @@ private func isRemove(_ id: InterfaceID, _ action: AppFeature.Action) -> Bool {
     #expect(store.state.conversations.first?.peerHex == peerB)   // ts 2000 newest
 }
 
-/// The listener is OPT-IN and OFF by default: a fresh state that has never toggled it must not
-/// grow a `tcpServer` slot on connect. The dialling-only client never listened, and that default
-/// is the mitigation for the unbounded-listener LAN surface (no admission control yet — Tier 7).
+/// The listener is ON by default: a fresh state that has never toggled it grows a `tcpServer`
+/// slot on the default listen port (4242) at connect, so LAN peers can dial this device.
+@MainActor @Test func onLaunchAddsListenerSlotByDefault() async {
+    let db = try! AppDatabase.makeInMemory()
+    let store = makeStore(db, identity: Identity())   // listenEnabled defaults true
+    await store.send(.onLaunch)
+    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
+    #expect(store.state.node.client.endpoint.tcpServer?.interface.port == 4242)
+}
+
+/// Turning the listener off keeps the `tcpServer` slot away at connect.
 @MainActor @Test func onLaunchDoesNotAddListenerSlotWhenListenDisabled() async {
     let db = try! AppDatabase.makeInMemory()
-    let store = makeStore(db, identity: Identity())   // listenEnabled defaults false
+    let store = makeStore(db, identity: Identity()) { state in
+        state.$listenEnabled.withLock { $0 = false }
+    }
     await store.send(.onLaunch)
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     #expect(store.state.node.client.endpoint.tcpServer == nil)
@@ -6950,7 +6960,9 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
 /// leave the UI showing "Connecting…" forever.
 @MainActor @Test func nodeFinalConnectWithNothingEnabledStaysDisconnected() async {
     let db = try! AppDatabase.makeInMemory()
-    let store = nodeStore(db, nodes: [disabled(DefaultNode.entry)])
+    let store = nodeStore(db, nodes: [disabled(DefaultNode.entry)]) { state in
+        state.$listenEnabled.withLock { $0 = false }
+    }
     await store.send(.connectTapped)
     #expect(store.state.connection == .disconnected)
     await store.receive { if case .node(.client(.endpoint(.start))) = $0 { return true }; return false }

@@ -76,6 +76,7 @@ private func bleSlotStore(_ ble: BLESlotHarness) -> TestStoreOf<AppFeature> {
         AppFeature.State(identity: Identity())
     }
     initial.$bleEnabled.withLock { $0 = true }
+    initial.$listenEnabled.withLock { $0 = false }   // isolate BLE: no LAN listener
     let db = try! AppDatabase.makeInMemory()
     let store = TestStore(initialState: initial) {
         CombineReducers {

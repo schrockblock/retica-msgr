@@ -115,6 +115,7 @@ func mcRadioStore(radio: UUID?, enabled: Bool = true, radioHarness: MeshCoreRadi
     }
     initial.$meshCoreEnabled.withLock { $0 = enabled }
     initial.$meshCoreRadioID.withLock { $0 = radio?.uuidString }
+    initial.$listenEnabled.withLock { $0 = false }   // isolate the radio: no LAN listener
     initial.meshCoreKeyPresence = store.presence()
     configure?(&initial)
     let db = try! AppDatabase.makeInMemory()
