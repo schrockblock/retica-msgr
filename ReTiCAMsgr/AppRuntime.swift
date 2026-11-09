@@ -153,6 +153,11 @@ final class AppRuntime {
             MeshCoreLiveWiring.installDriver(into: &$0, keyStore: meshCoreKeyStore)
             MeshCoreLiveWiring.installDetails(into: &$0)
             MeshCoreLiveWiring.installScanner(into: &$0)
+            // The live RNode driver over the app's ONE RNodeSession (spec 2026-11-08 lane D) and
+            // the RNode half of the picker scan. Outside `#if DEBUG`: they build nothing until a
+            // slot starts, and a Release build can't start one.
+            RNodeLiveWiring.installScanner(into: &$0)
+            RNodeLiveWiring.installDriver(into: &$0)
             // A purged attachment's decoded images leave the app's cache with its file (A17).
             $0.attachmentCacheEvictor = AttachmentCacheEvictor { ids in
                 await ThumbnailCache.shared.evict(attachmentIds: ids)
