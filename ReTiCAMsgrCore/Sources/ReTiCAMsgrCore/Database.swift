@@ -345,6 +345,16 @@ public enum AppDatabase {
                 t.column("expires", .double).notNull()
             }
         }
+        m.registerMigration("addKnownDestinationRatchets") { db in
+            // A peer's announced ratchet (public key) and when it was first heard, so messages to
+            // it keep going to the ratchet after a relaunch (see KnownDestinationRow). Both nullable:
+            // most rows carry none. This replaces `learnedDestinationRows.ratchetHex`, which the app
+            // no longer reads or writes (see LearnedDestinationRow).
+            try db.alter(table: "knownDestinationRows") { t in
+                t.add(column: "ratchetHex", .text)
+                t.add(column: "ratchetReceived", .datetime)
+            }
+        }
         return m
     }
 

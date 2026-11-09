@@ -176,6 +176,9 @@ public struct AppFeature {
         /// Whether this launch's orphans were resent: done once, on the first `interfaceConnected`
         /// after `onLaunch`, or on the next one if that rebuild threw. Session-only.
         public var orphansResent = false
+        /// Whether this run sent `.enableRatchets` for the delivery destination (`onLaunch`). Kept so
+        /// a second `onLaunch` can't hand Transport the saved ring again over a newer one. Session-only.
+        public var ownRatchetsEnabled = false
         /// Whether the TCP sockets were closed for the background (`closeHubSockets`). Cleared on
         /// foreground and on the next `interfaceConnected` (a push wake re-dials). Session-only.
         var hubSocketsClosed = false
@@ -834,6 +837,7 @@ public struct AppFeature {
     @Dependency(\.backgroundTask) var backgroundTask
     @Dependency(\.localNotifications) var localNotifications
     @Dependency(\.meshCoreKeyStore) var meshCoreKeyStore
+    @Dependency(\.ownRatchetStore) var ownRatchetStore
 
     /// Path expiry for pruning `learnedDestinationRows`, taken from the library rather than copied.
     ///
@@ -921,7 +925,12 @@ public struct AppFeature {
                     state.connection = .connecting
                 }
                 let sync = syncEndpointNodes(&state)
+                let enableRatchets = enableOwnRatchetsEffect(&state)
                 return .concatenate(
+                    // Own ratchets go first: the ring is read synchronously above, and this `.send`
+                    // reaches Transport before `.endpoint(.start)` below, so before any interface can
+                    // come up and `registerDelivery` (at `interfaceConnected`) announce.
+                    enableRatchets,
                     // Spec 2026-10-15 A5: the node must know the blocklist before it starts and
                     // before the push inbox drains. `reloadBlockedPeers` sends the node action itself.
                     .run { [database] send in
@@ -3034,6 +3043,17 @@ public struct AppFeature {
                 state.outboundHeld = true
                 return .send(.node(.client(.holdOutbound(true))))
 
+            case let .node(.client(.endpoint(.delegate(.ratchetsChanged(destinationHash, ring))))):
+                // The whole ring after a rotation, private keys: replace the saved one at once, in
+                // the reducer, so two rotations can't be written out of order. A rotation happens
+                // at most once per `Transport.ratchetInterval` (30 min), so this synchronous
+                // Keychain write is rare. A failure is logged (never the keys) and the next
+                // rotation writes the whole ring again.
+                if !ownRatchetStore.save(destinationHash, ring) {
+                    AppFeature.inbound.error("own ratchet ring not saved: \(ring.count, privacy: .public) keys would be lost on relaunch")
+                }
+                return .none
+
             case .node, .binding, .pushRegistrationTimedOut, .unregisterFromHub:
                 return .none
 
@@ -4593,6 +4613,32 @@ private func writeLearnedDestinations(_ learned: [Data: LearnedDestination],
         for row in rows {
             try LearnedDestinationRow.insert { row }.execute(db)
         }
+    }
+}
+
+extension AppFeature {
+    /// `.enableRatchets` for the delivery destination with the ring saved in the Keychain (`[]` the
+    /// first time, which starts a new ring), once per run. Reference LXMF enables ratchets on every
+    /// delivery destination; ReTiCA leaves that to the host, because only the host can keep the
+    /// private keys (ReTiCA README, "Own ratchets").
+    ///
+    /// When the Keychain read fails, ratchets stay off for this run: enabling with `[]` would start a
+    /// new ring, and its first rotation would overwrite the saved one, so messages peers encrypted to
+    /// the old ratchets (some held days at a propagation node) could never be decrypted. Off, the
+    /// saved ring is untouched for the next launch.
+    ///
+    /// `.setEnforceRatchets` is deliberately never sent. Reference's default is off, and enforcing
+    /// would drop every message a peer encrypts to the identity key (a peer that has not heard a
+    /// ratcheted announce from us yet does exactly that).
+    func enableOwnRatchetsEffect(_ state: inout State) -> Effect<Action> {
+        guard !state.ownRatchetsEnabled else { return .none }
+        let deliveryHash = LXMessage.deliveryHash(identityHash: state.identity.hash)
+        guard let ring = ownRatchetStore.load(deliveryHash) else {
+            AppFeature.inbound.error("own ratchet ring unreadable: ratchets stay off for this run")
+            return .none
+        }
+        state.ownRatchetsEnabled = true
+        return .send(.node(.client(.endpoint(.enableRatchets(destinationHash: deliveryHash, ring: ring)))))
     }
 }
 

@@ -36,15 +36,26 @@ public struct KnownDestinationRow: Equatable, Sendable {
     public var linkCost: Double?
     /// The value of the most recent announce's network stamp, or nil.
     public var stampValue: Double?
+    /// The 32-byte X25519 ratchet PUBLIC key the destination last announced, hex-encoded, or nil
+    /// (`KnownDestination.ratchet`). Without it the first message to a peer after a relaunch goes
+    /// to its identity key until it announces again. Added by the `addKnownDestinationRatchets`
+    /// migration.
+    public var ratchetHex: String?
+    /// When `ratchetHex` was first heard (`KnownDestination.ratchetReceived`). The library drops a
+    /// restored ratchet without it, or older than `Transport.ratchetExpiry`.
+    public var ratchetReceived: Date?
 
     public init(destinationHashHex: String, publicKeyHex: String, appDataHex: String?,
-                lastHeard: Date, linkCost: Double?, stampValue: Double?) {
+                lastHeard: Date, linkCost: Double?, stampValue: Double?,
+                ratchetHex: String? = nil, ratchetReceived: Date? = nil) {
         self.destinationHashHex = destinationHashHex
         self.publicKeyHex = publicKeyHex
         self.appDataHex = appDataHex
         self.lastHeard = lastHeard
         self.linkCost = linkCost
         self.stampValue = stampValue
+        self.ratchetHex = ratchetHex
+        self.ratchetReceived = ratchetReceived
     }
 }
 
@@ -59,11 +70,15 @@ extension KnownDestinationRow {
             appDataHex: destination.appData.map(\.hexString),
             lastHeard: destination.lastHeard,
             linkCost: destination.linkCost,
-            stampValue: destination.stampValue
+            stampValue: destination.stampValue,
+            ratchetHex: destination.ratchet.map(\.hexString),
+            ratchetReceived: destination.ratchetReceived
         )
     }
 
     /// Reconstruct a `KnownDestination` from this row. Nil if the hash or public key is malformed.
+    /// The ratchet is passed through as stored: `Transport.rehydrateKnownDestinations` checks its
+    /// length, its key and its age, and drops it (keeping the row) when any check fails.
     func toKnownDestination() -> (hash: Data, destination: KnownDestination)? {
         guard let hashData = Data(hexString: destinationHashHex),
               hashData.count == 16,
@@ -75,7 +90,9 @@ extension KnownDestinationRow {
             appData: appDataHex.flatMap { Data(hexString: $0) },
             lastHeard: lastHeard,
             linkCost: linkCost,
-            stampValue: stampValue
+            stampValue: stampValue,
+            ratchet: ratchetHex.flatMap { Data(hexString: $0) },
+            ratchetReceived: ratchetReceived
         )
         return (hash: hashData, destination: destination)
     }

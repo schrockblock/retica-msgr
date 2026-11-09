@@ -41,7 +41,11 @@ public struct LearnedDestinationRow: Equatable, Sendable {
     public var publicKeyHex: String
     /// Optional announce app-data, hex-encoded.
     public var appDataHex: String?
-    /// Optional 32-byte ratchet public key, hex-encoded.
+    /// **Unused: always written nil, never read.** It held a peer's ratchet when ReTiCA kept it on
+    /// `LearnedDestination.ratchet`. ReTiCA now ignores that property (deprecated) and keeps the
+    /// ratchet on `KnownDestination`, which `KnownDestinationRow` persists. The column is kept, not
+    /// dropped by a new migration: dropping it gains nothing, and this property keeps the row's
+    /// shape matching the table. Rows written by older builds may still hold a value; nothing reads it.
     public var ratchetHex: String?
     /// The `InterfaceID.rawValue` through which this destination was last heard.
     public var interfaceId: String
@@ -84,7 +88,7 @@ extension LearnedDestinationRow {
             destinationHashHex: hash.hexString,
             publicKeyHex: destination.identity.publicKey.hexString,
             appDataHex: destination.appData.map(\.hexString),
-            ratchetHex: destination.ratchet.map(\.hexString),
+            ratchetHex: nil,   // unused, see the property
             interfaceId: destination.interfaceID.rawValue,
             hops: Int(destination.hops),
             nextHopHex: destination.nextHop.map(\.hexString),
@@ -105,7 +109,6 @@ extension LearnedDestinationRow {
         else { return nil }
 
         let appData = appDataHex.flatMap { Data(hexString: $0) }
-        let ratchet = ratchetHex.flatMap { Data(hexString: $0) }
         let nextHop = nextHopHex.flatMap { Data(hexString: $0) }
         // announceEmitted is stored as Int (always 64-bit on our platform), safe to cast.
         let emitted = UInt64(bitPattern: Int64(announceEmitted))
@@ -113,7 +116,6 @@ extension LearnedDestinationRow {
         let destination = LearnedDestination(
             identity: identity,
             appData: appData,
-            ratchet: ratchet,
             interfaceID: InterfaceID(interfaceId),
             hops: UInt8(clamping: hops),
             nextHop: nextHop,

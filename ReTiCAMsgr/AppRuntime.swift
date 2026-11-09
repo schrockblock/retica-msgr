@@ -30,6 +30,9 @@ final class AppRuntime {
         /// The MeshCore channel-key store. Inert by default, so a runtime built without one (the
         /// app's own runtime tests) never touches the real Keychain; `live()` passes the real one.
         var meshCoreKeyStore: MeshCoreKeyStore = .inert
+        /// The delivery destination's own ratchet ring (private keys). Inert by default for the same
+        /// reason as `meshCoreKeyStore`; inert means ratchets stay off.
+        var ownRatchetStore: OwnRatchetStore = .inert
 
         static func live() -> Environment {
             let dbPath = URL.documentsDirectory.appending(path: "reticamsgr.sqlite").path()
@@ -48,7 +51,8 @@ final class AppRuntime {
                 identityStore: .liveValue,
                 anchor: IdentityAnchor(defaults: .standard),
                 pushStorage: pushStorage ?? .temporary(),
-                meshCoreKeyStore: .live(ops: .live))
+                meshCoreKeyStore: .live(ops: .live),
+                ownRatchetStore: .live(ops: .live))
         }
 
         /// Hosted XCTest runs and UI-test launches never touch the real Keychain, database or
@@ -66,7 +70,8 @@ final class AppRuntime {
                 identityStore: .live(ops: keychain.ops),
                 anchor: IdentityAnchor(defaults: defaults),
                 wakeHold: .zero,
-                meshCoreKeyStore: .live(ops: keychain.ops))
+                meshCoreKeyStore: .live(ops: keychain.ops),
+                ownRatchetStore: .live(ops: keychain.ops))
         }
 
         static var isTestHost: Bool {
@@ -103,6 +108,7 @@ final class AppRuntime {
         let database = environment.database
         let pushStorage = environment.pushStorage
         let meshCoreKeyStore = environment.meshCoreKeyStore
+        let ownRatchetStore = environment.ownRatchetStore
         let store = Store(initialState: AppFeature.State(identity: identity, pushStorage: pushStorage)) {
             AppFeature()
         } withDependencies: {
@@ -154,6 +160,8 @@ final class AppRuntime {
             // Explicit for the same hosted-XCTest reason as `\.date`, and so a hosted run uses the
             // test host's in-memory Keychain, never the real one.
             $0.meshCoreKeyStore = meshCoreKeyStore
+            // Likewise for the own ratchet ring, read at `.onLaunch` and written on each rotation.
+            $0.ownRatchetStore = ownRatchetStore
             // Settings' Copy button. Local-only with an expiry on iOS (ruling R8); revealed only here.
             // The copy effect runs off the main actor; the pasteboard is used from the main actor.
             $0.meshCoreKeyPasteboard = MeshCoreKeyPasteboard { text in
