@@ -108,35 +108,71 @@ func installRNodeSlot(_ state: inout AppFeature.State, _ config: RNodeDriverConf
     return .send(.node(.client(.endpoint(.rnode(.start)))))
 }
 
-/// The RNode slot's app-side arms: swap completion at `.radioOffline`, and recording a failure only
-/// the user can fix. The other delegates come in lane D Task 9. There is no immediate turn-off arm:
-/// like Meshtastic, every change waits for Connect. Composed into `AppFeature.body` after
-/// `MeshCoreRadioReducer`.
+/// The RNode slot's delegates (spec Contract 3) → `rnodeStatus`, swap completion at `.radioOffline`,
+/// recording a failure only the user can fix, and the counters and telemetry refreshed on EVERY
+/// RNode action (they change with each packet and report, and no delegate carries them). There is
+/// no immediate turn-off arm: like Meshtastic, every change waits for Connect. Composed into
+/// `AppFeature.body` after `MeshCoreRadioReducer`.
 struct RNodeRadioReducer: Reducer {
     var body: some ReducerOf<AppFeature> {
         Reduce { state, action in
-            switch action {
-            case .node(.client(.endpoint(.rnode(.delegate(.radioOffline))))):
-                return finishRNodeSwap(&state)
-            case let .node(.client(.endpoint(.rnode(.delegate(.adapterUnavailable(cause)))))):
-                // Old firmware, an unfinished or removed pairing, or settings the radio rejected:
-                // another attempt can't succeed until the user acts, so re-dials stop until Connect
-                // or a new radio or parameters. Other causes ("radio not found", no text, an
-                // adapter cause) may clear on their own and keep being re-dialled.
-                guard case let .other(text?) = cause, RNodeLiveMessage.needsUserAction(text) else {
-                    return .none
-                }
-                state.rnodeNeedsUserAction = true
-                // Amendment A10, as MeshCore's policy failure: with nothing up and nothing else
-                // dialing, this radio was the only dial and won't retry until Connect, so show
-                // Disconnected and its Connect button.
-                if state.connectedInterfaces.isEmpty, !state.somethingWillDial {
-                    state.connection = .disconnected
-                }
-                return .none
-            default:
+            guard case let .node(.client(.endpoint(.rnode(rnodeAction)))) = action else { return .none }
+            let effect = reduceDelegate(&state, rnodeAction)
+            // Retired plus live counters, and the live slot's telemetry; written only on change.
+            var status = state.rnodeStatus
+            let live = state.node.client.endpoint.rnode.map { RNodeStatus.Counters($0.counters) }
+                ?? RNodeStatus.Counters()
+            status.counters = state.rnodeRetiredCounters + live
+            if let telemetry = state.node.client.endpoint.rnode?.telemetry {
+                status.apply(telemetry)
+            }
+            if status != state.rnodeStatus {
+                state.rnodeStatus = status
+            }
+            return effect
+        }
+    }
+
+    private func reduceDelegate(_ state: inout AppFeature.State, _ action: RNodeEndpoint.Action) -> Effect<AppFeature.Action> {
+        switch action {
+        case let .delegate(.radioOnline(report)):
+            state.rnodeStatus.online = true
+            state.rnodeStatus.radioName = report.name
+            state.rnodeStatus.firmware = RNodeStatus.firmwareText(major: report.firmwareMajor,
+                                                                  minor: report.firmwareMinor)
+            state.rnodeStatus.platform = report.platform
+            state.rnodeStatus.reported = RNodeStatus.Params(report.params)
+            state.rnodeStatus.bitrate = report.params.bitrate
+            state.rnodeStatus.offlineReason = nil
+            state.rnodeStatus.adapterUnavailable = nil
+            return .none
+
+        case let .delegate(.radioOffline(reason)):
+            state.rnodeStatus.online = false
+            state.rnodeStatus.offlineReason = reason
+            return finishRNodeSwap(&state)
+
+        case let .delegate(.adapterUnavailable(cause)):
+            state.rnodeStatus.online = false
+            state.rnodeStatus.adapterUnavailable = cause
+            // Old firmware, an unfinished or removed pairing, or settings the radio rejected:
+            // another attempt can't succeed until the user acts, so re-dials stop until Connect
+            // or a new radio or parameters. Other causes ("radio not found", no text, an
+            // adapter cause) may clear on their own and keep being re-dialled.
+            guard case let .other(text?) = cause, RNodeLiveMessage.needsUserAction(text) else {
                 return .none
             }
+            state.rnodeNeedsUserAction = true
+            // Amendment A10, as MeshCore's policy failure: with nothing up and nothing else
+            // dialing, this radio was the only dial and won't retry until Connect, so show
+            // Disconnected and its Connect button.
+            if state.connectedInterfaces.isEmpty, !state.somethingWillDial {
+                state.connection = .disconnected
+            }
+            return .none
+
+        default:
+            return .none
         }
     }
 }

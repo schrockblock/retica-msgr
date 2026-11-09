@@ -20,6 +20,13 @@ public struct RNodeStatus: Equatable, Sendable {
             self.codingRate = codingRate
             self.txPowerDBm = txPowerDBm
         }
+
+        /// The parameters the RNode echoed (`RNodeRadioReport.params`), field by field.
+        public init(_ params: RNodeLoRaParams) {
+            self.init(frequencyHz: Int(params.frequencyHz), bandwidthHz: Int(params.bandwidthHz),
+                      spreadingFactor: Int(params.spreadingFactor), codingRate: Int(params.codingRate),
+                      txPowerDBm: Int(params.txPowerDBm))
+        }
     }
 
     /// Cumulative since launch.
@@ -118,5 +125,23 @@ public struct RNodeStatus: Equatable, Sendable {
     /// available.
     public var userMessage: String? {
         adapterUnavailable?.userMessage
+    }
+
+    /// The firmware version as Diagnostics shows it: the minor always two digits (1.05, 1.86).
+    static func firmwareText(major: UInt8, minor: UInt8) -> String {
+        "\(major).\(String(format: "%02d", Int(minor)))"
+    }
+
+    /// Copies the slot's telemetry. RNodeKit already reports the channel load and airtime in
+    /// percent (0...100, `RNodeChannelStats`), the scale these fields use, so they copy as they are.
+    mutating func apply(_ telemetry: RNodeTelemetry) {
+        lastRSSI = telemetry.lastRSSI
+        lastSNR = telemetry.lastSNR
+        airtimeShort = telemetry.channelLoad?.airtimeShort
+        airtimeLong = telemetry.channelLoad?.airtimeLong
+        channelLoadShort = telemetry.channelLoad?.channelLoadShort
+        channelLoadLong = telemetry.channelLoad?.channelLoadLong
+        noiseFloor = telemetry.channelLoad?.noiseFloor
+        lastHardwareError = telemetry.lastHardwareError
     }
 }

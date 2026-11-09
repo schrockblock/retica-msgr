@@ -286,8 +286,8 @@ public struct AppFeature {
         public var profilePhotoError: String? = nil
         /// Peers' stored profiles by lowercase hex, mirrored from the `peerProfiles` table.
         public var peerProfiles: [String: PeerProfile] = [:]
-        /// The photo may be attached only when an interface other than a LoRa radio (Meshtastic or
-        /// MeshCore) is connected: the slow radio path would take minutes for it.
+        /// The photo may be attached only when an interface other than a LoRa radio (Meshtastic,
+        /// MeshCore or RNode) is connected: the slow radio path would take minutes for it.
         public var profilePhotoMayRide: Bool {
             connectedInterfaces.contains { !AppFeature.isLoRaRadio($0) }
         }
@@ -919,10 +919,12 @@ public struct AppFeature {
     /// Where the node list lives: `<Application Support>/nodes.json`.
     public static let nodesFileURL = URL.applicationSupportDirectory.appending(path: "nodes.json")
     public static let draftsFileURL = URL.applicationSupportDirectory.appending(path: "drafts.json")
-    /// A slow LoRa radio's interface: a Meshtastic (`meshtastic:`) or MeshCore (`meshcore:`) slot.
-    /// The profile photo doesn't ride on one alone, and one going down re-announces over TCP.
+    /// A slow LoRa radio's interface: a Meshtastic (`meshtastic:`), MeshCore (`meshcore:`) or RNode
+    /// (`rnode:`) slot. The profile photo doesn't ride on these alone, and one going down
+    /// re-announces over TCP.
     static func isLoRaRadio(_ id: InterfaceID) -> Bool {
         id.rawValue.hasPrefix("meshtastic:") || id.rawValue.hasPrefix("meshcore:")
+            || id.rawValue.hasPrefix("rnode:")
     }
 
     /// The shortest gap between two radio-down re-announces over TCP.
