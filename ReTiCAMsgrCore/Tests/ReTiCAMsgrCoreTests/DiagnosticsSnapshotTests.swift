@@ -438,7 +438,7 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 @MainActor @Test func snapshotHasAllLayersInOrder() {
     let snapshot = DiagnosticsSnapshot(from: healthyState(), at: fixedDate)
     #expect(snapshot.layers.map(\.title)
-            == ["Socket", "Bluetooth", "Meshtastic", "MeshCore", "Identity", "Paths", "Peers", "Links", "Delivery"])
+            == ["Socket", "Bluetooth", "Meshtastic", "MeshCore", "RNode", "Identity", "Paths", "Peers", "Links", "Delivery"])
 }
 
 // C1. `.pending`, not `.handshake`. The two statuses are ROLE-DISJOINT in `LinkSession`:
@@ -1139,4 +1139,220 @@ private func mcDiagState(enabled: Bool = true, radio: UUID? = mcDiagRadio, name:
 /// Settings shows the driver's own text for `.other` (R12).
 @MainActor @Test func mcDiagUserMessageShowsDriverText() {
     #expect(MeshCoreStatus(adapterUnavailable: .other("x")).userMessage == "x")
+}
+
+// MARK: - RNode (spec 2026-11-08 §6, lane C)
+
+private let rnDiagRadio = UUID(uuidString: "D1D1D1D1-0000-4000-8000-0000000000D1")!
+
+/// Non-fatal lookup: a missing layer fails the assertion instead of crashing the suite.
+private func rnDiagLayer(_ snap: DiagnosticsSnapshot) -> DiagnosticsSnapshot.Layer? {
+    snap.layers.first { $0.title == "RNode" }
+}
+
+private func rnDiagRow(_ layer: DiagnosticsSnapshot.Layer?, _ label: String) -> String? {
+    layer?.rows.first { $0.label == label }?.value
+}
+
+/// A state with the RNode settings set, its `@Shared(.appStorage)` keys in a fresh suite so no test
+/// sees another's. Defaults describe a dial-ready radio that is not yet connected: on, 868.1 MHz with
+/// the default bandwidth, SF, CR and power, a radio chosen.
+@MainActor
+private func rnDiagState(enabled: Bool = true, frequencyHz: Int? = 868_100_000, radio: UUID? = rnDiagRadio,
+                         name: String? = "RNode 1A2B", status: RNodeStatus = RNodeStatus()) -> AppFeature.State {
+    var state = withDependencies { $0.defaultAppStorage = .inMemory } operation: { healthyState() }
+    state.$rnodeEnabled.withLock { $0 = enabled }
+    state.$rnodeFrequencyHz.withLock { $0 = frequencyHz }
+    state.$rnodeRadioID.withLock { $0 = radio?.uuidString }
+    state.$rnodeRadioName.withLock { $0 = name }
+    state.rnodeStatus = status
+    return state
+}
+
+@MainActor private func rnDiagLayer(_ state: AppFeature.State) -> DiagnosticsSnapshot.Layer? {
+    rnDiagLayer(DiagnosticsSnapshot(from: state, at: fixedDate))
+}
+
+/// Off by choice is not a fault, and the layer says nothing more than that.
+@MainActor @Test func rnDiagOffIsOkWithOneRow() {
+    let layer = rnDiagLayer(rnDiagState(enabled: false, status: RNodeStatus(online: true, radioName: "x")))
+    #expect(layer?.health == .ok)
+    #expect(layer?.reason == nil)
+    #expect(layer?.rows == [DiagnosticsSnapshot.Row("rnode", "off")])
+}
+
+/// Settings come first: with no frequency and no radio, the reason is the settings one.
+@MainActor @Test func rnDiagIncompleteSettingsWarn() {
+    let layer = rnDiagLayer(rnDiagState(frequencyHz: nil, radio: nil))
+    #expect(layer?.health == .warn)
+    #expect(layer?.reason == "radio settings incomplete — set them in Settings")
+    #expect(rnDiagRow(layer, "settings") == "incomplete")
+}
+
+@MainActor @Test func rnDiagNoRadioWarns() {
+    let layer = rnDiagLayer(rnDiagState(radio: nil))
+    #expect(layer?.health == .warn)
+    #expect(layer?.reason == "no radio chosen — choose one in Settings")
+    #expect(rnDiagRow(layer, "radio") == "(none chosen)")
+    #expect(rnDiagRow(layer, "radio id") == nil)
+}
+
+@MainActor @Test func rnDiagOfflineWarns() {
+    let layer = rnDiagLayer(rnDiagState(status: RNodeStatus(online: false, offlineReason: "link lost")))
+    #expect(layer?.health == .warn)
+    #expect(layer?.reason == "radio not connected")
+    #expect(rnDiagRow(layer, "status") == "offline")
+    #expect(rnDiagRow(layer, "offline reason") == "link lost")
+}
+
+@MainActor @Test func rnDiagAdapterUnavailableIsAProblem() {
+    let status = RNodeStatus(online: false, adapterUnavailable: .other("RNode firmware too old"))
+    let layer = rnDiagLayer(rnDiagState(status: status))
+    #expect(layer?.health == .problem)
+    #expect(layer?.reason == "the Bluetooth path to the radio is unavailable")
+    #expect(rnDiagRow(layer, "adapter") == "other: RNode firmware too old")
+}
+
+@MainActor @Test func rnDiagOnlineIsOk() {
+    let layer = rnDiagLayer(rnDiagState(status: RNodeStatus(online: true)))
+    #expect(layer?.health == .ok)
+    #expect(layer?.reason == nil)
+    #expect(rnDiagRow(layer, "status") == "online")
+    #expect(rnDiagRow(layer, "radio") == "RNode 1A2B")
+    #expect(rnDiagRow(layer, "radio id") == rnDiagRadio.uuidString)
+}
+
+@MainActor @Test func rnDiagRowsShowTheSettingsAndTheReport() {
+    let reported = RNodeStatus.Params(frequencyHz: 868_100_000, bandwidthHz: 62_500, spreadingFactor: 8,
+                                      codingRate: 6, txPowerDBm: 0)
+    let layer = rnDiagLayer(rnDiagState(status: RNodeStatus(online: true, firmware: "1.86", reported: reported)))
+    #expect(rnDiagRow(layer, "settings") == "868.1 MHz / 62.5 kHz / SF8 / CR6 / 0 dBm")
+    #expect(rnDiagRow(layer, "reported") == "868.1 MHz / 62.5 kHz / SF8 / CR6 / 0 dBm")
+    #expect(rnDiagRow(layer, "firmware") == "1.86")
+    // Before a connection, every report row reads unknown.
+    let before = rnDiagLayer(rnDiagState())
+    for label in ["radio name", "firmware", "platform", "reported", "bitrate", "last RSSI", "last SNR",
+                  "channel load", "airtime", "noise floor"] {
+        #expect(rnDiagRow(before, label) == "unknown", "\(label)")
+    }
+}
+
+@MainActor @Test func rnDiagRowsShowTelemetry() {
+    let status = RNodeStatus(online: true, bitrate: 1302, lastRSSI: -97, lastSNR: 6.25,
+                             channelLoadShort: 2.15, channelLoadLong: 0.8,
+                             airtimeShort: 1.5, airtimeLong: 0.25, noiseFloor: -117)
+    let layer = rnDiagLayer(rnDiagState(status: status))
+    #expect(rnDiagRow(layer, "last RSSI") == "-97 dBm")
+    #expect(rnDiagRow(layer, "last SNR") == "6.25 dB")
+    #expect(rnDiagRow(layer, "channel load") == "2.15% / 0.80%")
+    // Distinct from the channel load values, so crossed fields fail.
+    #expect(rnDiagRow(layer, "airtime") == "1.50% / 0.25%")
+    #expect(rnDiagRow(layer, "noise floor") == "-117 dBm")
+    #expect(rnDiagRow(layer, "bitrate") == "1302 bps")
+}
+
+/// Only one side of a pair known: that side shows, the other reads unknown.
+@MainActor @Test func rnDiagHalfKnownPercentPairShowsTheKnownSide() {
+    let status = RNodeStatus(online: true, channelLoadShort: 2.15, channelLoadLong: nil,
+                             airtimeShort: nil, airtimeLong: 0.25)
+    let layer = rnDiagLayer(rnDiagState(status: status))
+    #expect(rnDiagRow(layer, "channel load") == "2.15% / unknown")
+    #expect(rnDiagRow(layer, "airtime") == "unknown / 0.25%")
+}
+
+@MainActor @Test func rnDiagPlatformNames() {
+    func platform(_ value: UInt8?) -> String? {
+        rnDiagRow(rnDiagLayer(rnDiagState(status: RNodeStatus(platform: value))), "platform")
+    }
+    #expect(platform(0x80) == "ESP32")
+    #expect(platform(0x70) == "nRF52")
+    #expect(platform(0x90) == "unknown (0x90)")
+    #expect(platform(0x0A) == "unknown (0x0A)")
+    #expect(platform(nil) == "unknown")
+}
+
+@MainActor @Test func rnDiagHardwareErrorNames() {
+    func error(_ value: UInt8?) -> String? {
+        rnDiagRow(rnDiagLayer(rnDiagState(status: RNodeStatus(lastHardwareError: value))), "last hardware error")
+    }
+    #expect(error(0x01) == "radio init failed")
+    #expect(error(0x02) == "transmit failed")
+    #expect(error(0x03) == "EEPROM locked")
+    #expect(error(0x04) == "queue full")
+    #expect(error(0x05) == "memory low")
+    #expect(error(0x06) == "modem timeout")
+    #expect(error(0x42) == "code 0x42")
+    #expect(error(0x0B) == "code 0x0B")
+    // Only when set.
+    #expect(error(nil) == nil)
+}
+
+@MainActor @Test func rnDiagCountersAreListed() {
+    let counters = RNodeStatus.Counters(received: 1, sent: 2, oversize: 3, queueFull: 4, sendFailed: 5,
+                                        hardwareErrors: 6)
+    let layer = rnDiagLayer(rnDiagState(status: RNodeStatus(lastHardwareError: 0x01, counters: counters)))
+    let expected: [(String, String)] = [
+        ("received", "1"), ("sent", "2"), ("oversize", "3"), ("queue full", "4"), ("send failed", "5"),
+        ("hardware errors", "6"),
+    ]
+    for (label, value) in expected {
+        #expect(rnDiagRow(layer, label) == value, "\(label)")
+    }
+    // The six counter rows close the layer, in this order.
+    #expect(layer?.rows.suffix(6).map(\.label) == expected.map(\.0))
+    // `Counters()` is all zero, and `+` / `+=` add field by field (lane D sums retired slots).
+    #expect(RNodeStatus.Counters() == RNodeStatus.Counters(received: 0, sent: 0, oversize: 0, queueFull: 0,
+                                                           sendFailed: 0, hardwareErrors: 0))
+    var sum = counters
+    sum += counters
+    #expect(sum == counters + counters)
+    #expect(sum == RNodeStatus.Counters(received: 2, sent: 4, oversize: 6, queueFull: 8, sendFailed: 10,
+                                        hardwareErrors: 12))
+}
+
+/// The Release gate hides the layer, not just its rows.
+@MainActor @Test func rnDiagLayerIsAbsentWithTheGateOff() {
+    var state = rnDiagState()
+    state.rnodeAvailable = false
+    let titles = DiagnosticsSnapshot(from: state, at: fixedDate).layers.map(\.title)
+    #expect(!titles.contains("RNode"))
+    // Precondition: the rest of the snapshot is still there.
+    #expect(titles.contains("MeshCore"))
+}
+
+/// Review Focus 4: the radio's name is attacker-controlled, from the settings (picked from an
+/// advertisement) and from the radio itself. Rows are escaped by `text`, the reason is not, so neither
+/// name may reach a reason. The fixture is dial-ready and offline, so the reason comes from
+/// `radioLinkLayer` rather than the fixed settings text. Same shape as
+/// `mcDiagAHostileRadioNameCannotForgeLines`.
+@MainActor @Test func rnDiagAHostileRadioNameCannotForgeLines() {
+    let hostileName = "RNode \n[ok] x"
+    let hostile = rnDiagState(name: hostileName, status: RNodeStatus(online: false, radioName: hostileName))
+    let benign = rnDiagState(name: "RNode", status: RNodeStatus(online: false, radioName: "RNode"))
+    let snap = DiagnosticsSnapshot(from: hostile, at: fixedDate)
+    // Precondition: the hostile name really reached both rows, and the layer has a reason.
+    #expect(rnDiagRow(rnDiagLayer(snap), "radio") == hostileName)
+    #expect(rnDiagRow(rnDiagLayer(snap), "radio name") == hostileName)
+    #expect(rnDiagLayer(snap)?.reason == "radio not connected")
+    let lines = snap.text.split(separator: "\n", omittingEmptySubsequences: false)
+    let control = DiagnosticsSnapshot(from: benign, at: fixedDate).text
+        .split(separator: "\n", omittingEmptySubsequences: false)
+    #expect(lines.count == control.count)
+    #expect(!lines.contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[ok] x") })
+    #expect(snap.text.contains("RNode \\n[ok] x"))
+}
+
+/// Settings' sentence for each cause: the same wording as MeshCore's (one shared mapping), and the
+/// driver's own text for `.other`.
+@MainActor @Test func rnDiagUserMessageForEachCause() {
+    #expect(RNodeStatus(adapterUnavailable: .poweredOff).userMessage
+            == "Bluetooth is off. Turn it on to reach the radio.")
+    #expect(RNodeStatus(adapterUnavailable: .unauthorized).userMessage
+            == "Bluetooth permission is off for this app. Allow it in Settings.")
+    #expect(RNodeStatus(adapterUnavailable: .unsupported).userMessage
+            == "This device has no Bluetooth LE radio.")
+    #expect(RNodeStatus(adapterUnavailable: .other("x")).userMessage == "x")
+    #expect(RNodeStatus(adapterUnavailable: .other(nil)).userMessage
+            == "The Bluetooth path to the radio is unavailable.")
+    #expect(RNodeStatus().userMessage == nil)
 }

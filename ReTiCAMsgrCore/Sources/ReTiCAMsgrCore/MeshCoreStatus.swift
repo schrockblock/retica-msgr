@@ -84,18 +84,7 @@ public struct MeshCoreStatus: Equatable, Sendable {
     /// For Settings: the driver's own text for `.other`, a sentence for the causes the user can act
     /// on, nil while the adapter is available.
     public var userMessage: String? {
-        switch adapterUnavailable {
-        case .none:
-            return nil
-        case let .other(detail):
-            return detail ?? "The Bluetooth path to the radio is unavailable."
-        case .unauthorized:
-            return "Bluetooth permission is off for this app. Allow it in Settings."
-        case .unsupported:
-            return "This device has no Bluetooth LE radio."
-        case .poweredOff:
-            return "Bluetooth is off. Turn it on to reach the radio."
-        }
+        adapterUnavailable?.userMessage
     }
 }
 

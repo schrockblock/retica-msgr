@@ -39,15 +39,21 @@ public struct RadioScanner: Sendable {
     /// Scans for MeshCore radios. The default finishes at once, so a host that installs no
     /// MeshCore scanner reaches `scanEnded` instead of a spinner that never resolves.
     public var scanMeshCore: @Sendable () -> AsyncStream<RadioScanResult>
+    /// Scans for RNodes. The default finishes at once, for the same reason as `scanMeshCore`.
+    public var scanRNode: @Sendable () -> AsyncStream<RadioScanResult>
 
     public init(
         scan: @escaping @Sendable () -> AsyncStream<RadioScanResult>,
         scanMeshCore: @escaping @Sendable () -> AsyncStream<RadioScanResult> = {
             AsyncStream<RadioScanResult> { $0.finish() }
+        },
+        scanRNode: @escaping @Sendable () -> AsyncStream<RadioScanResult> = {
+            AsyncStream<RadioScanResult> { $0.finish() }
         }
     ) {
         self.scan = scan
         self.scanMeshCore = scanMeshCore
+        self.scanRNode = scanRNode
     }
 
     /// The scan stream for a radio kind.
@@ -55,6 +61,7 @@ public struct RadioScanner: Sendable {
         switch kind {
         case .meshtastic: scan()
         case .meshCore: scanMeshCore()
+        case .rnode: scanRNode()
         }
     }
 }
@@ -63,6 +70,7 @@ public struct RadioScanner: Sendable {
 public enum RadioKind: String, Equatable, Sendable {
     case meshtastic
     case meshCore
+    case rnode
 }
 
 extension RadioScanner: DependencyKey {
@@ -75,7 +83,8 @@ extension RadioScanner: DependencyKey {
 
     public static let testValue = RadioScanner(
         scan: unimplemented("RadioScanner.scan", placeholder: AsyncStream<RadioScanResult> { $0.finish() }),
-        scanMeshCore: unimplemented("RadioScanner.scanMeshCore", placeholder: AsyncStream<RadioScanResult> { $0.finish() }))
+        scanMeshCore: unimplemented("RadioScanner.scanMeshCore", placeholder: AsyncStream<RadioScanResult> { $0.finish() }),
+        scanRNode: unimplemented("RadioScanner.scanRNode", placeholder: AsyncStream<RadioScanResult> { $0.finish() }))
 
     /// Three fake radios per kind, then an open stream (a scan in progress), for SwiftUI previews.
     public static let previewValue = RadioScanner(
@@ -97,6 +106,16 @@ extension RadioScanner: DependencyKey {
                     id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-0000000000C2")!, name: "Base camp", rssi: -68))
                 continuation.yield(RadioScanResult(
                     id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-0000000000C3")!, name: nil, rssi: -90))
+            }
+        },
+        scanRNode: {
+            AsyncStream<RadioScanResult> { continuation in
+                continuation.yield(RadioScanResult(
+                    id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-0000000000D1")!, name: "RNode 1A2B", rssi: -57))
+                continuation.yield(RadioScanResult(
+                    id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-0000000000D2")!, name: "RNode C3D4", rssi: -69))
+                continuation.yield(RadioScanResult(
+                    id: UUID(uuidString: "0A1B2C3D-0000-4000-8000-0000000000D3")!, name: nil, rssi: -91))
             }
         })
 }
