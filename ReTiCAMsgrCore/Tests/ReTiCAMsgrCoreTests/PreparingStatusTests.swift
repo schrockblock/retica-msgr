@@ -70,6 +70,15 @@ private func copy(_ hex: String?, _ status: String) -> GroupDelivery {
     #expect(store.state.sendStage(for: sendingRow())?.label == "Sending…")
 }
 
+/// A send queued behind another message's stamp search reads "Preparing…" too.
+/// Mutation: ignore `.queued`.
+@MainActor @Test func aQueuedSendIsPreparing() async throws {
+    let store = try freshStore()
+    await store.send(preparing(hash, .queued))
+    #expect(store.state.preparingHashes == [hashHex])
+    #expect(store.state.sendStage(for: sendingRow())?.label == "Preparing…")
+}
+
 /// A re-stamp after a late announce reports `.stamping` again after `.handedOver`.
 /// Mutation: make `.handedOver` permanent for the hash.
 @MainActor @Test func restampAfterHandOverIsPreparingAgain() async throws {

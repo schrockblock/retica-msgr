@@ -2512,7 +2512,8 @@ public struct AppFeature {
 
             case let .node(.client(.delegate(.deliveryPreparing(hash, phase)))):
                 switch phase {
-                case .waitingForPeer, .stamping: state.preparingHashes.insert(hash.hexString)
+                // `.queued`: waiting behind another message's stamp search (ReTiCA runs one at a time).
+                case .waitingForPeer, .queued, .stamping: state.preparingHashes.insert(hash.hexString)
                 case .handedOver: state.preparingHashes.remove(hash.hexString)
                 }
                 return .none
