@@ -283,10 +283,10 @@ public struct AppFeature {
         public var profilePhotoError: String? = nil
         /// Peers' stored profiles by lowercase hex, mirrored from the `peerProfiles` table.
         public var peerProfiles: [String: PeerProfile] = [:]
-        /// The photo may be attached only when a non-Meshtastic interface is connected (the slow
-        /// radio path would take minutes for it).
+        /// The photo may be attached only when an interface other than a LoRa radio (Meshtastic or
+        /// MeshCore) is connected: the slow radio path would take minutes for it.
         public var profilePhotoMayRide: Bool {
-            connectedInterfaces.contains { !$0.rawValue.hasPrefix("meshtastic:") }
+            connectedInterfaces.contains { !AppFeature.isLoRaRadio($0) }
         }
         /// Opt-in: also run a TCP listener so other nodes on the LAN can dial THIS device
         /// directly (peer-to-peer, no shared rnsd). OFF by default — a listening socket is an
@@ -366,6 +366,25 @@ public struct AppFeature {
         /// Counters of radio slots already replaced, so Diagnostics stays cumulative since launch
         /// (`MeshtasticStatus.Counters`) across a radio change. Session-only.
         public var meshtasticRetiredCounters = MeshtasticStatus.Counters()
+        /// A MeshCore slot stop (or turn-off removal) in flight, completed at the slot's
+        /// `.radioOffline` (`finishMeshCoreSwap`). Session-only.
+        public var meshCoreSwap: MeshCoreSlotSwap? = nil
+        /// What the current MeshCore slot was built for, nil with no slot. Session-only.
+        public var meshCoreSlotIdentity: MeshCoreSlotIdentity? = nil
+        /// Counters of MeshCore slots already replaced, so Diagnostics stays cumulative since launch.
+        /// Session-only.
+        public var meshCoreRetiredCounters = MeshCoreStatus.Counters()
+        /// The MeshCore radio last failed on a policy (`MeshCoreLiveMessage.isPolicyFailure`: no free
+        /// slot, firmware too old, channel setup refused). Each attempt's handshake drains the
+        /// radio's queue and can't succeed until the user acts, so foreground and push-wake re-dials
+        /// leave it alone. Cleared by Connect and by installing or restarting the slot for a
+        /// different radio or key. Session-only, so a fresh launch tries once.
+        public var meshCorePolicyFailed = false
+        /// The radio is known not to hold our channel: the last attempt failed on no free slot or
+        /// firmware too old, so nothing was written, and a turn-off doesn't claim it left a channel
+        /// on the radio. Cleared wherever `meshCorePolicyFailed` is (each of those lets a new attempt
+        /// write) and at `.radioOnline`. Session-only.
+        public var meshCoreChannelKnownAbsent = false
 
         /// Contact links by peer address (spec 2026-10-11 §4), loaded at launch and after every
         /// link write. The one source for "what do we call this peer" when a link exists.
@@ -849,6 +868,12 @@ public struct AppFeature {
     /// Where the node list lives: `<Application Support>/nodes.json`.
     public static let nodesFileURL = URL.applicationSupportDirectory.appending(path: "nodes.json")
     public static let draftsFileURL = URL.applicationSupportDirectory.appending(path: "drafts.json")
+    /// A slow LoRa radio's interface: a Meshtastic (`meshtastic:`) or MeshCore (`meshcore:`) slot.
+    /// The profile photo doesn't ride on one alone, and one going down re-announces over TCP.
+    static func isLoRaRadio(_ id: InterfaceID) -> Bool {
+        id.rawValue.hasPrefix("meshtastic:") || id.rawValue.hasPrefix("meshcore:")
+    }
+
     /// The shortest gap between two radio-down re-announces over TCP.
     static let radioDownAnnounceInterval: TimeInterval = 10 * 60
 
@@ -857,7 +882,7 @@ public struct AppFeature {
     /// `radioDownAnnounceInterval` old. Sorted, so the announces go out in a stable order.
     static func radioDownAnnounceTargets(departing: InterfaceID, connected: Set<InterfaceID>,
                                          lastAnnounceAt: Date?, now: Date) -> [InterfaceID] {
-        guard departing.rawValue.hasPrefix("meshtastic:") else { return [] }
+        guard isLoRaRadio(departing) else { return [] }
         if let lastAnnounceAt, now.timeIntervalSince(lastAnnounceAt) < radioDownAnnounceInterval { return [] }
         return connected
             .filter { $0.rawValue.hasPrefix("tcp:") || $0.rawValue.hasPrefix("tcpserver:") }
@@ -907,7 +932,7 @@ public struct AppFeature {
                     .merge(
                     // Removals first (`.concatenate`): a departing slot must be gone before
                     // `.start` could dial it.
-                    .concatenate(sync.removals, sync.meshtastic, .send(.node(.client(.endpoint(.start))))),
+                    .concatenate(sync.removals, sync.radios, .send(.node(.client(.endpoint(.start))))),
                     pushSyncEffects(state),
                     .send(.push(.appLaunched)),
                     .run { [database] send in try await reloadConversations(database, send) },
@@ -1262,6 +1287,11 @@ public struct AppFeature {
                 // would restart a BLE interface the picker paused and take FCB's one scan from it.
                 // The Connect button sits behind the sheet; the tap is dropped, not deferred.
                 guard state.radioPicker == nil else { return .none }
+                // An explicit Connect retries a MeshCore radio that failed on policy (the user may
+                // have freed a slot or updated it): `.endpoint(.start)` below restarts it. This
+                // drains the radio's queue, which Settings' `requiredWarning` covers.
+                state.meshCorePolicyFailed = false
+                state.meshCoreChannelKnownAbsent = false
                 // Amendment A10 (final-review M1): only show "Connecting…" when something will
                 // actually dial.
                 if state.somethingWillDial {
@@ -1269,7 +1299,7 @@ public struct AppFeature {
                 }
                 let sync = syncEndpointNodes(&state)
                 return .merge(
-                    .concatenate(sync.removals, sync.meshtastic, .send(.node(.client(.endpoint(.start))))),
+                    .concatenate(sync.removals, sync.radios, .send(.node(.client(.endpoint(.start))))),
                     heldPushSyncEffects(state)
                 )
 
@@ -1277,6 +1307,7 @@ public struct AppFeature {
                 state.connection = .disconnected
                 // A radio swap that finishes after this leaves the new radio stopped.
                 state.meshtasticSwap?.startNext = false
+                state.meshCoreSwap?.startNext = false
                 return .send(.node(.client(.endpoint(.stop))))
 
             case let .node(.client(.endpoint(.transport(.interfaceConnected(interfaceID, _))))):
@@ -2540,16 +2571,23 @@ public struct AppFeature {
                 // clear goes through the raw transport action. The persisted flag is re-applied on
                 // interfaceConnected so it survives relaunch.
                 state.$relayEnabled.withLock { $0 = enabled }
+                // The MeshCore radio's can-route bit follows at once too, with no restart (lane B's
+                // `.setCanRoute`). Only to a slot that exists: an action to a missing slot trips
+                // `ifLet`. A slot installed later reads `relayEnabled` itself.
+                let canRoute: Effect<Action> = state.node.client.endpoint.meshCore != nil
+                    ? .send(.node(.client(.endpoint(.meshCore(.setCanRoute(enabled)))))) : .none
                 if enabled {
                     let identity = state.identity
                     return .merge(
                         .send(.node(.client(.endpoint(.enableRelay(identity))))),
-                        .send(.node(.client(.endpoint(.transport(.setRecursivePathRequests(true))))))
+                        .send(.node(.client(.endpoint(.transport(.setRecursivePathRequests(true)))))),
+                        canRoute
                     )
                 } else {
                     return .merge(
                         .send(.node(.client(.endpoint(.transport(.setTransportIdentity(nil)))))),
-                        .send(.node(.client(.endpoint(.transport(.setRecursivePathRequests(false))))))
+                        .send(.node(.client(.endpoint(.transport(.setRecursivePathRequests(false)))))),
+                        canRoute
                     )
                 }
 
@@ -3105,6 +3143,7 @@ public struct AppFeature {
         MeshtasticSettingsReducer()
         MeshCoreSettingsReducer()
         MeshtasticRadioReducer()
+        MeshCoreRadioReducer()
         BLESlotReducer()
     }
 
@@ -3700,10 +3739,10 @@ private func migrateNodesIfNeeded(_ state: inout AppFeature.State, makeID: () ->
 /// still has an enabled entry kept as it is, so a re-dial never tears down a live socket. The
 /// listener and BLE slots follow their settings exactly as before (a running BLE slot is stopped
 /// before it is dropped). Returns the removal effects, including that BLE `.stop` (callers
-/// `.concatenate` them before any dial), the ids of the slots added, and the radio
-/// slot's effect (run with the removals).
+/// `.concatenate` them before any dial), the ids of the slots added, and the two radio
+/// slots' effects, merged (run with the removals).
 private func syncEndpointNodes(_ state: inout AppFeature.State)
-    -> (removals: Effect<AppFeature.Action>, added: [InterfaceID], meshtastic: Effect<AppFeature.Action>) {
+    -> (removals: Effect<AppFeature.Action>, added: [InterfaceID], radios: Effect<AppFeature.Action>) {
     let wanted = state.enabledNodes
     var wantedIDs = Set(wanted.map(\.interfaceID))
     // The slot an in-flight `/unregister` runs over is kept until it settles (backlog item 1):
@@ -3759,12 +3798,14 @@ private func syncEndpointNodes(_ state: inout AppFeature.State)
     // The Meshtastic radio slot follows `meshtasticEnabled` + `meshtasticRadioUUID` (spec 2026-10-16
     // §7 lane E). Dropping a running slot is the amended Contract 3 protocol — `.stop`, wait for
     // `.radioOffline`, then replace — so it is an effect the caller runs, never a direct `= nil`.
-    let meshtastic = syncMeshtasticSlot(&state)
+    // The MeshCore slot follows `meshCoreWillDial` the same way (spec 2026-11-07 §6, lane D). Each
+    // radio's swap is its own, so one radio's stop never touches the other.
+    let radios: Effect<AppFeature.Action> = .merge(syncMeshtasticSlot(&state), syncMeshCoreSlot(&state))
 
     let removals: Effect<AppFeature.Action> = .merge(stale.map {
         .send(.node(.client(.endpoint(.removeTCPClient($0)))))
     } + [bleRemoval])
-    return (removals, added, meshtastic)
+    return (removals, added, radios)
 }
 
 /// `.connect` for each of `ids` (slots `syncEndpointNodes` just added, or nodes found down).
@@ -3815,7 +3856,7 @@ private func heldPushSyncEffects(_ state: AppFeature.State) -> Effect<AppFeature
 /// (`.concatenate`), so a departing slot is never dialed and the receives are deterministic.
 private func nodeChangeEffects(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
-    return .concatenate(sync.removals, sync.meshtastic, connectEffects(sync.added), heldPushSyncEffects(state))
+    return .concatenate(sync.removals, sync.radios, connectEffects(sync.added), heldPushSyncEffects(state))
 }
 
 /// After a node edit (backlog item 1). When push is on and the edit moved the push role off a hub
@@ -3882,7 +3923,8 @@ private func propagationSyncEffect(_ state: AppFeature.State) -> Effect<AppFeatu
 /// restart; `down.isEmpty` alone would now skip it in that case, so `noClientSlots` keeps the
 /// restart reachable. `connection` goes to connecting only when nothing is up (amendment A10).
 /// The push re-point is held while an `/unregister` is in flight (`heldPushSyncEffects`).
-/// Also restarts a stopped or unavailable Meshtastic radio slot (never one a swap is replacing).
+/// Also restarts a stopped or unavailable Meshtastic or MeshCore radio slot (never one a swap is
+/// replacing, and never a MeshCore radio that failed on policy).
 private func redialDownNodes(_ state: inout AppFeature.State, restartListener: Bool) -> Effect<AppFeature.Action> {
     let sync = syncEndpointNodes(&state)
     // Restart a stopped or unavailable radio (spec 2026-10-16 §7 lane E). `.start` is ignored by a
@@ -3893,9 +3935,18 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
     let radioRestart: Effect<AppFeature.Action> =
         state.meshtasticSwap == nil && state.node.client.endpoint.meshtastic != nil
             ? .send(.node(.client(.endpoint(.meshtastic(.start))))) : .none
+    // The MeshCore radio the same way (spec 2026-11-07 §6, lane D), and not after a policy failure
+    // (no free slot, old firmware, a refused channel write): every attempt's handshake drains the
+    // radio's queue and can't succeed until the user acts. Only Connect, or a new radio or key,
+    // retries it. A MeshCore session never scans either, so the picker doesn't defer this.
+    let meshCoreRestart: Effect<AppFeature.Action> =
+        state.meshCoreSwap == nil && state.node.client.endpoint.meshCore != nil && !state.meshCorePolicyFailed
+            ? .send(.node(.client(.endpoint(.meshCore(.start))))) : .none
     let down = tcpDownIDs(state)
     let noClientSlots = state.node.client.endpoint.tcpClients.isEmpty
-    guard !down.isEmpty || noClientSlots else { return .concatenate(sync.removals, sync.meshtastic, radioRestart) }
+    guard !down.isEmpty || noClientSlots else {
+        return .concatenate(sync.removals, sync.radios, .merge(radioRestart, meshCoreRestart))
+    }
     // Final-review M1: "nothing is up" alone is not enough — with no enabled node, no listener, no
     // BLE and no Meshtastic radio, nothing here is going to dial, and `.connecting` would never
     // resolve.
@@ -3919,7 +3970,8 @@ private func redialDownNodes(_ state: inout AppFeature.State, restartListener: B
             dials.append(.send(.node(.client(.endpoint(.ble(.start))))))
         }
     }
-    return .concatenate(sync.removals, sync.meshtastic, .merge(dials + [radioRestart]), heldPushSyncEffects(state))
+    return .concatenate(sync.removals, sync.radios, .merge(dials + [radioRestart, meshCoreRestart]),
+                        heldPushSyncEffects(state))
 }
 
 // Seed `reachablePeers` (the Send gate, "a send would route now") from learned destinations that
