@@ -33,10 +33,32 @@ import Testing
 }
 
 @Test func rnCopyProblemMessagesAreTheSpecText() {
-    #expect(RNodeCopy.problemMessage(.frequencyMissing) == "Enter a frequency.")
-    #expect(RNodeCopy.problemMessage(.frequencyUnreadable) == "Enter the frequency in MHz, like 868.1.")
-    #expect(RNodeCopy.problemMessage(.txPowerOutOfRange)
-            == "Use a TX power from 0 to 37 dBm. Your radio may allow less.")
+    let expected: [(RNodeSettingsProblem, String)] = [
+        (.frequencyMissing, "Enter a frequency."),
+        (.frequencyUnreadable, "Enter the frequency in MHz, like 868.1."),
+        (.frequencyOutOfRange, "Enter a frequency between 137 and 3000 MHz."),
+        (.bandwidthUnreadable, "Enter the bandwidth in kHz, like 62.5."),
+        (.bandwidthOutOfRange, "Enter a bandwidth between 7.8 and 1625 kHz."),
+        (.spreadingFactorOutOfRange, "Use a spreading factor from 5 to 12."),
+        (.codingRateOutOfRange, "Use a coding rate from 5 to 8."),
+        (.txPowerOutOfRange, "Use a TX power from 0 to 37 dBm. Your radio may allow less."),
+    ]
+    #expect(expected.count == RNodeSettingsProblem.allCases.count)
+    for (problem, text) in expected {
+        #expect(RNodeCopy.problemMessage(problem) == text, "\(problem)")
+    }
+}
+
+/// Settings lists the problems minus `.frequencyMissing`, which the grey notice covers.
+@MainActor @Test func rnCopyShownProblemsLeaveOutTheMissingFrequency() async {
+    let store = rnStore()
+    #expect(store.state.rnodeSettingsProblems == [.frequencyMissing])
+    #expect(store.state.rnodeShownProblems == [])
+    await store.send(.rnodeFrequencyTextChanged("868,1"))
+    #expect(store.state.rnodeShownProblems == [.frequencyUnreadable])
+    await store.send(.rnodeFrequencyTextChanged("868.1"))
+    await store.send(.rnodeSpreadingFactorChanged(13))
+    #expect(store.state.rnodeShownProblems == [.spreadingFactorOutOfRange])
 }
 
 @Test func rnCopyBoardsNoticeNamesEveryBLEBoard() {

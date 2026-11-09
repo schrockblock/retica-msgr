@@ -135,6 +135,9 @@ struct SettingsView: View {
                 nameInput = store.displayName
                 // The Contacts section shows access state and import candidates: refresh both.
                 store.send(.contactLinkSheetAppeared)
+                #if DEBUG
+                rnodeReseedFields()
+                #endif
             }
         }
     }
@@ -609,7 +612,7 @@ struct SettingsView: View {
                     in: RNodeRadioSettings.txPowerRange) {
                 Text("\(RNodeCopy.txPowerRow): \(store.rnodeTXPowerDBm)")
             }
-            ForEach(store.rnodeSettingsProblems, id: \.self) { problem in
+            ForEach(store.rnodeShownProblems, id: \.self) { problem in
                 rnodeNote(RNodeCopy.problemMessage(problem), color: .red)
             }
             rnodeNote(RNodeCopy.boardsNotice)
@@ -619,14 +622,17 @@ struct SettingsView: View {
         } footer: {
             Text(RNodeCopy.footer)
         }
-        .onAppear {
-            // Re-seed the fields from the stored values and send both texts, which clears a text
-            // problem left over from an earlier visit (the field no longer shows that text).
-            rnodeFrequencyText = store.rnodeFrequencyHz.map(RNodeRadioSettings.megahertzText) ?? ""
-            rnodeBandwidthText = RNodeRadioSettings.kilohertzText(store.rnodeBandwidthHz)
-            store.send(.rnodeFrequencyTextChanged(rnodeFrequencyText))
-            store.send(.rnodeBandwidthTextChanged(rnodeBandwidthText))
-        }
+    }
+
+    /// Called once from the Settings screen's own `onAppear` (not from a row, which would fire again
+    /// whenever the row scrolls back into view and overwrite what is being typed). Re-seeds the fields
+    /// from the stored values and sends both texts, which clears a text problem left over from an
+    /// earlier visit (the field no longer shows that text).
+    private func rnodeReseedFields() {
+        rnodeFrequencyText = store.rnodeFrequencyHz.map(RNodeRadioSettings.megahertzText) ?? ""
+        rnodeBandwidthText = RNodeRadioSettings.kilohertzText(store.rnodeBandwidthHz)
+        store.send(.rnodeFrequencyTextChanged(rnodeFrequencyText))
+        store.send(.rnodeBandwidthTextChanged(rnodeBandwidthText))
     }
 
     /// A labelled number field. A bare `TextField` in a Form hides its title once it has text (and

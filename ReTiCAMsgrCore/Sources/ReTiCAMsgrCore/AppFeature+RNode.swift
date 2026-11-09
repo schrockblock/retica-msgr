@@ -45,6 +45,12 @@ extension AppFeature.State {
         rnodeAvailable && rnodeEnabled && rnodeRadioUUID != nil && rnodeSettingsProblems.isEmpty
     }
 
+    /// The problems Settings lists in red. `.frequencyMissing` is left out: the grey incomplete
+    /// notice already says it, and both would stack on a fresh install.
+    public var rnodeShownProblems: [RNodeSettingsProblem] {
+        rnodeSettingsProblems.filter { $0 != .frequencyMissing }
+    }
+
     /// "Enter a frequency to turn this on." shows only for a plainly empty frequency: with a text
     /// problem standing, that problem's own message already says what to fix.
     public var rnodeIncompleteNoticeVisible: Bool {
