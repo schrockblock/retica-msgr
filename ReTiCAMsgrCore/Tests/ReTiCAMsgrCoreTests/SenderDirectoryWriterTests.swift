@@ -17,7 +17,7 @@ import ReTiCAPushCore
 /// `makeBlockStore` with the writer enabled, a fixed contact thumbnail, an `AvatarStore` the test
 /// can write into, and a `TestClock` the test advances.
 @MainActor
-private func makeDirectoryStore(_ db: any DatabaseWriter, clock: TestClock<Duration>,
+private func makeDirectoryStore(_ db: any DatabaseWriter, clock: any Clock<Duration>,
                                 writer: SenderDirectoryWriter = .liveValue,
                                 avatarStore: AvatarStore = .testValue,
                                 thumbnails: [String: Data] = [:],
@@ -90,15 +90,144 @@ private func directory(_ store: TestStoreOf<AppFeature>) -> SenderDirectory {
     store.state.push.storage.senderDirectory.load()
 }
 
-/// For flows whose other effects never finish (launch, a receive, a group edit), so
-/// `store.finish()` can't be used: polls the directory for up to 3 s of real time.
-@MainActor
-private func eventually(_ store: TestStoreOf<AppFeature>, _ condition: (SenderDirectory) -> Bool) async -> Bool {
-    for _ in 0..<300 {
-        if condition(directory(store)) { return true }
-        try? await Task.sleep(for: .milliseconds(10))
+/// A clock that moves only when told, and that reports each sleeper only once the sleeper is
+/// registered, so a test can never advance before the debounce is asleep (the `TestClock` race).
+/// `signal()` also counts writes, so one wait covers "something slept" and "something was written".
+private final class ManualClock: Clock, @unchecked Sendable {
+    struct Instant: InstantProtocol {
+        var offset: Duration
+        func advanced(by duration: Duration) -> Instant { Instant(offset: offset + duration) }
+        func duration(to other: Instant) -> Duration { other.offset - offset }
+        static func < (lhs: Instant, rhs: Instant) -> Bool { lhs.offset < rhs.offset }
     }
-    return condition(directory(store))
+
+    private struct Sleeper {
+        var id: UUID
+        var deadline: Instant
+        var continuation: CheckedContinuation<Void, any Error>
+    }
+
+    private let lock = NSLock()
+    private var _now = Instant(offset: .zero)
+    private var sleepers: [Sleeper] = []
+    private var cancelled: Set<UUID> = []
+    private var events = 0
+    private var waiters: [(after: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var now: Instant { lock.withLock { _now } }
+    var minimumResolution: Duration { .zero }
+    var eventCount: Int { lock.withLock { events } }
+
+    func sleep(until deadline: Instant, tolerance: Duration?) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                enum Outcome { case due, cancelled, asleep }
+                let outcome: Outcome = lock.withLock {
+                    if cancelled.remove(id) != nil { return .cancelled }
+                    if deadline <= _now { return .due }
+                    sleepers.append(Sleeper(id: id, deadline: deadline, continuation: continuation))
+                    return .asleep
+                }
+                switch outcome {
+                case .due: continuation.resume()
+                case .cancelled: continuation.resume(throwing: CancellationError())
+                case .asleep: signal()
+                }
+            }
+        } onCancel: {
+            let sleeper: Sleeper? = lock.withLock {
+                guard let index = sleepers.firstIndex(where: { $0.id == id }) else {
+                    cancelled.insert(id)
+                    return nil
+                }
+                return sleepers.remove(at: index)
+            }
+            sleeper?.continuation.resume(throwing: CancellationError())
+        }
+    }
+
+    /// Moves to the earliest pending deadline and wakes every sleeper due then; false when none.
+    func advanceToNextDeadline() -> Bool {
+        let due: [Sleeper] = lock.withLock {
+            guard let next = sleepers.map(\.deadline).min() else { return [] }
+            _now = max(_now, next)
+            let due = sleepers.filter { $0.deadline <= _now }
+            sleepers.removeAll { $0.deadline <= _now }
+            return due
+        }
+        for sleeper in due { sleeper.continuation.resume() }
+        return !due.isEmpty
+    }
+
+    func signal() {
+        let ready: [CheckedContinuation<Void, Never>] = lock.withLock {
+            events += 1
+            let ready = waiters.filter { $0.after < events }.map(\.continuation)
+            waiters.removeAll { $0.after < events }
+            return ready
+        }
+        for continuation in ready { continuation.resume() }
+    }
+
+    /// Returns once more than `count` events have happened (or at once if they already have).
+    /// Cancellation (the `.timeLimit`) counts as an event, so the waiter wakes and can throw.
+    func waitForEvent(after count: Int) async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let now: Bool = lock.withLock {
+                    if events > count { return true }
+                    waiters.append((count, continuation))
+                    return false
+                }
+                if now { continuation.resume() }
+            }
+        } onCancel: {
+            signal()
+        }
+    }
+}
+
+/// Every set of inputs the writer saved, in order. Thread-safe: the writer runs in an effect.
+private final class WriteLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _writes: [[String: SenderDirectory.Input]] = []
+    private let clock: ManualClock?
+    var writes: [[String: SenderDirectory.Input]] { lock.withLock { _writes } }
+
+    init(signalling clock: ManualClock? = nil) { self.clock = clock }
+
+    func record(_ inputs: [String: SenderDirectory.Input]) {
+        lock.withLock { _writes.append(inputs) }
+        clock?.signal()
+    }
+
+    /// The live writer (it saves to the store), recording each save.
+    var writer: SenderDirectoryWriter {
+        SenderDirectoryWriter(isEnabled: true) { [self] store, inputs in
+            try store.save(inputs)
+            record(inputs)
+        }
+    }
+}
+
+/// For flows whose other effects never finish (launch, a receive, a group edit), so
+/// `store.finish()` can't be used. Event-driven, with no spinning and no real time: wakes the
+/// earliest sleeper whenever one is registered (the debounce among them), otherwise waits for the
+/// next sleeper or write, until a write after the first `after` writes satisfies `condition`.
+/// Bounded by each test's `.timeLimit`; a cancelled wait ends at the next event.
+@MainActor
+private func advanceUntilWrite(_ clock: ManualClock, _ log: WriteLog, after: Int = 0,
+                               _ condition: ([String: SenderDirectory.Input]) -> Bool) async throws {
+    while !log.writes.dropFirst(after).contains(where: condition) {
+        try Task.checkCancellation()
+        let seen = clock.eventCount
+        if clock.advanceToNextDeadline() {
+            await Task.yield()
+            continue
+        }
+        await clock.waitForEvent(after: seen)
+    }
 }
 
 @MainActor
@@ -329,13 +458,14 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     try await seedMessage(from: aliceHex, db, body: "second", at: blockT0.addingTimeInterval(60))
     let rows = try await conversationRows(db)
     #expect(rows != store.state.conversations, "the list row's last body and time changed")
+    await store.skipReceivedActions(strict: false)
     store.exhaustivity = .on
     // Only the list changes: the fingerprint is the same, so nothing is scheduled.
     await store.send(.conversationsLoaded(rows)) { $0.conversations = rows }
     await store.finish()
 }
 
-@MainActor @Test func senderDirectoryRewritesAfterAnIncomingRoster() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryRewritesAfterAnIncomingRoster() async throws {
     // A roster invites me to a group with Dana: only the database knows her, and no peer
     // conversation changes, so the roster signal from the receive is what schedules the write.
     let db = try AppDatabase.makeInMemory()
@@ -345,10 +475,11 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     let cyHex = lxmfAddressHex(cy)
     let dana = Identity()
     let danaHex = lxmfAddressHex(dana)
-    let clock = TestClock()
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
     var initial = AppFeature.State(identity: me, pushStorage: .temporary())
     knowPeer(dana, announcing: "Dana", in: &initial)
-    let store = makeDirectoryStore(db, clock: clock) { $0 = initial }
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { $0 = initial }
 
     let roster = rosterWire(from: cy, to: me, groupHex: directoryGroupHex, members: [cyHex, meHex, danaHex])
     await store.send(.node(.client(.delegate(.messageReceived(message: roster, signatureValidated: true,
@@ -356,11 +487,11 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     await receiveGroupsChanged(store)
     await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
     #expect(!store.state.conversations.contains { $0.kind == .peer })
-    await clock.advance(by: .seconds(1))
-    #expect(await eventually(store) { $0.entries[danaHex]?.name == "Dana" })
+    try await advanceUntilWrite(clock, log) { $0[danaHex]?.name == "Dana" }
+    #expect(directory(store).entries[danaHex]?.name == "Dana")
 }
 
-@MainActor @Test func senderDirectoryRewritesAfterAddingAGroupMember() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryRewritesAfterAddingAGroupMember() async throws {
     let db = try AppDatabase.makeInMemory()
     let me = Identity()
     let meHex = lxmfAddressHex(me)
@@ -369,7 +500,7 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     let dana = Identity()
     let danaHex = lxmfAddressHex(dana)
     try await seedGroup(me: meHex, members: [meHex, carolHex], db)
-    let clock = TestClock()
+    let clock = ManualClock()
     var initial = AppFeature.State(identity: me, pushStorage: .temporary())
     knowPeer(dana, announcing: "Dana", in: &initial)
     initial.openPeerHex = directoryGroupHex
@@ -377,45 +508,125 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     initial.openGroup = ChatGroup(groupHex: directoryGroupHex, name: "Climbing", creatorHex: meHex, revision: 1,
                                   state: GroupState.active, updatedAt: blockT0)
     initial.openGroupMembers = [meHex, carolHex].map { GroupMember(groupHex: directoryGroupHex, memberHex: $0) }
-    let store = makeDirectoryStore(db, clock: clock) { $0 = initial }
+    let log = WriteLog(signalling: clock)
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { $0 = initial }
 
     await store.send(.addGroupMembers([danaHex]))
     await receiveGroupsChanged(store)
-    await clock.advance(by: .seconds(1))
-    #expect(await eventually(store) { $0.entries[danaHex]?.name == "Dana" })
+    try await advanceUntilWrite(clock, log) { $0[danaHex]?.name == "Dana" }
+    #expect(directory(store).entries[danaHex]?.name == "Dana")
 }
 
-@MainActor @Test func senderDirectoryRewritesAfterCreatingAGroup() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryRewritesAfterCreatingAGroup() async throws {
     let db = try AppDatabase.makeInMemory()
     let me = Identity()
     let dana = Identity()
     let danaHex = lxmfAddressHex(dana)
-    let clock = TestClock()
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
     var initial = AppFeature.State(identity: me, pushStorage: .temporary())
     knowPeer(dana, announcing: "Dana", in: &initial)
-    let store = makeDirectoryStore(db, clock: clock) { $0 = initial }
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { $0 = initial }
 
     await store.send(.createGroup(name: "Climbing", members: [danaHex]))
     await receiveGroupsChanged(store)
-    await clock.advance(by: .seconds(1))
-    #expect(await eventually(store) { $0.entries[danaHex]?.name == "Dana" })
+    try await advanceUntilWrite(clock, log) { $0[danaHex]?.name == "Dana" }
+    #expect(directory(store).entries[danaHex]?.name == "Dana")
 }
 
-@MainActor @Test func senderDirectoryRewritesAtLaunchForGroupOnlyMembers() async throws {
-    // Launch is a roster signal: a user whose only contacts are group members still gets a directory.
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryRewritesAtLaunchForGroupOnlyMembers() async throws {
+    // Launch is a roster signal: a user whose only contacts are group members still gets a
+    // directory. Nothing about Dana is in the initial state: her name comes back through the
+    // launch restore of the learned-peer table, and her key is learned after the trigger. The
+    // write must resolve both from the state at write time, not when the debounce started.
     let db = try AppDatabase.makeInMemory()
     let me = Identity()
     let meHex = lxmfAddressHex(me)
     let dana = Identity()
     let danaHex = lxmfAddressHex(dana)
+    let danaHash = Data(hexString: danaHex)!
     try await seedGroup(me: meHex, members: [meHex, danaHex], db)
-    let clock = TestClock()
-    var initial = AppFeature.State(identity: me, pushStorage: .temporary())
-    knowPeer(dana, announcing: "Dana", in: &initial)
-    let store = makeDirectoryStore(db, clock: clock) { $0 = initial }
+    try await db.write { db in
+        try LearnedPeerRow.insert {
+            LearnedPeerRow(destinationHashHex: danaHex, displayName: "Dana", stampCost: nil,
+                           supportsCompression: false, learnedAt: blockT0)
+        }.execute(db)
+    }
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { $0 = AppFeature.State(identity: me, pushStorage: .temporary()) }
+    #expect(store.state.peerDisplayName(danaHex) == nil)
+    #expect(store.state.senderPublicKey(danaHex) == nil)
 
     await store.send(.onLaunch)
-    await store.receive { if case .conversationsLoaded = $0 { return true }; return false }
-    await clock.advance(by: .seconds(1))
-    #expect(await eventually(store) { $0.entries[danaHex]?.name == "Dana" })
+    await store.send(.node(.client(.router(.learnedIdentity(destinationHash: danaHash, identity: dana)))))
+    try await advanceUntilWrite(clock, log) { $0[danaHex]?.name == "Dana" }
+    #expect(directory(store).entries[danaHex]?.publicKey == dana.publicKey)
+}
+
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryAddsAGroupMemberOnceItsKeyIsLearned() async throws {
+    // The roster signal lands while Dana's key is unknown, so the first write leaves her out;
+    // learning the key later must reschedule a write, though she is only a group member.
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let meHex = lxmfAddressHex(me)
+    let dana = Identity()
+    let danaHex = lxmfAddressHex(dana)
+    let danaHash = Data(hexString: danaHex)!
+    try await seedGroup(me: meHex, members: [meHex, danaHex], db)
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
+    var initial = AppFeature.State(identity: me, pushStorage: .temporary())
+    knowPeer(dana, announcing: "Dana", in: &initial)
+    initial.node.client.router.knownIdentities[danaHash] = nil
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { $0 = initial }
+
+    await store.send(.senderDirectoryGroupsChanged)
+    try await advanceUntilWrite(clock, log) { _ in true }
+    #expect(log.writes.last?[danaHex] == nil, "no key yet")
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.senderDirectoryGroupMembers.contains(danaHex))
+
+    let before = log.writes.count
+    await store.send(.node(.client(.router(.learnedIdentity(destinationHash: danaHash, identity: dana)))))
+    try await advanceUntilWrite(clock, log, after: before) { $0[danaHex] != nil }
+    #expect(directory(store).entries[danaHex]?.name == "Dana")
+    #expect(directory(store).entries[danaHex]?.publicKey == dana.publicKey)
+}
+
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryDropsAGroupOnlyMemberOnceILeave() async throws {
+    // Spec §4: "members of every group I'm in". Leaving deletes only my own row, so the read
+    // must skip groups that are no longer open.
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let meHex = lxmfAddressHex(me)
+    let cyHex = lxmfAddressHex(Identity())
+    let dana = Identity()
+    let danaHex = lxmfAddressHex(dana)
+    let group = ChatGroup(groupHex: directoryGroupHex, name: "Climbing", creatorHex: cyHex, revision: 1,
+                          state: GroupState.active, updatedAt: blockT0)
+    try await db.write { db in
+        try ChatGroup.upsert(group, db)
+        try GroupMember.replace(directoryGroupHex, with: [cyHex, meHex, danaHex], db)
+    }
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
+    var initial = AppFeature.State(identity: me, pushStorage: .temporary())
+    knowPeer(dana, announcing: "Dana", in: &initial)
+    initial.openPeerHex = directoryGroupHex
+    initial.openConversationKind = .group
+    initial.openGroup = group
+    initial.openGroupMembers = [cyHex, meHex, danaHex].map { GroupMember(groupHex: directoryGroupHex, memberHex: $0) }
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { $0 = initial }
+
+    await store.send(.senderDirectoryGroupsChanged)
+    try await advanceUntilWrite(clock, log) { $0[danaHex]?.name == "Dana" }
+
+    let before = log.writes.count
+    await store.send(.leaveGroup)
+    await receiveGroupsChanged(store)
+    try await advanceUntilWrite(clock, log, after: before) { $0[danaHex] == nil }
+    #expect(directory(store).entries[danaHex] == nil)
+    #expect(try await db.read { try GroupMember.members(of: directoryGroupHex, $0) }.contains(danaHex),
+            "her row is still there; only the group's state excludes her")
 }

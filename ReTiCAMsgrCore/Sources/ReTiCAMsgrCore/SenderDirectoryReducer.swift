@@ -24,9 +24,9 @@ extension DependencyValues {
 }
 
 /// Only what the directory depends on, so an ordinary message (which changes a conversation's
-/// last body and time) schedules nothing. Group members are read from the database inside the
-/// write; `rosterVersion` stands in for that table (bumped at launch and on every
-/// `senderDirectoryGroupsChanged`).
+/// last body and time) schedules nothing. `rosterVersion` stands in for the `groupMembers` table
+/// (bumped at launch and on every `senderDirectoryGroupsChanged`); the members the last write read
+/// are candidates here too, so a group member's later-learned name or key reschedules a write.
 struct SenderDirectoryFingerprint: Equatable, Sendable {
     struct Candidate: Equatable, Sendable {
         var name: String?
@@ -40,7 +40,8 @@ struct SenderDirectoryFingerprint: Equatable, Sendable {
     var contactCards: [String: ContactCard] = [:]
     var peerProfiles: [String: PeerProfile] = [:]
     var blockedPeers: Set<String> = []
-    /// For each conversation or contact-linked peer: its display name and whether its key is known.
+    /// For each conversation, contact-linked or last-read group peer: its display name and
+    /// whether its key is known.
     var candidates: [String: Candidate] = [:]
 
     init() {}
@@ -52,15 +53,17 @@ struct SenderDirectoryFingerprint: Equatable, Sendable {
         contactCards = state.contactCards
         peerProfiles = state.peerProfiles
         blockedPeers = state.blockedPeers
-        for hex in state.senderDirectoryCandidates(groupMembers: []) {
+        for hex in state.senderDirectoryCandidates(groupMembers: Array(state.senderDirectoryGroupMembers)) {
             candidates[hex] = Candidate(name: state.peerDisplayName(hex), hasKey: state.senderPublicKey(hex) != nil)
         }
     }
 }
 
 /// Keeps the sender directory current. Composed last in `AppFeature.body`, so it sees the state
-/// every other reducer left for this action; it compares that state's fingerprint with the one it
-/// stored after the previous action, and on a change schedules one debounced whole-directory write.
+/// every other reducer left for this action. A fingerprint change (re)starts a 1 s debounce that
+/// only sleeps and sends `senderDirectoryWriteDue`; that reads the open groups' members and sends
+/// them back as `senderDirectoryMembersLoaded`, where names, keys and picture sources are resolved
+/// from the state current at that moment and the write effect starts.
 struct SenderDirectoryReducer: Reducer {
     typealias State = AppFeature.State
     typealias Action = AppFeature.Action
@@ -74,44 +77,82 @@ struct SenderDirectoryReducer: Reducer {
     static let debounce: Duration = .seconds(1)
     static let log = Logger(subsystem: "com.reticamsgr", category: "senderDirectory")
 
-    private enum CancelID { case write }
+    private enum CancelID { case debounce, write }
 
     func reduce(into state: inout State, action: Action) -> Effect<Action> {
         // Review focus 1: a disabled writer computes nothing, stores nothing and runs nothing.
         guard writer.isEnabled else { return .none }
         switch action {
+        case .senderDirectoryWriteDue:
+            return .run { [database] send in
+                do {
+                    let members = try await database.read { db in try Self.openGroupMembers(db) }
+                    await send(.senderDirectoryMembersLoaded(members))
+                } catch {
+                    Self.log.error("sender directory member read failed: \(String(describing: error), privacy: .public)")
+                }
+            }
+            .cancellable(id: CancelID.write, cancelInFlight: true)
+
+        case let .senderDirectoryMembersLoaded(members):
+            state.senderDirectoryGroupMembers = members
+            // This write resolves everything from the state as it is now, so it covers every
+            // change up to here: store that fingerprint rather than scheduling another write.
+            state.senderDirectoryFingerprint = SenderDirectoryFingerprint(state)
+            return writeEffect(state)
+
         case .onLaunch, .senderDirectoryGroupsChanged:
             // Launch: the directory is rewritten once the tables load, groups included.
             state.senderDirectoryRosterVersion &+= 1
+
         default:
             break
         }
         let fingerprint = SenderDirectoryFingerprint(state)
         guard fingerprint != state.senderDirectoryFingerprint else { return .none }
         state.senderDirectoryFingerprint = fingerprint
-        // A value copy: the effect resolves names, keys and pictures for group-only members too.
-        // `State` is not `Sendable` as a whole, but this copy is never mutated and the effect only
-        // reads its value-typed tables (conversations, links, cards, profiles, learned peers, known
-        // identities), so handing it across is safe.
-        let box = UncheckedSendable(state)
-        let store = state.push.storage.senderDirectory
-        return .run { [writer, database, avatarStore, contactsClient, clock] _ in
+        return .run { [clock] send in
             try await clock.sleep(for: Self.debounce)
-            let snapshot = box.value
+            await send(.senderDirectoryWriteDue)
+        }
+        .cancellable(id: CancelID.debounce, cancelInFlight: true)
+    }
+
+    /// Members of every group I'm in (spec §4): groups I left, declined or saw dissolved keep their
+    /// other members' rows, so only open groups count.
+    static func openGroupMembers(_ db: GRDB.Database) throws -> Set<String> {
+        let open = try ChatGroup.all.fetchAll(db).filter(\.isOpen).map(\.groupHex)
+        guard !open.isEmpty else { return [] }
+        return Set(try GroupMember.where { $0.groupHex.in(open) }.fetchAll(db).map { $0.memberHex.lowercased() })
+    }
+
+    /// Resolves names, keys and picture sources from `state` now (values only), then reads photo
+    /// files, fetches missing contact thumbnails and writes, off the reducer. Errors are logged.
+    private func writeEffect(_ state: State) -> Effect<Action> {
+        let candidates = state.senderDirectoryCandidates(groupMembers: Array(state.senderDirectoryGroupMembers))
+        var names: [String: String] = [:]
+        var keys: [String: Data] = [:]
+        var profiles: [String: PeerProfile] = [:]
+        for hex in candidates {
+            names[hex] = state.peerDisplayName(hex)
+            keys[hex] = state.senderPublicKey(hex)
+            profiles[hex] = state.peerProfiles[hex]
+        }
+        let me = state.myAddressHex
+        let blocked = state.blockedPeers
+        let links = state.contactLinks
+        let cards = state.contactCards
+        let store = state.push.storage.senderDirectory
+        return .run { [writer, avatarStore, contactsClient, names, keys, profiles] _ in
+            let thumbnails = await Self.contactThumbnails(links: links, cards: cards, profiles: profiles,
+                                                          candidates: candidates, contacts: contactsClient)
+            let inputs = SenderDirectoryBuilder.inputs(
+                candidates: candidates, me: me, blocked: blocked,
+                name: { names[$0] }, publicKey: { keys[$0] },
+                picture: { hex in
+                    Self.picture(profile: profiles[hex], contactThumbnail: thumbnails[hex], avatarStore: avatarStore)
+                })
             do {
-                let members = try await database.read { db in try GroupMember.all.fetchAll(db).map(\.memberHex) }
-                let candidates = snapshot.senderDirectoryCandidates(groupMembers: members)
-                let thumbnails = await Self.contactThumbnails(snapshot, candidates: candidates, contacts: contactsClient)
-                let inputs = SenderDirectoryBuilder.inputs(
-                    candidates: candidates,
-                    me: snapshot.myAddressHex,
-                    blocked: snapshot.blockedPeers,
-                    name: { snapshot.peerDisplayName($0) },
-                    publicKey: { snapshot.senderPublicKey($0) },
-                    picture: { hex in
-                        Self.picture(profile: snapshot.peerProfiles[hex], contactThumbnail: thumbnails[hex],
-                                     avatarStore: avatarStore)
-                    })
                 try writer.write(store, inputs)
             } catch {
                 Self.log.error("sender directory write failed: \(String(describing: error), privacy: .public)")
@@ -123,13 +164,14 @@ struct SenderDirectoryReducer: Reducer {
     /// Each linked candidate's contact thumbnail by peer hex: the loaded card's when there is one,
     /// else fetched now (cards load lazily, when an avatar view appears). A received photo wins
     /// over the contact's, so those peers are skipped.
-    static func contactThumbnails(_ state: State, candidates: Set<String>,
+    static func contactThumbnails(links: [String: ContactLink], cards: [String: ContactCard],
+                                  profiles: [String: PeerProfile], candidates: Set<String>,
                                   contacts: ContactsClient) async -> [String: Data] {
         var out: [String: Data] = [:]
-        for (hex, link) in state.contactLinks {
+        for (hex, link) in links {
             let hex = hex.lowercased()
-            guard candidates.contains(hex), state.peerProfiles[hex]?.photoPath == nil else { continue }
-            switch state.contactCards[link.contactIdentifier] {
+            guard candidates.contains(hex), profiles[hex]?.photoPath == nil else { continue }
+            switch cards[link.contactIdentifier] {
             case let .available(thumbnail):
                 out[hex] = thumbnail
             case .missing:

@@ -455,6 +455,9 @@ public struct AppFeature {
         /// Bumped by `SenderDirectoryReducer` at launch and on `senderDirectoryGroupsChanged`: the
         /// fingerprint's stand-in for the `groupMembers` table, which state does not hold.
         var senderDirectoryRosterVersion = 0
+        /// The open groups' members the last directory write read, so their names and keys are
+        /// fingerprinted too.
+        var senderDirectoryGroupMembers: Set<String> = []
 
         public init(identity: Identity,
                     pushStorage: PushStorage = .temporary(),
@@ -688,6 +691,10 @@ public struct AppFeature {
         /// The `groupMembers` table changed (a roster applied, a leave, a local edit). Internal:
         /// the sender directory's roster signal, sent only while its writer is enabled.
         case senderDirectoryGroupsChanged
+        /// Internal: the sender directory's debounce ended; read the open groups' members.
+        case senderDirectoryWriteDue
+        /// Internal: those members; the directory is built from current state and written.
+        case senderDirectoryMembersLoaded(Set<String>)
         case closeConversation
         /// Removes the conversation's messages from this device (spec 2026-10-25 §1). `key` is a
         /// peer's address or a group id, the list row's key, and `isGroup` says which.
@@ -1713,13 +1720,14 @@ public struct AppFeature {
                             for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
                             try GroupDelivery.refreshDerivedStatus(messageId: line.id, db)
                         }
+                        // Right after the commit, so a failed dispatch below can't lose it.
+                        if signalsDirectory { await send(.senderDirectoryGroupsChanged) }
                         _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
                                                                  myName: myName, fallbackToPropagation: fallbackToPropagation,
                                                                  now: now, myVersion: myVersion, myWireName: myWireName,
                                                                  myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                                  imageAllowed: imageAllowed, send)
                     }
-                    if signalsDirectory { await send(.senderDirectoryGroupsChanged) }
                     try await reloadThread(database, groupHex, send)
                     try await reloadConversations(database, send)
                 }
@@ -1819,7 +1827,7 @@ public struct AppFeature {
                 // their copy when their path is learned (Task 5's hook). Only this group's rows go.
                 return groupDispatchEffect(state, members: state.reachablePeers, groupHex: groupHex)
 
-            case .senderDirectoryGroupsChanged:
+            case .senderDirectoryGroupsChanged, .senderDirectoryWriteDue, .senderDirectoryMembersLoaded:
                 // Handled in `SenderDirectoryReducer`.
                 return .none
 
@@ -3839,13 +3847,14 @@ public struct AppFeature {
                     for delivery in deliveries { try GroupDelivery.insert { delivery }.execute(db) }
                     try GroupDelivery.refreshDerivedStatus(messageId: row.id, db)
                 }
+                // Right after the commit, so a failed dispatch below can't lose it.
+                if signalsDirectory { await send(.senderDirectoryGroupsChanged) }
                 _ = try await dispatchWaitingGroupCopies(database, members: reachable, identity: identity,
                                                          myName: myName, fallbackToPropagation: fallbackToPropagation,
                                                          now: now, myVersion: myVersion, myWireName: myWireName,
                                                          myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                          imageAllowed: imageAllowed, send)
             }
-            if signalsDirectory { await send(.senderDirectoryGroupsChanged) }
             try await reloadThread(database, groupHex, send)
             try await reloadConversations(database, send)
         }
