@@ -449,6 +449,9 @@ public struct AppFeature {
         /// What Contacts reports for each linked card, keyed by `contactIdentifier` so a changed
         /// link never shows the previous contact's photo (backlog 2026-10-11 items 6, 10).
         public var contactCards: [String: ContactCard] = [:]
+        /// What `SenderDirectoryReducer` last scheduled a directory write for (spec 2026-11-05 §4).
+        /// Never set while the writer is disabled (every test that does not opt in).
+        var senderDirectoryFingerprint = SenderDirectoryFingerprint()
 
         public init(identity: Identity,
                     pushStorage: PushStorage = .temporary(),
@@ -3286,6 +3289,9 @@ public struct AppFeature {
         MeshCoreRadioReducer()
         RNodeRadioReducer()
         BLESlotReducer()
+        // Last, after `BlockingReducer` and everything else: it fingerprints the state the whole
+        // action left, so a change made by any arm above schedules the write (spec 2026-11-05 §4).
+        SenderDirectoryReducer()
     }
 
     /// Re-checks the stored unverified rows of each sender in `peers` whose identity is in
