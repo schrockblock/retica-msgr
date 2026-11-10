@@ -61,8 +61,10 @@ from them is marked **(my call)**.
   app's own Application Support folder outside the app group.
 - The extension has a 30-second budget and runs while the phone is locked after first unlock.
   The handler already races a 20 s deadline.
-- The extension already decrypts with the identity's static key. Link requests and
-  ratchet-encrypted packets cannot be attributed (`BlockedSenderFilter` doc comment).
+- The extension already decrypts with the identity's static key, and since ReTiCAPush
+  `d1ce28f` also with the host's own ratchet ring (read-only). Link requests cannot be
+  attributed, and neither can packets encrypted to a ratchet the ring doesn't hold or can't be read
+  (`BlockedSenderFilter` doc comment).
 - Server contract §3 says "the client's service extension never changes [the title]", and §4
   item 2 says the extension "never decrypts anything and never changes the notification" (already
   stale since blocking). This feature changes the title on the device, so both sentences get
@@ -187,7 +189,7 @@ untouched: title "New message", no body.
 ## Known limits (accepted)
 
 - **Generic banner** when the sender can't be named: link requests (e.g. Retichat, per the
-  2026-10-02 push finding), ratchet-encrypted packets, "propagated" pushes (no packets), a
+  2026-10-02 push finding), packets encrypted to a ratchet not in the readable own ring, "propagated" pushes (no packets), a
   batch with more than one sender, a sender whose key we haven't learned, or a message from
   someone with no conversation yet.
 - **Collapse id.** The hub sets `apns-collapse-id` to *my* destination hash, so a newer push
