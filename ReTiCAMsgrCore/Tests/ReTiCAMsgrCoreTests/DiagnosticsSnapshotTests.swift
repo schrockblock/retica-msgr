@@ -436,9 +436,12 @@ private let messageHash2 = Data(repeating: 0x02, count: 32)
 }
 
 @MainActor @Test func snapshotHasAllLayersInOrder() {
-    let snapshot = DiagnosticsSnapshot(from: healthyState(), at: fixedDate)
+    var state = healthyState()
+    state.autoInterfaceAvailable = true
+    let snapshot = DiagnosticsSnapshot(from: state, at: fixedDate)
     #expect(snapshot.layers.map(\.title)
-            == ["Socket", "Bluetooth", "Meshtastic", "MeshCore", "RNode", "Identity", "Paths", "Peers", "Links", "Delivery"])
+            == ["Socket", "AutoInterface", "Bluetooth", "Meshtastic", "MeshCore", "RNode", "Identity", "Paths",
+                "Peers", "Links", "Delivery"])
 }
 
 // C1. `.pending`, not `.handshake`. The two statuses are ROLE-DISJOINT in `LinkSession`:

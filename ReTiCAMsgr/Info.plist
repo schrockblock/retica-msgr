@@ -6,6 +6,8 @@
 	<string>ReTiCAMsgr uses the camera to scan QR codes and to take your profile photo.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>ReTiCAMsgr links your contacts to Reticulum addresses so chats show their names, and, if you choose, finds contacts you share with trusted friends.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>ReTiCAMsgr uses your local network to connect to Reticulum nodes on it, to accept direct connections from other devices, and to find other Reticulum devices nearby so you can message them without a server.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>INSendMessageIntent</string>

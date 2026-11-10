@@ -134,6 +134,7 @@ private let nameT3 = Date(timeIntervalSince1970: 1_699_992_000)
 private func nameStore(_ db: any DatabaseWriter, identity: Identity = Identity(), clock: any Clock<Duration>,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity)
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure?(&initial)
     let store = TestStore(initialState: initial) {
         AppFeature()

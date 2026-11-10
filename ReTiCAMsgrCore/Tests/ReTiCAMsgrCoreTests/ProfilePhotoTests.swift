@@ -19,6 +19,7 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
                        clock: (any Clock<Duration>)? = nil,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity)
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure?(&initial)
     let store = TestStore(initialState: initial) {
         AppFeature()

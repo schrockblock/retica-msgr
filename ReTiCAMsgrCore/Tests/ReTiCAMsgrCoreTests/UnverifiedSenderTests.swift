@@ -88,6 +88,7 @@ private func makeUnverifiedStore(_ db: any DatabaseWriter, identity: Identity, b
                                  configure: (inout AppFeature.State) -> Void = { _ in }) -> TestStoreOf<AppFeature> {
     // Registered, as at runtime: the re-check compares each message's destination with this.
     var initial = AppFeature.State(identity: identity)
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     initial.node.client.deliveryDestinationHash = LXMessage.deliveryHash(identityHash: identity.hash)
     configure(&initial)
     let store = TestStore(initialState: initial) {

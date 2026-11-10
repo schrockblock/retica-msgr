@@ -35,7 +35,9 @@ private enum Seen: Equatable {
 @MainActor
 private func ratchetStore(_ db: any DatabaseWriter, identity: Identity, ratchets: OwnRatchetStore,
                           log: LockIsolated<[Seen]> = LockIsolated([])) -> TestStoreOf<AppFeature> {
-    let store = TestStore(initialState: AppFeature.State(identity: identity)) {
+    var initial = AppFeature.State(identity: identity)
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
+    let store = TestStore(initialState: initial) {
         CombineReducers {
             Reduce<AppFeature.State, AppFeature.Action> { _, action in
                 switch action {

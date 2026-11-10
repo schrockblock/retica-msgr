@@ -11,6 +11,9 @@ import ReTiCAMsgrCore
 import ReTiCAPush
 import ReTiCAPushCore
 import ReTiCAMsgrPushService
+#if os(iOS)
+import UIKit
+#endif
 
 /// Owns the database, resolves the identity, and builds the store ONLY in `.ready` (spec §5.4).
 /// The identity enters the app by building the store and never changes afterwards.
@@ -109,7 +112,14 @@ final class AppRuntime {
         let pushStorage = environment.pushStorage
         let meshCoreKeyStore = environment.meshCoreKeyStore
         let ownRatchetStore = environment.ownRatchetStore
-        let store = Store(initialState: AppFeature.State(identity: identity, pushStorage: pushStorage)) {
+        var initialState = AppFeature.State(identity: identity, pushStorage: pushStorage)
+        #if os(iOS)
+        // A background launch (a push, a Bluetooth restore) starts with nobody looking, so the app
+        // starts as backgrounded: AutoInterface waits for `.foregrounded` (spec 2026-11-10 §8.5), and
+        // arrivals are not yet viewed. A normal launch is `.inactive` here, then `.active`.
+        initialState.isForeground = UIApplication.shared.applicationState != .background
+        #endif
+        let store = Store(initialState: initialState) {
             AppFeature()
         } withDependencies: {
             $0.defaultDatabase = database

@@ -22,19 +22,29 @@ extension AppFeature.State {
     /// A Meshtastic radio will dial at Connect / foreground: the setting is on AND a radio is chosen.
     var meshtasticWillDial: Bool { meshtasticEnabled && meshtasticRadioUUID != nil }
 
-    /// What the radio slot should run: the chosen radio while `meshtasticWillDial`, else nil.
-    /// `syncMeshtasticSlot` replaces a slot whose config differs from this.
+    /// The stored hop limit, clamped into `MeshtasticHopLimit.range`.
+    public var meshtasticHopLimitValue: Int {
+        min(max(meshtasticHopLimit, MeshtasticHopLimit.range.lowerBound), MeshtasticHopLimit.range.upperBound)
+    }
+
+    /// What the radio slot should run: the chosen radio with the hop limit while
+    /// `meshtasticWillDial`, else nil. `syncMeshtasticSlot` replaces a slot whose config differs
+    /// from this, so a new hop limit takes effect like a new radio (Connect or Apply changes).
     var meshtasticWantedConfig: MeshtasticDriverConfig? {
-        meshtasticWillDial ? meshtasticRadioUUID.map { MeshtasticDriverConfig(radio: $0) } : nil
+        let hopLimit = UInt32(meshtasticHopLimitValue)
+        return meshtasticWillDial
+            ? meshtasticRadioUUID.map { MeshtasticDriverConfig(radio: $0, hopLimit: hopLimit) } : nil
     }
 
     /// Amendment A10 ("only show Connecting… when something will actually dial"), now including
     /// the radios. The single definition behind onLaunch, Connect and the foreground re-dial. A
     /// MeshCore radio held back by a policy failure, or an RNode by a failure only the user can fix,
     /// won't dial on a re-dial, so it doesn't count (Connect clears both flags before reading this).
+    /// An AutoInterface slot denied the local network doesn't count either (spec 2026-11-10 §8.4).
     var somethingWillDial: Bool {
         !enabledNodes.isEmpty || listenEnabled || bleEnabled || meshtasticWillDial
             || (meshCoreWillDial && !meshCorePolicyFailed) || (rnodeWillDial && !rnodeNeedsUserAction)
+            || autoInterfaceWillDial
     }
 }
 

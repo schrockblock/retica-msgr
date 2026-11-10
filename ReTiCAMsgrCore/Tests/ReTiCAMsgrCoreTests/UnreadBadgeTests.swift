@@ -46,6 +46,7 @@ private func wire(from sender: Identity, to me: Identity, content: String = "hi"
 private func makeBadgeStore(_ db: any DatabaseWriter, identity: Identity, badge: BadgeClient, now: Date = badgeT0,
                             configure: (inout AppFeature.State) -> Void) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity)
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure(&initial)
     let store = TestStore(initialState: initial) {
         AppFeature()

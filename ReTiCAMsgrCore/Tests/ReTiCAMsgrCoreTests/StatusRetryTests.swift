@@ -30,6 +30,7 @@ private func makeStore(_ db: any DatabaseWriter, sent: LockIsolated<[LXMessage]>
                        launchedAt: Date? = nil,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: Identity())
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     initial.launchedAt = launchedAt
     configure?(&initial)
     let store = TestStore(initialState: initial) {

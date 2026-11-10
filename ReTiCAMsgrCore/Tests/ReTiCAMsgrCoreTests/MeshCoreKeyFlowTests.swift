@@ -222,12 +222,13 @@ private func runDumpFlow() async -> DumpFlowOutcome {
     let actions = LockIsolated<[String]>([])
     let states = LockIsolated<[String]>([])
     let defaults = UserDefaults.inMemory
-    let initial = withDependencies {
+    var initial = withDependencies {
         $0.defaultAppStorage = defaults
         $0.defaultFileStorage = .inMemory
     } operation: {
         AppFeature.State(identity: Identity())
     }
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     let db = try! AppDatabase.makeInMemory()
     let store = TestStore(initialState: initial) {
         RecordingReducer(base: AppFeature(), actions: actions, states: states)

@@ -119,6 +119,7 @@ private func deletionTestStore(_ db: any DatabaseWriter, files: AttachmentStore?
                                configure: ((inout AppFeature.State) -> Void)? = nil)
     -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: Identity())
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure?(&initial)
     let store = TestStore(initialState: initial) {
         AppFeature()
