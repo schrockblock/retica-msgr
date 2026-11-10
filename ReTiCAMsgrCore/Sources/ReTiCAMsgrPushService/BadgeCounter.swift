@@ -7,6 +7,11 @@ import Foundation
 public enum BadgeCounter {
     static let key = "badgeCount"
 
+    /// Process-wide: two `NotificationService` instances can finish on different threads, each
+    /// under its own lock, and both bump the count. Without this shared lock the read-then-write
+    /// in `increment` could interleave and lose a push.
+    private static let lock = NSLock()
+
     /// The app group's defaults. In practice this is never nil (it is nil only for a reserved suite
     /// name such as the app's own bundle ID). Without the app-group entitlement you still get a
     /// store, but it is private to the process, so the app and the extension each count on their
@@ -17,23 +22,26 @@ public enum BadgeCounter {
 
     /// What the count would be after one more push, without storing it.
     public static func next(_ defaults: UserDefaults) -> Int {
-        defaults.integer(forKey: key) + 1
+        lock.withLock { defaults.integer(forKey: key) + 1 }
     }
 
     /// Stores a count previously read with `next`.
     public static func commit(_ n: Int, _ defaults: UserDefaults) {
-        defaults.set(n, forKey: key)
+        lock.withLock { defaults.set(n, forKey: key) }
     }
 
-    /// Adds one and returns the new count (`next` then `commit`).
+    /// Adds one and returns the new count (`next` then `commit`), atomically under the lock. It
+    /// doesn't call them: `NSLock` isn't recursive.
     @discardableResult
     public static func increment(_ defaults: UserDefaults) -> Int {
-        let n = next(defaults)
-        commit(n, defaults)
-        return n
+        lock.withLock {
+            let n = defaults.integer(forKey: key) + 1
+            defaults.set(n, forKey: key)
+            return n
+        }
     }
 
     public static func set(_ n: Int, _ defaults: UserDefaults) {
-        defaults.set(n, forKey: key)
+        lock.withLock { defaults.set(n, forKey: key) }
     }
 }

@@ -2,8 +2,6 @@ import Foundation
 import ComposableArchitecture
 import GRDB
 import os
-import ReTiCA
-import ReTiCANode
 import ReTiCAPushCore
 
 /// Writes the app-group sender directory the Notification Service Extension reads (spec
@@ -22,32 +20,6 @@ extension SenderDirectoryWriter: DependencyKey {
     static let liveValue = SenderDirectoryWriter(isEnabled: false) { try $0.save($1) }
     #endif
     static let testValue = SenderDirectoryWriter(isEnabled: false) { _, _ in }
-}
-
-/// The raw state the fingerprint is projected from. Compared first on every action: equal
-/// unchanged tables compare by storage identity, so most actions skip the per-candidate projection.
-struct SenderDirectoryRawInputs: Equatable {
-    var peerConversations: Set<String>
-    var contactLinks: [String: ContactLink]
-    var contactCards: [String: ContactCard]
-    var peerProfiles: [String: PeerProfile]
-    var blockedPeers: Set<String>
-    var groupMembers: Set<String>
-    var rosterVersion: Int
-    var knownIdentities: [Data: Identity]
-    var learnedPeers: [Data: LXMFNode.LearnedPeer]
-
-    init(_ state: AppFeature.State) {
-        peerConversations = SenderDirectoryFingerprint.peerConversations(state)
-        contactLinks = state.contactLinks
-        contactCards = state.contactCards
-        peerProfiles = state.peerProfiles
-        blockedPeers = state.blockedPeers
-        groupMembers = state.senderDirectoryGroupMembers
-        rosterVersion = state.senderDirectoryRosterVersion
-        knownIdentities = state.node.client.router.knownIdentities
-        learnedPeers = state.node.client.learnedPeers
-    }
 }
 
 extension DependencyValues {
@@ -81,7 +53,7 @@ struct SenderDirectoryFingerprint: Equatable, Sendable {
     init() {}
 
     init(_ state: AppFeature.State) {
-        peerConversations = Self.peerConversations(state)
+        peerConversations = Set(state.conversations.filter { $0.kind == .peer }.map { $0.peerHex.lowercased() })
         rosterVersion = state.senderDirectoryRosterVersion
         contactLinks = state.contactLinks
         contactCards = state.contactCards
@@ -93,10 +65,6 @@ struct SenderDirectoryFingerprint: Equatable, Sendable {
             let hasKey = Data(hexString: hex).map { known[$0] != nil } ?? false
             candidates[hex] = Candidate(name: state.peerDisplayName(hex), hasKey: hasKey)
         }
-    }
-
-    static func peerConversations(_ state: AppFeature.State) -> Set<String> {
-        Set(state.conversations.filter { $0.kind == .peer }.map { $0.peerHex.lowercased() })
     }
 }
 
@@ -141,7 +109,6 @@ struct SenderDirectoryReducer: Reducer {
             state.senderDirectoryGroupMembers = members
             // This write resolves everything from the state as it is now, so it covers every
             // change up to here: store that fingerprint rather than scheduling another write.
-            state.senderDirectoryRawInputs = SenderDirectoryRawInputs(state)
             state.senderDirectoryFingerprint = SenderDirectoryFingerprint(state)
             return writeEffect(state)
 
@@ -152,10 +119,6 @@ struct SenderDirectoryReducer: Reducer {
         default:
             break
         }
-        // Most actions change none of the raw inputs: skip the per-candidate projection then.
-        let raw = SenderDirectoryRawInputs(state)
-        guard raw != state.senderDirectoryRawInputs else { return .none }
-        state.senderDirectoryRawInputs = raw
         let fingerprint = SenderDirectoryFingerprint(state)
         guard fingerprint != state.senderDirectoryFingerprint else { return .none }
         state.senderDirectoryFingerprint = fingerprint
