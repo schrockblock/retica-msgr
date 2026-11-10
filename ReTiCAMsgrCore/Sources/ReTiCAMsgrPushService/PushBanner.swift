@@ -68,10 +68,10 @@ public enum PushBanner {
     /// titled content is returned.
     ///
     /// The badge on the content is `BadgeCounter.next` (stored count + 1) and is NOT stored here:
-    /// this runs before the extension knows whether it or the timeout path delivers. Both paths read
-    /// the same base value N and put N+1 on their content, and only the path that wins
-    /// `finishLock` stores it, through `commitBadge(of:)`. So a push is counted once, and the
-    /// number shown equals the number stored.
+    /// this runs before the extension knows whether it or the timeout path delivers. Only the path
+    /// that wins `finishLock` counts the push, through `commitBadge(of:)`, which adds one to the
+    /// stored count. The number drawn on this banner was peeked earlier and can lag by one when
+    /// another push was counted in between; the stored count stays exact.
     public static func content(for outcome: PushOutcome,
                                original: UNNotificationContent,
                                badgeDefaults: UserDefaults? = BadgeCounter.appGroupDefaults(),
@@ -93,13 +93,16 @@ public enum PushBanner {
         }
     }
 
-    /// Stores the badge that `content(for: outcome, …)` put on `content`. Call it only from the path
-    /// that is delivering (under the extension's `finishLock`). A no-op for content with no badge
-    /// (suppressed, or no defaults).
+    /// Counts the push that `content` delivers: adds one to the stored count
+    /// (`BadgeCounter.increment`). Call it only from the path that is delivering (under the
+    /// extension's `finishLock`). It does NOT store the badge drawn on `content`: each
+    /// `NotificationService` instance has its own lock, so two pushes in one extension process can
+    /// both peek N; storing N+1 twice would lose one, incrementing twice stores N+2. A no-op for
+    /// content with no badge (suppressed, or no defaults).
     public static func commitBadge(of content: UNNotificationContent,
                                    badgeDefaults: UserDefaults? = BadgeCounter.appGroupDefaults()) {
-        guard let badgeDefaults, let badge = content.badge else { return }
-        BadgeCounter.commit(badge.intValue, badgeDefaults)
+        guard let badgeDefaults, content.badge != nil else { return }
+        BadgeCounter.increment(badgeDefaults)
     }
 
     /// How long the extension waits for the Intents daemon to acknowledge the donation. The
@@ -138,8 +141,11 @@ public enum PushBanner {
             lock.lock()
             let a = action
             action = nil
+            // Breaks the Once ↔ DispatchWorkItem cycle (the work item's closure holds `self`).
+            let t = timer
+            timer = nil
             lock.unlock()
-            timer?.cancel()
+            t?.cancel()
             a?()
         }
     }
@@ -165,6 +171,8 @@ public enum PushBanner {
                                          attachments: nil)
         let interaction = INInteraction(intent: intent, response: nil)
         interaction.direction = .incoming
+        // Lets a later `INInteraction.delete(with:)` remove this sender's donations.
+        interaction.groupIdentifier = plan.senderHex
         // The completion-handler `donate`, raced against a deadline (see `donationDeadline`).
         // A failed or late donation still gets the picture and the name.
         await awaitOrTimeout(seconds: donationDeadline) { done in

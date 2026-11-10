@@ -33,8 +33,10 @@ final class NotificationService: UNNotificationServiceExtension {
             // The (async) intent step can outlast the timeout, so the content is built before the
             // lock is taken. It carries the NEXT badge value (stored count + 1) but stores nothing,
             // and is never copied afterwards (a Communication Notification must stay as
-            // `updating(from:)` returned it). Both paths read the same base count and only the one
-            // that wins the lock commits it, so a push is counted once.
+            // `updating(from:)` returned it). Only the path that wins the lock counts the push, and
+            // it adds one to the stored count rather than storing the peeked value: another push in
+            // this process (its own instance, its own lock) may have peeked the same base. The
+            // number drawn may lag by one; the stored count is exact.
             let defaults = BadgeCounter.appGroupDefaults()
             let content = await PushBanner.content(for: outcome, original: original, badgeDefaults: defaults)
             finish {

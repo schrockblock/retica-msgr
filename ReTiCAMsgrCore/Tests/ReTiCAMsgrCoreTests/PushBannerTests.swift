@@ -97,7 +97,23 @@ private func outcome(_ name: String?, verdict: PushVerdict = .deliverOriginal) -
                                      badgeDefaults: defaults, applyIntent: { c, _ in c })
     PushBanner.commitBadge(of: c, badgeDefaults: defaults)
     #expect(c.badge == 3)
-    #expect(BadgeCounter.next(defaults) == 4) // stored is 3, not 4 or 2
+    #expect(defaults.integer(forKey: BadgeCounter.key) == 2 + 1) // seed + 1, not + 2 or + 0
+}
+
+@Test func pushBannerTwoPushesPeekingTheSameCountAreBothCounted() async {
+    // Two NotificationService instances in one process each have their own lock, so both can
+    // peek the same stored count before either commits.
+    let defaults = freshDefaults()
+    BadgeCounter.set(2, defaults)
+    let first = await PushBanner.content(for: outcome("Alice"), original: original(),
+                                         badgeDefaults: defaults, applyIntent: { c, _ in c })
+    let second = await PushBanner.content(for: outcome("Alice"), original: original(),
+                                          badgeDefaults: defaults, applyIntent: { c, _ in c })
+    #expect(first.badge == 3)
+    #expect(second.badge == 3)
+    PushBanner.commitBadge(of: first, badgeDefaults: defaults)
+    PushBanner.commitBadge(of: second, badgeDefaults: defaults)
+    #expect(defaults.integer(forKey: BadgeCounter.key) == 2 + 2)
 }
 
 @Test func pushBannerCommitIgnoresContentWithoutABadge() async {
