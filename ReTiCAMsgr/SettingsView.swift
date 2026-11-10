@@ -95,6 +95,15 @@ struct SettingsView: View {
             .onChange(of: focusedField) { old, _ in
                 if old == .name { saveName() }
             }
+            .toolbar {
+                // Connection, paths, peers, links and delivery state, and a snapshot for bug reports.
+                ToolbarItem(placement: .primaryAction) {
+                    NavigationLink { DiagnosticsView(store: store) } label: {
+                        Image(systemName: "stethoscope")
+                    }
+                    .accessibilityLabel("Diagnostics")
+                }
+            }
             #if os(iOS)
             .toolbar {
                 ToolbarItemGroup(placement: .keyboard) {
@@ -339,11 +348,20 @@ struct SettingsView: View {
                 Circle().fill(connectionColor).frame(width: 10, height: 10)
                 Text(connectionLabel)
                 Spacer()
-                Button("Connect") { store.send(.connectTapped) }
+                // Stacked, each as wide as the wider label (`fixedSize` sizes the stack to it and
+                // `maxWidth: .infinity` stretches both to fill), so neither label wraps mid-word.
+                VStack(spacing: 8) {
+                    Button { store.send(.connectTapped) } label: {
+                        Text("Connect").frame(maxWidth: .infinity)
+                    }
                     .buttonStyle(.bordered)
-                Button("Disconnect") { store.send(.disconnectTapped) }
+                    Button { store.send(.disconnectTapped) } label: {
+                        Text("Disconnect").frame(maxWidth: .infinity)
+                    }
                     .buttonStyle(.bordered)
                     .tint(.red)
+                }
+                .fixedSize(horizontal: true, vertical: false)
             }
         } header: {
             Text("Network")
@@ -353,8 +371,8 @@ struct SettingsView: View {
                 .padding(.top, 16)
         } footer: {
             Text("How this app reaches the Reticulum network. The defaults work for most people. "
-                 + "Bluetooth, Meshtastic and direct-connection changes take effect on the next "
-                 + "Connect.")
+                 + "Bluetooth and direct-connection changes take effect on the next Connect. Radios "
+                 + "are at the bottom, each with its own Connect button.")
         }
 
         Section {
@@ -386,6 +404,20 @@ struct SettingsView: View {
             }
         }
 
+        Section("Direct Connections") {
+            // Standard Toggle in a Form row: the whole row is already hittable, so no
+            // explicit contentShape is needed here.
+            Toggle("Listen for direct connections", isOn: $store.listenEnabled)
+            TextField("Listen port", value: $store.listenPort, format: .number)
+                .platformKeyboard(.numberPad)
+                .focused($focusedField, equals: .listenPort)
+                .disabled(!store.listenEnabled)
+            Text("Lets other Reticulum nodes on your local Wi-Fi connect directly to this "
+                 + "device — anyone on the same network can reach it. On by default.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
         Section("Bluetooth") {
             // Standard Toggle in a Form row: the whole row is already hittable.
             Toggle("Connect over Bluetooth", isOn: $store.bleEnabled)
@@ -411,45 +443,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        }
-
-        Section {
-            // Standard Toggle in a Form row: the whole row is already hittable.
-            Toggle("Connect through a Meshtastic radio", isOn: $store.meshtasticEnabled)
-            LabeledContent("Radio", value: store.meshtasticRadioLabel)
-            // A standard Form button row is hittable across its width already.
-            Button("Choose radio…") { store.send(.chooseRadioTapped) }
-            radioConnectRow(.meshtastic, connect: MeshtasticCopy.connectButton,
-                            connecting: MeshtasticCopy.connecting, apply: MeshtasticCopy.applyChanges)
-        } header: {
-            Text("Meshtastic")
-        } footer: {
-            Text("Sends and receives messages over LoRa through a Meshtastic radio paired with "
-                 + "this device over Bluetooth. Set the radio to a Short preset (ShortTurbo or "
-                 + "ShortFast): longer presets are too slow for most messages. The radio must not "
-                 + "be connected to another app, such as the Meshtastic app, at the same time. "
-                 + "Text messages waiting on the radio may be removed when this app connects, and "
-                 + "may not reach the Meshtastic app. "
-                 + "Choosing a radio pauses Bluetooth connections to nearby devices until the list "
-                 + "closes. Off by default.")
-        }
-
-        #if DEBUG
-        rnodeSection
-        #endif
-
-        Section("Direct Connections") {
-            // Standard Toggle in a Form row: the whole row is already hittable, so no
-            // explicit contentShape is needed here.
-            Toggle("Listen for direct connections", isOn: $store.listenEnabled)
-            TextField("Listen port", value: $store.listenPort, format: .number)
-                .platformKeyboard(.numberPad)
-                .focused($focusedField, equals: .listenPort)
-                .disabled(!store.listenEnabled)
-            Text("Lets other Reticulum nodes on your local Wi-Fi connect directly to this "
-                 + "device — anyone on the same network can reach it. On by default.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
 
         Section("Relay") {
@@ -502,19 +495,44 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
         }
 
-        Section {
-            NavigationLink { DiagnosticsView(store: store) } label: {
-                Label("Diagnostics", systemImage: "stethoscope")
-            }
-        } footer: {
-            Text("Connection, paths, peers, links and delivery state — and a shareable "
-                 + "snapshot for bug reports.")
-        }
-
-        // Last in Settings, under "Experimental" (`MeshCoreCopy.header`).
+        // The radios come last, under a "Radios" heading on the first of them; MeshCore follows
+        // under "Experimental" (`MeshCoreCopy.header`), last in Settings.
+        meshtasticSection
         #if DEBUG
+        rnodeSection
         meshCoreSection
         #endif
+    }
+
+    private var meshtasticSection: some View {
+        Section {
+            // Standard Toggle in a Form row: the whole row is already hittable.
+            Toggle("Connect through a Meshtastic radio", isOn: $store.meshtasticEnabled)
+            LabeledContent("Radio", value: store.meshtasticRadioLabel)
+            // A standard Form button row is hittable across its width already.
+            Button("Choose radio…") { store.send(.chooseRadioTapped) }
+            radioConnectRow(.meshtastic, connect: MeshtasticCopy.connectButton,
+                            connecting: MeshtasticCopy.connecting, apply: MeshtasticCopy.applyChanges)
+        } header: {
+            VStack(alignment: .leading, spacing: 12) {
+                // Styled like the "Network" heading.
+                Text("Radios")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .textCase(nil)
+                    .padding(.top, 16)
+                Text("Meshtastic")
+            }
+        } footer: {
+            Text("Sends and receives messages over LoRa through a Meshtastic radio paired with "
+                 + "this device over Bluetooth. Set the radio to a Short preset (ShortTurbo or "
+                 + "ShortFast): longer presets are too slow for most messages. The radio must not "
+                 + "be connected to another app, such as the Meshtastic app, at the same time. "
+                 + "Text messages waiting on the radio may be removed when this app connects, and "
+                 + "may not reach the Meshtastic app. "
+                 + "Choosing a radio pauses Bluetooth connections to nearby devices until the list "
+                 + "closes. Off by default.")
+        }
     }
 
     /// A radio section's own Connect button: shown while the radio is set up and not online,

@@ -95,87 +95,98 @@ struct ChatView: View {
             : []
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
-                List(store.threadMessages) { message in
-                    if message.isTimerChange || message.isGroupEvent {
-                        TimerChangeLine(text: message.body,
-                                        status: message.isOutgoing ? statusText(for: message) : nil)
-                            .id(message.id)
-                            .listRowSeparator(.hidden)
-                    } else {
-                        let reactions = store.threadReactions[message.messageHash] ?? []
-                        // A reply to a caption-less photo or file in the thread quotes its placeholder.
-                        let replyPreview = ReplyPreview.resolve(for: message, in: store.threadMessages, peerName: peerName,
-                                                                attachments: store.attachmentsByMessageId,
-                                                                names: store.threadSenderNames)
-                        let attachment = store.attachmentsByMessageId[message.id]
-                        // A sending message shows the bar from the start: 0 until the first report,
-                        // which the bar draws as indeterminate ("waiting for link").
-                        let progress = message.isOutgoing && message.status == MessageStatus.sending
-                            ? store.outgoingProgress[message.messageHash] ?? 0 : nil
-                        MessageBubble(
-                            message: message,
-                            senderName: isGroup && !message.isOutgoing
-                                ? store.state.groupMemberName(message.peerHex) : nil,
-                            statusText: statusText(for: message),
-                            infoTopic: infoTopic(for: message),
-                            onInfoTap: { explaining = $0 },
-                            reactions: reactions,
-                            replyPreview: replyPreview,
-                            attachment: attachment,
-                            attachmentURL: attachment.flatMap(attachmentStore.url(for:)),
-                            progress: attachment != nil ? progress : nil,
-                            isHighlighted: highlightedMessageID == message.id,
-                            onQuoteTap: { showOriginal($0, proxy: proxy) },
-                            onImageTap: { a, url in
-                                viewerTarget = ViewerTarget(attachment: a, url: url, shareURL: shareableURL(for: a, stored: url))
-                            },
-                            onFileTap: { a, url in quickLookURL = shareableURL(for: a, stored: url) },
-                            hasAvatarSlot: isGroup,
-                            senderAvatar: isGroup && avatarMessageIDs.contains(message.id)
-                                ? AnyView(AvatarView(store: store, peerHex: message.peerHex, size: 28))
-                                : nil
-                        )
-                        .id(message.id)
-                        .listRowSeparator(.hidden)
-                        .contextMenu {
-                            if !message.messageHash.isEmpty {
-                                ReactionPaletteMenu(
-                                    current: reactions.first(where: \.includesMe)?.emoji,
-                                    onSelect: { store.send(.reactionSelected(messageHash: message.messageHash, emoji: $0)) },
-                                    onMore: { pickerTarget = PickerTarget(messageHash: message.messageHash) }
-                                )
-                                .disabled(!peerReachable)
-                                // Not gated on reachability: composing works offline, and Send is gated itself.
-                                Button("Reply", systemImage: "arrowshape.turn.up.left") {
-                                    store.send(.replyTapped(message.id))
-                                    draftFocused = true
+                List {
+                    // One section per day: a plain List pins each section's header, so the day of the
+                    // messages on screen stays at the top while scrolling (as in Signal).
+                    ForEach(MessageDays.group(thread, calendar: .current)) { day in
+                        Section {
+                            ForEach(day.messages) { message in
+                                if message.isTimerChange || message.isGroupEvent {
+                                    TimerChangeLine(text: message.body,
+                                                    status: message.isOutgoing ? statusText(for: message) : nil)
+                                        .id(message.id)
+                                        .listRowSeparator(.hidden)
+                                } else {
+                                    let reactions = store.threadReactions[message.messageHash] ?? []
+                                    // A reply to a caption-less photo or file in the thread quotes its placeholder.
+                                    let replyPreview = ReplyPreview.resolve(for: message, in: store.threadMessages, peerName: peerName,
+                                                                            attachments: store.attachmentsByMessageId,
+                                                                            names: store.threadSenderNames)
+                                    let attachment = store.attachmentsByMessageId[message.id]
+                                    // A sending message shows the bar from the start: 0 until the first report,
+                                    // which the bar draws as indeterminate ("waiting for link").
+                                    let progress = message.isOutgoing && message.status == MessageStatus.sending
+                                        ? store.outgoingProgress[message.messageHash] ?? 0 : nil
+                                    MessageBubble(
+                                        message: message,
+                                        senderName: isGroup && !message.isOutgoing
+                                            ? store.state.groupMemberName(message.peerHex) : nil,
+                                        statusText: statusText(for: message),
+                                        infoTopic: infoTopic(for: message),
+                                        onInfoTap: { explaining = $0 },
+                                        reactions: reactions,
+                                        replyPreview: replyPreview,
+                                        attachment: attachment,
+                                        attachmentURL: attachment.flatMap(attachmentStore.url(for:)),
+                                        progress: attachment != nil ? progress : nil,
+                                        isHighlighted: highlightedMessageID == message.id,
+                                        onQuoteTap: { showOriginal($0, proxy: proxy) },
+                                        onImageTap: { a, url in
+                                            viewerTarget = ViewerTarget(attachment: a, url: url, shareURL: shareableURL(for: a, stored: url))
+                                        },
+                                        onFileTap: { a, url in quickLookURL = shareableURL(for: a, stored: url) },
+                                        hasAvatarSlot: isGroup,
+                                        senderAvatar: isGroup && avatarMessageIDs.contains(message.id)
+                                            ? AnyView(AvatarView(store: store, peerHex: message.peerHex, size: 28))
+                                            : nil
+                                    )
+                                    .id(message.id)
+                                    .listRowSeparator(.hidden)
+                                    .contextMenu {
+                                        if !message.messageHash.isEmpty {
+                                            ReactionPaletteMenu(
+                                                current: reactions.first(where: \.includesMe)?.emoji,
+                                                onSelect: { store.send(.reactionSelected(messageHash: message.messageHash, emoji: $0)) },
+                                                onMore: { pickerTarget = PickerTarget(messageHash: message.messageHash) }
+                                            )
+                                            .disabled(!peerReachable)
+                                            // Not gated on reachability: composing works offline, and Send is gated itself.
+                                            Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                                                store.send(.replyTapped(message.id))
+                                                draftFocused = true
+                                            }
+                                        }
+                                        if !isGroup, message.isOutgoing, message.status == MessageStatus.sending, !message.messageHash.isEmpty {
+                                            Button("Cancel Send", systemImage: "xmark.circle", role: .destructive) {
+                                                store.send(.cancelSendTapped(message.id))
+                                            }
+                                        }
+                                        // Offline too: a retry falls back to the propagation node like any send.
+                                        if canRetry(message) {
+                                            Button("Retry", systemImage: "arrow.clockwise") {
+                                                store.send(.retryTapped(message.id))
+                                            }
+                                        }
+                                        Button("Info", systemImage: "info.circle") {
+                                            infoTarget = InfoTarget(id: message.id)
+                                        }
+                                        // A caption-less photo or file has no text to copy.
+                                        if !message.body.isEmpty {
+                                            Button("Copy", systemImage: "doc.on.doc") {
+                                                Pasteboard.copy(message.body)
+                                            }
+                                        }
+                                    } preview: {
+                                        BubbleText(message: message, replyPreview: replyPreview,
+                                                   attachment: attachment, attachmentURL: attachment.flatMap(attachmentStore.url(for:)))
+                                            .padding(8)
+                                    }
                                 }
                             }
-                            if !isGroup, message.isOutgoing, message.status == MessageStatus.sending, !message.messageHash.isEmpty {
-                                Button("Cancel Send", systemImage: "xmark.circle", role: .destructive) {
-                                    store.send(.cancelSendTapped(message.id))
-                                }
-                            }
-                            // Offline too: a retry falls back to the propagation node like any send.
-                            if canRetry(message) {
-                                Button("Retry", systemImage: "arrow.clockwise") {
-                                    store.send(.retryTapped(message.id))
-                                }
-                            }
-                            Button("Info", systemImage: "info.circle") {
-                                infoTarget = InfoTarget(id: message.id)
-                            }
-                            // A caption-less photo or file has no text to copy.
-                            if !message.body.isEmpty {
-                                Button("Copy", systemImage: "doc.on.doc") {
-                                    Pasteboard.copy(message.body)
-                                }
-                            }
-                        } preview: {
-                            BubbleText(message: message, replyPreview: replyPreview,
-                                       attachment: attachment, attachmentURL: attachment.flatMap(attachmentStore.url(for:)))
-                                .padding(8)
+                        } header: {
+                            DayHeader(text: MessageDays.headerText(for: day.day, now: .now))
                         }
+                        .listSectionSeparator(.hidden)
                     }
                 }
                 .listStyle(.plain)
@@ -450,6 +461,22 @@ struct ChatView: View {
     }
 }
 
+/// A thread's sticky day header ("Today", "Yesterday", "Mon, Nov 2"): a small centred capsule.
+private struct DayHeader: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(.regularMaterial, in: Capsule())
+            .frame(maxWidth: .infinity)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
 private struct PickerTarget: Identifiable {
     let messageHash: String
     var id: String { messageHash }
@@ -537,36 +564,39 @@ struct MessageBubble: View {
                         .padding(.top, -10)
                         .padding(.horizontal, 8)
                 }
-                if message.isOutgoing || message.expirySeconds != nil {
-                    HStack(spacing: 4) {
-                        if message.expirySeconds != nil {
-                            // Spec §4: a static glyph, no live countdown.
-                            Image(systemName: "timer")
-                                .accessibilityLabel("Disappearing message")
-                        }
-                        if message.isOutgoing {
-                            let label = statusText ?? MessageStatusLabel.text(for: message.status)
-                            if let infoTopic, let onInfoTap {
-                                // Only the status line is the hit area, so the bubble keeps its
-                                // long-press menu.
-                                Button { onInfoTap(infoTopic) } label: {
-                                    HStack(spacing: 3) {
-                                        Text(label)
-                                        Image(systemName: "info.circle")
-                                            .foregroundStyle(.tint)
-                                    }
-                                    .contentShape(Rectangle())
+                // Every bubble has its time: when I sent it, or when theirs arrived here.
+                HStack(spacing: 4) {
+                    if message.expirySeconds != nil {
+                        // Spec §4: a static glyph, no live countdown.
+                        Image(systemName: "timer")
+                            .accessibilityLabel("Disappearing message")
+                    }
+                    Text(MessageDays.timeText(for: message.timestamp))
+                        .accessibilityLabel(MessageDays.timeAccessibilityLabel(for: message))
+                    if message.isOutgoing {
+                        Text("·")
+                            .accessibilityHidden(true)
+                        let label = statusText ?? MessageStatusLabel.text(for: message.status)
+                        if let infoTopic, let onInfoTap {
+                            // Only the status line is the hit area, so the bubble keeps its
+                            // long-press menu.
+                            Button { onInfoTap(infoTopic) } label: {
+                                HStack(spacing: 3) {
+                                    Text(label)
+                                    Image(systemName: "info.circle")
+                                        .foregroundStyle(.tint)
                                 }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("About \(label)")
-                            } else {
-                                Text(label)
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("About \(label)")
+                        } else {
+                            Text(label)
                         }
                     }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
                 }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             }
             if !message.isOutgoing { Spacer() }
         }
