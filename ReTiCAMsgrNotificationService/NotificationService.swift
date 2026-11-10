@@ -23,28 +23,43 @@ final class NotificationService: UNNotificationServiceExtension {
         self.originalContent = request.content
         let userInfo = request.content.userInfo
         guard let handler = ReTiCAMsgrPush.makeServiceHandler() else {
-            finish(.deliverOriginal)
+            deliverOriginal(original: request.content)
             return
         }
+        let original = request.content
         work = Task {
-            let verdict = await handler.handle(userInfo: userInfo)
-            await MainActor.run { self.finish(verdict) }
+            let outcome = await handler.outcome(userInfo: userInfo)
+            // The (async) intent step can outlast the timeout, so the content is built before the
+            // lock is taken and WITHOUT counting (`badgeDefaults: nil`). Whichever path wins the lock
+            // then counts exactly one push, inside `finish`.
+            let content = await PushBanner.content(for: outcome, original: original, badgeDefaults: nil)
+            switch outcome.verdict {
+            case .deliverOriginal: finish { PushBanner.badged(content) }
+            case .suppress: finish { content }
+            }
         }
     }
 
-    /// Out of time: the original, never a suppression we did not decide.
+    /// Out of time: the original (titled by nobody), never a suppression we did not decide.
     override func serviceExtensionTimeWillExpire() {
         work?.cancel()
-        finish(.deliverOriginal)
+        if let originalContent { deliverOriginal(original: originalContent) }
     }
 
-    /// What goes back to the system is `PushBanner.content(for:original:)`: the original with the
-    /// default sound and a badge, or empty content for `.suppress`.
-    private func finish(_ verdict: PushVerdict) {
+    /// The sync, name-less banner: sound and badge, no sender. Built inside `finish`'s lock, so
+    /// the badge is only counted when this path is the one that delivers.
+    private func deliverOriginal(original: UNNotificationContent) {
+        finish { PushBanner.content(for: .deliverOriginal, original: original) }
+    }
+
+    /// Hands `makeContent()` to the system, once. `makeContent` runs under `finishLock` and only if
+    /// no earlier call delivered, so any side effect in it (the badge count) happens for the winner
+    /// alone.
+    private func finish(_ makeContent: () -> UNNotificationContent) {
         finishLock.lock()
         defer { finishLock.unlock() }
-        guard let contentHandler, let originalContent else { return }
+        guard let contentHandler else { return }
         self.contentHandler = nil
-        contentHandler(PushBanner.content(for: verdict, original: originalContent))
+        contentHandler(makeContent())
     }
 }
