@@ -23,16 +23,19 @@ extension DependencyValues {
     }
 }
 
-/// Everything in state the directory depends on. Group members are read from the database
-/// inside the write, so a roster change reaches this through `conversations`: every applied or
-/// local roster change inserts a group event line and reloads the list.
+/// Only what the directory depends on, so an ordinary message (which changes a conversation's
+/// last body and time) schedules nothing. Group members are read from the database inside the
+/// write; `rosterVersion` stands in for that table (bumped at launch and on every
+/// `senderDirectoryGroupsChanged`).
 struct SenderDirectoryFingerprint: Equatable, Sendable {
     struct Candidate: Equatable, Sendable {
         var name: String?
         var hasKey: Bool
     }
 
-    var conversations: [Conversation] = []
+    /// The peers with a one-to-one conversation (a new conversation is a trigger, a new message is not).
+    var peerConversations: Set<String> = []
+    var rosterVersion = 0
     var contactLinks: [String: ContactLink] = [:]
     var contactCards: [String: ContactCard] = [:]
     var peerProfiles: [String: PeerProfile] = [:]
@@ -43,7 +46,8 @@ struct SenderDirectoryFingerprint: Equatable, Sendable {
     init() {}
 
     init(_ state: AppFeature.State) {
-        conversations = state.conversations
+        peerConversations = Set(state.conversations.filter { $0.kind == .peer }.map { $0.peerHex.lowercased() })
+        rosterVersion = state.senderDirectoryRosterVersion
         contactLinks = state.contactLinks
         contactCards = state.contactCards
         peerProfiles = state.peerProfiles
@@ -75,6 +79,13 @@ struct SenderDirectoryReducer: Reducer {
     func reduce(into state: inout State, action: Action) -> Effect<Action> {
         // Review focus 1: a disabled writer computes nothing, stores nothing and runs nothing.
         guard writer.isEnabled else { return .none }
+        switch action {
+        case .onLaunch, .senderDirectoryGroupsChanged:
+            // Launch: the directory is rewritten once the tables load, groups included.
+            state.senderDirectoryRosterVersion &+= 1
+        default:
+            break
+        }
         let fingerprint = SenderDirectoryFingerprint(state)
         guard fingerprint != state.senderDirectoryFingerprint else { return .none }
         state.senderDirectoryFingerprint = fingerprint
@@ -130,12 +141,17 @@ struct SenderDirectoryReducer: Reducer {
         return out
     }
 
-    /// The picture rule: a received photo is its stored JPEG, a contact thumbnail is re-encoded as
-    /// a 256 px avatar, and an icon or initials is no picture (iOS draws its own monogram).
+    /// The picture rule: a received photo is its stored JPEG, re-encoded as a 256 px avatar only
+    /// when it is larger (the wire accepts up to 512 px; spec §4 caps the directory at 256), a
+    /// contact thumbnail is always re-encoded, and an icon or initials is no picture (iOS draws
+    /// its own monogram).
     static func picture(profile: PeerProfile?, contactThumbnail: Data?, avatarStore: AvatarStore) -> Data? {
         switch AvatarSource.resolve(profile: profile, contactThumbnail: contactThumbnail) {
         case let .photo(path):
-            return try? Data(contentsOf: avatarStore.url(forRelativePath: path))
+            guard let jpeg = try? Data(contentsOf: avatarStore.url(forRelativePath: path)),
+                  let size = ImageEncoder.dimensions(of: jpeg) else { return nil }
+            guard max(size.width, size.height) > ImageEncoder.avatarPixels else { return jpeg }
+            return try? ImageEncoder.encodeAvatar(jpeg).data
         case let .contact(data):
             return try? ImageEncoder.encodeAvatar(data).data
         case .icon, .initials:

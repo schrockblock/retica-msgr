@@ -452,6 +452,9 @@ public struct AppFeature {
         /// What `SenderDirectoryReducer` last scheduled a directory write for (spec 2026-11-05 §4).
         /// Never set while the writer is disabled (every test that does not opt in).
         var senderDirectoryFingerprint = SenderDirectoryFingerprint()
+        /// Bumped by `SenderDirectoryReducer` at launch and on `senderDirectoryGroupsChanged`: the
+        /// fingerprint's stand-in for the `groupMembers` table, which state does not hold.
+        var senderDirectoryRosterVersion = 0
 
         public init(identity: Identity,
                     pushStorage: PushStorage = .temporary(),
@@ -682,6 +685,9 @@ public struct AppFeature {
         /// A roster was re-issued inside a receive (a member left a group I created): send the
         /// waiting copies to the reachable members. Internal.
         case groupRosterChanged(groupHex: String)
+        /// The `groupMembers` table changed (a roster applied, a leave, a local edit). Internal:
+        /// the sender directory's roster signal, sent only while its writer is enabled.
+        case senderDirectoryGroupsChanged
         case closeConversation
         /// Removes the conversation's messages from this device (spec 2026-10-25 §1). `key` is a
         /// peer's address or a group id, the list row's key, and `isGroup` says which.
@@ -887,6 +893,7 @@ public struct AppFeature {
     @Dependency(\.attachmentStore) var attachmentStore
     @Dependency(\.attachmentCacheEvictor) var attachmentCacheEvictor
     @Dependency(\.avatarStore) var avatarStore
+    @Dependency(\.senderDirectoryWriter) var senderDirectoryWriter
     @Dependency(\.backgroundTask) var backgroundTask
     @Dependency(\.localNotifications) var localNotifications
     @Dependency(\.meshCoreKeyStore) var meshCoreKeyStore
@@ -1695,6 +1702,7 @@ public struct AppFeature {
                 let myWireName = state.myWireName
                 let imageAllowed = state.profilePhotoMayRide
                 let avatarStore = self.avatarStore
+                let signalsDirectory = senderDirectoryWriter.isEnabled
                 state.pendingHandOvers += 1
                 let write: Effect<Action> = .run { [database] send in
                     try await handingOver(send) {
@@ -1711,6 +1719,7 @@ public struct AppFeature {
                                                                  myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                                  imageAllowed: imageAllowed, send)
                     }
+                    if signalsDirectory { await send(.senderDirectoryGroupsChanged) }
                     try await reloadThread(database, groupHex, send)
                     try await reloadConversations(database, send)
                 }
@@ -1809,6 +1818,10 @@ public struct AppFeature {
                 // The waiting rows were written inside the receive; the unreachable members get
                 // their copy when their path is learned (Task 5's hook). Only this group's rows go.
                 return groupDispatchEffect(state, members: state.reachablePeers, groupHex: groupHex)
+
+            case .senderDirectoryGroupsChanged:
+                // Handled in `SenderDirectoryReducer`.
+                return .none
 
             case let .scannedContactKey(contact):
                 // An existing entry came from a signed announce and may carry the peer's link cost:
@@ -3724,6 +3737,7 @@ public struct AppFeature {
         let viewedNow: Date? = (incomingPeer == openPeer && state.isForeground && state.chatVisible) ? now : nil
         let attachmentStore = self.attachmentStore
         let attachmentCacheEvictor = self.attachmentCacheEvictor
+        let signalsDirectory = senderDirectoryWriter.isEnabled
         var byHex: [String: String] = [:]
         if case let .roster(_, _, members, _) = control {
             for member in members {
@@ -3784,6 +3798,7 @@ public struct AppFeature {
                 }
             case let .applied(groupHex, creatorResends):
                 if creatorResends { await send(.groupRosterChanged(groupHex: groupHex)) }
+                if signalsDirectory { await send(.senderDirectoryGroupsChanged) }
                 try await reloadConversations(database, send)
                 if groupHex == openPeer { try await reloadThread(database, groupHex, send) }
             }
@@ -3811,6 +3826,7 @@ public struct AppFeature {
         let myWireName = state.myWireName
         let imageAllowed = state.profilePhotoMayRide
         let avatarStore = self.avatarStore
+        let signalsDirectory = senderDirectoryWriter.isEnabled
         state.pendingHandOvers += 1
         let write: Effect<Action> = .run { [database] send in
             try await handingOver(send) {
@@ -3829,6 +3845,7 @@ public struct AppFeature {
                                                          myPhoto: myVersion.isEmpty ? nil : avatarStore.mine(),
                                                          imageAllowed: imageAllowed, send)
             }
+            if signalsDirectory { await send(.senderDirectoryGroupsChanged) }
             try await reloadThread(database, groupHex, send)
             try await reloadConversations(database, send)
         }
