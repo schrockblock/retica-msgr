@@ -301,6 +301,24 @@ public struct AppFeature {
         /// accept IN on. Conflating them would bind the listener to whatever remote port the user
         /// happened to dial. Defaults to 4242 (the RNS TCP default).
         @Shared(.appStorage("listenPort")) public var listenPort: Int = 4242
+        /// On by default: also run an AutoInterface, which finds other Reticulum devices on the
+        /// local network by IPv6 multicast and peers with them directly (spec 2026-11-10-autointerface
+        /// §5.8). Like `listenEnabled` it is read in `syncEndpointNodes`, so a change takes effect
+        /// on the next Connect or foreground. Only honoured where `autoInterfaceAvailable` (the Mac,
+        /// and iOS once entitled, spec §9 R1/R3); read it through `autoInterfaceWanted`.
+        @Shared(.appStorage("autoInterfaceEnabled")) public var autoInterfaceEnabled: Bool = true
+        /// The platform gate (`AutoInterfaceAvailability.isAvailable`). Stored so tests can play iOS.
+        public var autoInterfaceAvailable = AutoInterfaceAvailability.isAvailable
+        /// Stop the slot on `.backgrounded`, start it on `.foregrounded` (iOS, spec §8.5). Stored so
+        /// tests can play iOS.
+        public var autoInterfaceStopsInBackground = AutoInterfaceAvailability.stopsInBackground
+        /// What the AutoInterface slot reported. Session-only.
+        public var autoInterfaceNotices = AutoInterfaceNotices()
+        /// The Local Network alert to show, nil when none. Cleared by `.localNetworkAlertDismissed`.
+        public var localNetworkAlert: LocalNetworkAlert? = nil
+        /// The Local Network alert was shown this run: it shows at most once per launch, since a
+        /// denied permission is reported again by every restart. Session-only.
+        public var localNetworkAlertShown = false
         /// Opt-in: carry OTHER nodes' traffic through this device (Reticulum "transport" mode). OFF
         /// by default — relaying installs this device's identity as the Transport identity, the value
         /// every relay branch in `Transport` gates on, and turns on recursive path requests so the
@@ -663,6 +681,8 @@ public struct AppFeature {
         /// A radio section's own Connect button in Settings: restarts that one radio with the
         /// current settings, and nothing else (`connectRadio`).
         case radioConnectTapped(RadioKind)
+        /// The Local Network alert (`localNetworkAlert`) was dismissed.
+        case localNetworkAlertDismissed
         case openConversation(String)
         /// A tap on a group row: opens it as a group thread.
         case openGroupConversation(String)
@@ -1182,7 +1202,14 @@ public struct AppFeature {
                 // A redial's `interfaceConnected` already syncs from the propagation node; only a
                 // foreground that dials nothing needs to ask.
                 let sync = tcpDownIDs(state).isEmpty ? propagationSyncEffect(state) : .none
-                return .merge(redialDownNodes(&state, restartListener: resumed), .send(.push(.drainInbox)), expiryCatchUp,
+                // A stopped AutoInterface slot starts afresh below; its old notices (a denial among
+                // them) go first, so the re-dial's `somethingWillDial` counts it again.
+                resetAutoInterfaceNoticesIfStopped(&state)
+                let redial = redialDownNodes(&state, restartListener: resumed)
+                // After the re-dial's slot sync, which may have just created the slot. Here, not in
+                // `redialDownNodes`: a push wake must not start AutoInterface (spec §8.5).
+                let autoStart = autoInterfaceForegroundStart(&state)
+                return .merge(redial, autoStart, .send(.push(.drainInbox)), expiryCatchUp,
                               endBackgroundTask(&state), release, sync)
 
             case .pushWake:
@@ -1292,6 +1319,8 @@ public struct AppFeature {
                 return .merge(
                     .cancel(id: CancelID.learnedDebounce),
                     closeOrFinishSending,
+                    // iOS only: AutoInterface has no background mode (spec 2026-11-10 §8.5).
+                    autoInterfaceBackgroundStop(state),
                     .run { [database] _ in
                         try await writeLearnedDestinations(learnedToFlush, to: database)
                         try await writeKnownDestinations(knownToFlush, to: database)
@@ -1390,6 +1419,9 @@ public struct AppFeature {
                 // The same for an RNode the user may have fixed (paired it, updated it, changed the
                 // settings): `.endpoint(.start)` below restarts it.
                 state.rnodeNeedsUserAction = false
+                // `.endpoint(.start)` below starts a stopped AutoInterface slot afresh, and the new
+                // session reports again (a denial too, so it may count toward dialing once more).
+                resetAutoInterfaceNoticesIfStopped(&state)
                 // Amendment A10 (final-review M1): only show "Connecting…" when something will
                 // actually dial.
                 if state.somethingWillDial {
@@ -1540,6 +1572,19 @@ public struct AppFeature {
                 case .unsupported:        state.bluetoothAlert = .unsupported
                 case .poweredOff, .other: break
                 }
+                return .none
+
+            case let .node(.client(.endpoint(.auto(.interface(.delegate(delegate)))))):
+                // AutoInterface's hatch-only signals (spec 2026-11-10 §6). The endpoint has already
+                // registered or deregistered the peer (child reducers run first).
+                return reduceAutoInterfaceDelegate(delegate, &state)
+
+            case .node(.client(.endpoint(.auto(.interface(.driverStopped))))):
+                // A `.removeAuto` may have just finished (the container dropped the slot).
+                return autoInterfaceRemovalFinished(&state)
+
+            case .localNetworkAlertDismissed:
+                state.localNetworkAlert = nil
                 return .none
 
             case let .openConversation(peerHex):
@@ -3949,9 +3994,13 @@ private func syncEndpointNodes(_ state: inout AppFeature.State)
     let radios: Effect<AppFeature.Action> = .merge(syncMeshtasticSlot(&state), syncMeshCoreSlot(&state),
                                                    syncRNodeSlot(&state))
 
+    // The AutoInterface slot follows `autoInterfaceWanted` (spec 2026-11-10-autointerface §5.8): a
+    // running slot is kept, removal is `.removeAuto`.
+    let autoRemoval = syncAutoInterfaceSlot(&state)
+
     let removals: Effect<AppFeature.Action> = .merge(stale.map {
         .send(.node(.client(.endpoint(.removeTCPClient($0)))))
-    } + [bleRemoval])
+    } + [bleRemoval, autoRemoval])
     return (removals, added, radios)
 }
 

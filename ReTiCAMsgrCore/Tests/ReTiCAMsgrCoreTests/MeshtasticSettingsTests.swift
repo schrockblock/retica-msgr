@@ -28,6 +28,7 @@ private func meshStore(defaults: UserDefaults = .inMemory,
     } operation: {
         AppFeature.State(identity: Identity())
     }
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure?(&initial)
     let db = try! AppDatabase.makeInMemory()
     let store = TestStore(initialState: initial) {

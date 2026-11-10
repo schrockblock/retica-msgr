@@ -40,9 +40,11 @@ extension AppFeature.State {
     /// the radios. The single definition behind onLaunch, Connect and the foreground re-dial. A
     /// MeshCore radio held back by a policy failure, or an RNode by a failure only the user can fix,
     /// won't dial on a re-dial, so it doesn't count (Connect clears both flags before reading this).
+    /// An AutoInterface slot denied the local network doesn't count either (spec 2026-11-10 §8.4).
     var somethingWillDial: Bool {
         !enabledNodes.isEmpty || listenEnabled || bleEnabled || meshtasticWillDial
             || (meshCoreWillDial && !meshCorePolicyFailed) || (rnodeWillDial && !rnodeNeedsUserAction)
+            || autoInterfaceWillDial
     }
 }
 

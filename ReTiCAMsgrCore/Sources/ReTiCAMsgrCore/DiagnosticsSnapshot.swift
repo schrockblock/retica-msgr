@@ -56,8 +56,11 @@ public struct DiagnosticsSnapshot: Equatable {
 
     public init(from state: AppFeature.State, at date: Date) {
         self.generatedAt = date
-        var layers = [
-            Self.socketLayer(state),
+        var layers = [Self.socketLayer(state)]
+        if state.autoInterfaceAvailable {
+            layers.append(Self.autoInterfaceLayer(state, at: date))
+        }
+        layers += [
             Self.bleLayer(state),
             Self.meshtasticLayer(state),
         ]
@@ -143,6 +146,88 @@ extension DiagnosticsSnapshot {
         case .disconnected: return "disconnected"
         case .connecting:   return "connecting"
         case .connected:    return "connected"
+        }
+    }
+}
+
+// MARK: - AutoInterface
+
+extension DiagnosticsSnapshot {
+    /// The AutoInterface slot (spec 2026-11-10-autointerface §5.8, §6): its status, each adopted NIC
+    /// and the registered peers. Present only where AutoInterface may run (`autoInterfaceAvailable`).
+    ///
+    /// DENY LIST: the slot's `profile` carries `ifac`; it is never rendered. NIC names and link-local
+    /// addresses are the host's own; peer IDs carry the peer's link-local address, which it
+    /// multicasts in the clear by design. All of them go in ROWS only, never in `reason`.
+    static func autoInterfaceLayer(_ state: AppFeature.State, at date: Date) -> Layer {
+        let title = "AutoInterface"
+        let enabled = state.autoInterfaceEnabled
+        var rows = [Row("auto interface", enabled ? "on" : "off")]
+        guard enabled else {
+            // Off by choice is not a fault.
+            return Layer(title: title, health: .ok, reason: nil, rows: rows)
+        }
+        guard let auto = state.node.client.endpoint.auto else {
+            rows.append(Row("status", "n/a (starts on Connect)"))
+            return Layer(title: title, health: .ok, reason: nil, rows: rows)
+        }
+
+        let notices = state.autoInterfaceNotices
+        let interface = auto.interface
+        rows.append(Row("status", describe(interface.status)))
+        let dataPortInUse = Set(state.autoInterfaceDataPortInUse)
+        for name in interface.nics.keys.sorted() {
+            guard let nic = interface.nics[name] else { continue }
+            var facts = ["ll=\(nic.linkLocal)", "echo=\(nic.firstEcho == nil ? "no" : "yes")"]
+            if dataPortInUse.contains(name) { facts.append("data=port in use") }
+            if notices.carrierLost.contains(name) { facts.append("carrier=lost") }
+            if !nic.failed.isEmpty { facts.append("failed=\(nic.failed.map(describe).sorted().joined(separator: ","))") }
+            rows.append(Row("nic \(name)", facts.joined(separator: " ")))
+        }
+        let peerIDs = auto.peerInterfaces.keys.map(\.rawValue).sorted()
+        rows.append(Row("peers", peerIDs.isEmpty ? "(none)" : String(peerIDs.count)))
+        rows.append(contentsOf: peerIDs.map { Row($0, "connected") })
+
+        // First match wins, worst first.
+        if notices.localNetworkDenied {
+            return Layer(title: title, health: .problem,
+                         reason: "local network access denied — allow it in Settings", rows: rows)
+        }
+        if !dataPortInUse.isEmpty {
+            return Layer(title: title, health: .problem,
+                         reason: "another Reticulum program here (rnsd or NomadNet?) holds the data "
+                                 + "port — connect to it over TCP instead", rows: rows)
+        }
+        if !interface.nics.isEmpty, Set(interface.nics.keys).isSubset(of: notices.multicastUnavailable) {
+            return Layer(title: title, health: .problem,
+                         reason: "multicast is not working on any interface", rows: rows)
+        }
+        if state.autoInterfaceNoUsableInterfaces {
+            return Layer(title: title, health: .warn,
+                         reason: "no usable network interface (Wi-Fi or Ethernet)", rows: rows)
+        }
+        if state.autoInterfaceNoPeersHint(at: date) {
+            return Layer(title: title, health: .warn,
+                         reason: "multicast works but no devices found for 30 s — the network may "
+                                 + "block device-to-device traffic", rows: rows)
+        }
+        return Layer(title: title, health: .ok, reason: nil, rows: rows)
+    }
+
+    static func describe(_ status: AutoInterface.Status) -> String {
+        switch status {
+        case .stopped:            return "stopped"
+        case .starting:           return "starting"
+        case .running:            return "running"
+        case .noUsableInterfaces: return "no usable interfaces"
+        }
+    }
+
+    static func describe(_ plane: AutoPlane) -> String {
+        switch plane {
+        case .multicastDiscovery: return "multicast"
+        case .unicastDiscovery:   return "unicast"
+        case .data:               return "data"
         }
     }
 }

@@ -21,6 +21,7 @@ let blockT0 = Date(timeIntervalSince1970: 1_700_000_000)
 func makeBlockStore(_ db: any DatabaseWriter, identity: Identity = Identity(),
                     configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity, pushStorage: .temporary())
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure?(&initial)
     let store = TestStore(initialState: initial) {
         AppFeature()

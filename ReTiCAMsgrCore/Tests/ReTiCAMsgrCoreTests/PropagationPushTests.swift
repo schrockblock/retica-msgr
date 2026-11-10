@@ -24,6 +24,7 @@ private func makeStore(_ db: any DatabaseWriter, backgroundTask: BackgroundTaskC
                        attachmentStore: AttachmentStore = AttachmentStore.testValue,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: Identity())
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure?(&initial)
     let store = TestStore(initialState: initial) {
         CombineReducers {

@@ -75,6 +75,7 @@ private func bleSlotStore(_ ble: BLESlotHarness) -> TestStoreOf<AppFeature> {
     } operation: {
         AppFeature.State(identity: Identity())
     }
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     initial.$bleEnabled.withLock { $0 = true }
     initial.$listenEnabled.withLock { $0 = false }   // isolate BLE: no LAN listener
     let db = try! AppDatabase.makeInMemory()

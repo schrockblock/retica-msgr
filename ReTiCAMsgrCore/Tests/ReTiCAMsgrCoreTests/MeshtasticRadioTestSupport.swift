@@ -112,6 +112,7 @@ func meshRadioStore(radio: UUID?, enabled: Bool = true, harness: MeshRadioHarnes
     } operation: {
         AppFeature.State(identity: Identity())
     }
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     initial.$meshtasticEnabled.withLock { $0 = enabled }
     initial.$meshtasticRadioID.withLock { $0 = radio?.uuidString }
     initial.$listenEnabled.withLock { $0 = false }   // isolate the radio: no LAN listener

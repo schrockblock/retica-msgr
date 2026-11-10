@@ -20,6 +20,7 @@ private func makeStore(_ db: any DatabaseWriter, identity: Identity,
                        clock: TestClock<Duration>? = nil,
                        configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity)
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure?(&initial)
     let store = TestStore(initialState: initial) {
         AppFeature()
@@ -1597,7 +1598,8 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 
     // The TestClock is needed so we can advance it to fire the debounce.
     let clock = TestClock()
-    let initial1 = AppFeature.State(identity: me)
+    var initial1 = AppFeature.State(identity: me)
+    initial1.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     let store1 = TestStore(initialState: initial1) {
         AppFeature()
     } withDependencies: {
@@ -1716,7 +1718,8 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
 @MainActor @Test func rapidPathLearnedEventsAreCoalesced() async throws {
     let db = try AppDatabase.makeInMemory()
     let clock = TestClock()
-    let initial = AppFeature.State(identity: Identity())
+    var initial = AppFeature.State(identity: Identity())
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     let store = TestStore(initialState: initial) {
         AppFeature()
     } withDependencies: {
@@ -1790,7 +1793,8 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     let clock = TestClock()
     let peer = Identity()
     let peerHash = LXMessage.deliveryHash(identityHash: peer.hash)
-    let initial = AppFeature.State(identity: Identity())
+    var initial = AppFeature.State(identity: Identity())
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     let store = TestStore(initialState: initial) {
         AppFeature()
     } withDependencies: {
@@ -7064,6 +7068,7 @@ private func groupEventBodies(_ db: any DatabaseWriter) async throws -> [String]
 private func countingStore(_ db: any DatabaseWriter, listens: LockIsolated<Int>,
                            configure: (inout AppFeature.State) -> Void) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: Identity())
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure(&initial)
     let store = TestStore(initialState: initial) {
         AppFeature()

@@ -95,6 +95,7 @@ func rnRadioStore(radio: UUID?, enabled: Bool = true, settings: RNodeRadioSettin
     } operation: {
         AppFeature.State(identity: Identity())
     }
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     initial.$rnodeEnabled.withLock { $0 = enabled }
     initial.$rnodeRadioID.withLock { $0 = radio?.uuidString }
     if let settings {

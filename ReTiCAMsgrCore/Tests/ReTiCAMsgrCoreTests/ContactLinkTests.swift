@@ -22,6 +22,7 @@ private let bob = ContactSummary(identifier: "CN-2", name: "Bob Ray", hasPhoto: 
 func makeLinkStore(_ db: any DatabaseWriter, fake: FakeContacts,
                    configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: Identity())
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure?(&initial)
     let store = TestStore(initialState: initial) {
         AppFeature()

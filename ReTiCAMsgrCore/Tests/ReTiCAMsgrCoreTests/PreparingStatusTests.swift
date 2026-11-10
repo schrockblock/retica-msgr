@@ -21,6 +21,7 @@ private let dest = Data(repeating: 0xEE, count: 16)
 @MainActor
 private func freshStore() throws -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: Identity())
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     initial.connection = .connected
     let db = try AppDatabase.makeInMemory()
     let store = TestStore(initialState: initial) { AppFeature() } withDependencies: {

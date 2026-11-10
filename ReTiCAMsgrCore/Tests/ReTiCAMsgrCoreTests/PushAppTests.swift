@@ -20,6 +20,7 @@ private func makePushStore(_ db: any DatabaseWriter, identity: Identity,
                            configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: identity, pushStorage: storage,
                                    bundleID: "co.example.app", pushEnvironment: .sandbox)
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     initial.$nodes.withLock { $0 = [DefaultNode.entry] }
     configure?(&initial)
     let store = TestStore(initialState: initial) {

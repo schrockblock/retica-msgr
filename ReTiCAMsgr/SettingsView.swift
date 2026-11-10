@@ -416,6 +416,11 @@ struct SettingsView: View {
                  + "device — anyone on the same network can reach it. On by default.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            // AutoInterface (spec 2026-11-10 §5.8). Hidden where it can't run: iOS until Apple
+            // grants the multicast entitlement (`AutoInterfaceAvailability.isEntitledOniOS`).
+            if store.autoInterfaceAvailable {
+                autoInterfaceRows
+            }
         }
 
         Section("Bluetooth") {
@@ -502,6 +507,44 @@ struct SettingsView: View {
         rnodeSection
         meshCoreSection
         #endif
+    }
+
+    /// The AutoInterface toggle and what the interface last reported, in the Direct Connections
+    /// section. The status lines replace the caption the way Bluetooth's alerts do, worst first.
+    @ViewBuilder
+    private var autoInterfaceRows: some View {
+        Toggle(AutoInterfaceText.toggleTitle, isOn: $store.autoInterfaceEnabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        if store.autoInterfaceEnabled, store.autoInterfaceNotices.localNetworkDenied {
+            Text(AutoInterfaceText.localNetworkDenied)
+                .font(.caption)
+                .foregroundStyle(.red)
+            Button("Open Settings") {
+                if let url = SystemSettings.url { openURL(url) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        } else if store.autoInterfaceEnabled, !store.autoInterfaceDataPortInUse.isEmpty {
+            Text(AutoInterfaceText.dataPortInUse)
+                .font(.caption)
+                .foregroundStyle(.red)
+        } else if store.autoInterfaceEnabled, store.autoInterfaceNoUsableInterfaces {
+            Text(AutoInterfaceText.noUsableInterfaces)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if store.autoInterfaceEnabled, store.state.autoInterfaceNoPeersHint(at: Date()) {
+            Text(AutoInterfaceText.noPeersYet)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Text(store.autoInterfaceEnabled && store.autoInterfacePeerCount > 0
+                 ? AutoInterfaceText.caption + " Connected to \(store.autoInterfacePeerCount) "
+                    + (store.autoInterfacePeerCount == 1 ? "device." : "devices.")
+                 : AutoInterfaceText.caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var meshtasticSection: some View {
