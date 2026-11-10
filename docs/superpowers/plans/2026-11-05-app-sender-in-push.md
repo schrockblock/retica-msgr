@@ -23,6 +23,24 @@
 - Shell rule: one command per Bash call, no pipes / `&&` / `;` / `$(...)`. Never run `swift test` and `xcodebuild` at the same time.
 - Test verification per the user's global rule: green → mutate (one named mutation per test) → red → revert → green, with a table in the report.
 
+## Amendment 2026-11-10: push sound (`feat/push-default-sound`, `7b78f04`)
+
+This branch is rebased on `feat/push-default-sound`, which already **creates**
+`ReTiCAMsgrCore/Sources/ReTiCAMsgrPushService/PushBanner.swift`. That file has
+`PushBanner.content(for verdict: PushVerdict, original:, badgeDefaults:)`, which adds
+`UNNotificationSound.default` and the badge on `.deliverOriginal` and returns empty content on
+`.suppress`. Its tests are in `PushBannerTests.swift`. `NotificationService.finish` already calls it.
+Task 3 therefore **extends** that file instead of creating it:
+
+- Keep the sound and badge rules. The outcome-based `content(for outcome:…)` starts from the verdict
+  version's result, then applies the plan. Inject `badgeDefaults` the same way, so tests don't touch
+  the app group.
+- The existing `pushBanner…` tests stay green. Adapt them to the outcome API only if the verdict
+  overload goes away.
+- `pushBannerTitlesANamedSender` (content level) and `pushBannerFallsBackWhenTheIntentStepThrows`
+  also assert `sound == .default`. A later slice will choose per-sender sounds here, so make sure
+  the sound survives both the intent path and the fallback.
+
 ## Review Focus
 
 1. **Existing suites must not grow in-flight effects.** `SenderDirectoryWriter.testValue` is disabled, and a disabled writer means the reducer returns `.none` before computing anything — Task 2 `senderDirectoryDisabledWriterDoesNothing`.

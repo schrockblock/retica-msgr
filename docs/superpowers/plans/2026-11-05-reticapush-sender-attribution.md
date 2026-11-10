@@ -23,6 +23,27 @@
 - User shell rule for anyone running commands: one command per Bash call, no pipes / `&&` / `;` / `$(...)`.
 - Test verification per the user's global rule: green → mutate (one named mutation per test, batched) → all new tests red → revert → green. Each task's Mutation step lists one mutation per test.
 
+## Amendment 2026-11-10: own ratchets (ReTiCAPush `d1ce28f`)
+
+This plan predates `d1ce28f fix(push): attribute packets encrypted to the host's own ratchets`.
+Since then, `BlockedSenderFilter.sourceHash` takes `ratchets: [Data]? = nil` and decrypts with
+`identity.decrypt(_:ratchets:)`. `PushServiceHandler` also has `loadRatchets`, which `process` calls
+only when `blockedSenders` is non-empty. These changes override the tasks below wherever the two disagree:
+
+- **Task 1:** `openMessage` and `verifiedSource` both take `ratchets: [Data]? = nil` and pass it to
+  `identity.decrypt(_:ratchets:)`. `sourceHash` forwards its `ratchets`. Add a test,
+  `pushSenderVerifiesAPacketEncryptedToAnOwnRatchet`, modelled on the ratchet test that
+  `d1ce28f` added to `BlockedSenderFilterTests.swift`. It should return the sender with the ring
+  and nil without it. Its mutation is to drop `ratchets` in `openMessage`, passing nil to decrypt.
+- **Task 3:** `process` loads the ring when the blocklist is non-empty **or** the sender directory
+  has entries, so attribution sees ratchet-encrypted packets too. `sender(for:identity:ratchets:senders:)`
+  takes the ring. Add `pushOutcomeNamesASenderWhoEncryptedToAnOwnRatchet`, which uses an empty
+  blocklist and a directory holding the sender. Its mutation is to keep the old `blockedSenders.isEmpty ? nil`
+  condition. Update the `loadRatchets` doc comment, which still says "only to attribute packets
+  for the verdict".
+- The spec's "ratchet-encrypted packets cannot be attributed" (Constraints, Known limits) is now
+  true only when the ring can't be read. Amend those two lines in the spec on this branch.
+
 ## Review Focus
 
 1. **A forged source hash** (Mallory's signature, Alice's hash) must yield no sender even though `BlockedSenderFilter` attributes it to Alice — Task 1 `pushSenderRejectsAForgedSourceHash`.
