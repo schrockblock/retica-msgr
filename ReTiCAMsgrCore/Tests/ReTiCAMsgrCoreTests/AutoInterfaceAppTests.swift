@@ -341,10 +341,19 @@ private func autoBringPeerOnline(_ store: TestStoreOf<AppFeature>, _ auto: AutoD
     #expect(store.state.autoInterfaceDataPortInUse == [autoNIC])
     let layer = DiagnosticsSnapshot.autoInterfaceLayer(store.state, at: autoNow)
     #expect(layer.health == .problem)
-    #expect(layer.reason?.contains("TCP") == true)
-    #expect(AutoInterfaceText.dataPortInUse.contains("rnsd"))
-    #expect(AutoInterfaceText.dataPortInUse.contains("NomadNet"))
-    #expect(AutoInterfaceText.dataPortInUse.contains("TCP"))
+    // A default rnsd or NomadNet has no TCP server interface, so "connect to it over TCP" alone is
+    // no remedy: the copy says to quit it, or to add one (with the exact config) and then the node.
+    #expect(layer.reason?.contains("quit") == true)
+    #expect(layer.reason?.contains("TCP server interface") == true)
+    let text = AutoInterfaceText.dataPortInUse
+    #expect(text.contains("rnsd"))
+    #expect(text.contains("NomadNet"))
+    #expect(text.contains("quit"))
+    #expect(text.contains("[[TCP Server]]"))
+    #expect(text.contains("type = TCPServerInterface"))
+    #expect(text.contains("listen_ip = 127.0.0.1"))
+    #expect(text.contains("listen_port = 4242"))
+    #expect(text.contains("add 127.0.0.1:4242 as a node"))
     auto.yield(.bound(nic: autoNIC))
     for _ in 0..<50 where !store.state.autoInterfaceDataPortInUse.isEmpty {
         await Task.megaYield()

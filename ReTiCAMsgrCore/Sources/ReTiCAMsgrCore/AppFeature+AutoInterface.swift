@@ -32,7 +32,7 @@ extension AppFeature.State {
     /// then, see `AppRuntime.build`). The foreground's sync creates and starts it.
     var autoInterfaceMayStartNow: Bool { !autoInterfaceStopsInBackground || isForeground }
 
-    /// Live peers: the slot's own map. A stop sends no per-peer `peerRemoved`, so counting delegates
+    /// Live peers: the slot's own map. A stop sends no `peersRemoved`, so counting delegates
     /// would drift.
     public var autoInterfacePeerCount: Int { node.client.endpoint.auto?.peerInterfaces.count ?? 0 }
 
@@ -171,7 +171,7 @@ func reduceAutoInterfaceDelegate(_ delegate: AutoInterface.Action.Delegate,
         if state.connection == .connecting, state.connectedInterfaces.isEmpty, !state.somethingWillDial {
             state.connection = .disconnected
         }
-    case .peerRemoved, .packetReceived, .noUsableInterfaces:
+    case .peersRemoved, .packetReceived, .noUsableInterfaces:
         // Peer departures are the endpoint's (`interfaceDisconnected`); no usable NIC is read from
         // the interface's live status (`autoInterfaceNoUsableInterfaces`).
         break

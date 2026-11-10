@@ -196,7 +196,8 @@ extension DiagnosticsSnapshot {
         if !dataPortInUse.isEmpty {
             return Layer(title: title, health: .problem,
                          reason: "another Reticulum program here (rnsd or NomadNet?) holds the data "
-                                 + "port — connect to it over TCP instead", rows: rows)
+                                 + "port — quit it, or give it a TCP server interface and add it as a node",
+                         rows: rows)
         }
         if !interface.nics.isEmpty, Set(interface.nics.keys).isSubset(of: notices.multicastUnavailable) {
             return Layer(title: title, health: .problem,

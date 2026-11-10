@@ -91,10 +91,14 @@ public enum AutoInterfaceText {
         + "can reach this device. On by default."
 
     /// `.dataPortInUse` (spec §6, §9 R2): on a Mac, nearly always rnsd or NomadNet already running.
+    /// A default rnsd or NomadNet config has no TCP server interface, so "add it as a node" alone
+    /// would point at nothing: the copy gives the config that makes it true.
     public static var dataPortInUse: String {
         "Another Reticulum program on \(thisDevice) (for example rnsd or NomadNet) is already using "
-            + "local discovery, so this app can’t. Connect to that program over TCP instead by adding "
-            + "it as a node, or quit it."
+            + "local discovery, so this app can’t. To use local discovery here, quit that program. "
+            + "To keep it running and connect through it instead, give it a TCP server interface: add "
+            + "[[TCP Server]] with type = TCPServerInterface, listen_ip = 127.0.0.1 and "
+            + "listen_port = 4242 to its Reticulum config, restart it, then add 127.0.0.1:4242 as a node."
     }
 
     public static let noUsableInterfaces = "No Wi-Fi or Ethernet connection to search on."
