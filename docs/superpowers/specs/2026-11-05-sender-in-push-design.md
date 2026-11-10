@@ -195,6 +195,11 @@ untouched: title "New message", no body.
 - **Collapse id.** The hub sets `apns-collapse-id` to *my* destination hash, so a newer push
   replaces the previous banner even when it's from someone else. That's existing behaviour,
   just more visible once banners carry names. Out of scope; it would be a hub change.
+- **Replay.** A signature proves who wrote a message, not when it was sent. Anyone holding a
+  captured packet from Alice to me (the hub, a transport node) can push it again and get a named
+  "Alice / New message" banner at a time they choose. The app dedups, so nothing new shows when I
+  open it. The name is still correct, and the hub could already send generic banners, so this is
+  accepted for v1. A timestamp window is hard to pick, given propagation delay.
 - **Stale directory.** A name changed while the app hasn't run since shows the old name until
   the app next writes the directory.
 
