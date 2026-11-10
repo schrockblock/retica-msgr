@@ -24,6 +24,7 @@ private func makeDirectoryStore(_ db: any DatabaseWriter, clock: any Clock<Durat
                                 thumbnails: [String: Data] = [:],
                                 configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
     var initial = AppFeature.State(identity: Identity(), pushStorage: .temporary())
+    initial.autoInterfaceAvailable = false   // hermetic: no AutoInterface slot
     configure?(&initial)
     var contacts = FakeContacts().client
     contacts.thumbnail = { id in thumbnails[id] }
@@ -628,7 +629,10 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     }
     let clock = ManualClock()
     let log = WriteLog(signalling: clock)
-    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { $0 = AppFeature.State(identity: me, pushStorage: .temporary()) }
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) {
+        $0 = AppFeature.State(identity: me, pushStorage: .temporary())
+        $0.autoInterfaceAvailable = false   // the replacement state needs the hermetic override too
+    }
     #expect(store.state.peerDisplayName(danaHex) == nil)
     #expect(store.state.senderPublicKey(danaHex) == nil)
 
