@@ -326,6 +326,10 @@ public struct AppFeature {
         /// The chosen radio's advertised name when it was picked, for the Settings row only.
         /// Unauthenticated text from the air: never put it in a diagnostics reason.
         @Shared(.appStorage("meshtasticRadioName")) public var meshtasticRadioName: String? = nil
+        /// How many times Meshtastic radios may relay each fragment we send (Meshtastic's
+        /// `hop_limit`). 1 by default, as landandair sends. Read through `meshtasticHopLimitValue`,
+        /// which clamps a stored value into `MeshtasticHopLimit.range`.
+        @Shared(.appStorage("meshtasticHopLimit")) public var meshtasticHopLimit: Int = MeshtasticHopLimit.defaultValue
         /// Opt-in: also reach Reticulum through a MeshCore radio. OFF by default. Read at connect
         /// time (lane D's slot sync), like `meshtasticEnabled`; see `meshCoreWillDial`.
         @Shared(.appStorage("meshCoreEnabled")) public var meshCoreEnabled: Bool = false

@@ -508,11 +508,20 @@ struct SettingsView: View {
         Section {
             // Standard Toggle in a Form row: the whole row is already hittable.
             Toggle("Connect through a Meshtastic radio", isOn: $store.meshtasticEnabled)
-            LabeledContent("Radio", value: store.meshtasticRadioLabel)
+            radioRow("Radio", value: store.meshtasticRadioLabel, light: store.state.radioLight(.meshtastic))
             // A standard Form button row is hittable across its width already.
             Button("Choose radio…") { store.send(.chooseRadioTapped) }
             radioConnectRow(.meshtastic, connect: MeshtasticCopy.connectButton,
                             connecting: MeshtasticCopy.connecting, apply: MeshtasticCopy.applyChanges)
+            // Shows the clamped value; a change reaches a running radio through Apply changes.
+            Stepper(value: Binding(get: { store.meshtasticHopLimitValue },
+                                   set: { store.send(.binding(.set(\.meshtasticHopLimit, $0))) }),
+                    in: MeshtasticHopLimit.range) {
+                Text(MeshtasticCopy.hopLimitRow(store.meshtasticHopLimitValue))
+            }
+            Text(MeshtasticCopy.hopLimitNotice)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         } header: {
             VStack(alignment: .leading, spacing: 12) {
                 // Styled like the "Network" heading.
@@ -552,6 +561,29 @@ struct SettingsView: View {
         }
     }
 
+    /// A radio section's Radio row, with the radio's status light before its title (as the Network
+    /// row has one before its status).
+    private func radioRow(_ title: String, value: String, light: RadioLight) -> some View {
+        LabeledContent {
+            Text(value)
+        } label: {
+            HStack(spacing: 8) {
+                Circle().fill(radioLightColor(light)).frame(width: 10, height: 10)
+                    .accessibilityLabel(light.accessibilityText)
+                Text(title)
+            }
+        }
+    }
+
+    private func radioLightColor(_ light: RadioLight) -> Color {
+        switch light {
+        case .off: return .gray
+        case .connecting: return .yellow
+        case .connected: return .green
+        case .problem: return .red
+        }
+    }
+
     private func radioConnectLabel(_ button: RadioConnectButton, connect: String, connecting: String,
                                    apply: String) -> String {
         switch button {
@@ -578,7 +610,7 @@ struct SettingsView: View {
             if let message = store.meshCoreStatus.userMessage {
                 meshCoreNote(message, color: .red)
             }
-            LabeledContent(MeshCoreCopy.radioRow, value: store.meshCoreRadioLabel)
+            radioRow(MeshCoreCopy.radioRow, value: store.meshCoreRadioLabel, light: store.state.radioLight(.meshCore))
             // A standard Form button row is hittable across its width already.
             Button(MeshCoreCopy.chooseRadio) { store.send(.chooseMeshCoreRadioTapped) }
             radioConnectRow(.meshCore, connect: MeshCoreCopy.connectButton, connecting: MeshCoreCopy.connecting,
@@ -636,7 +668,7 @@ struct SettingsView: View {
             if let message = store.rnodeStatus.userMessage {
                 rnodeNote(message, color: .red)
             }
-            LabeledContent(RNodeCopy.radioRow, value: store.rnodeRadioLabel)
+            radioRow(RNodeCopy.radioRow, value: store.rnodeRadioLabel, light: store.state.radioLight(.rnode))
             // A standard Form button row is hittable across its width already.
             Button(RNodeCopy.chooseRadio) { store.send(.chooseRNodeRadioTapped) }
             radioConnectRow(.rnode, connect: RNodeCopy.connectButton, connecting: RNodeCopy.connecting,

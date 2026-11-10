@@ -27,6 +27,8 @@ struct MeshSentFrame: Equatable, Sendable {
 /// stream; `stop` blocks while stops are held and records `.stop` only when it RETURNS.
 final class MeshRadioHarness: Sendable {
     let calls = LockIsolated<[MeshRadioCall]>([])
+    /// The full config of every `start`, in order (`calls` keeps only the radio).
+    let startConfigs = LockIsolated<[MeshtasticDriverConfig]>([])
     let sessions = LockIsolated<[AsyncStream<MeshtasticDriverEvent>.Continuation]>([])
     let sent = LockIsolated<[MeshSentFrame]>([])
     private let held = LockIsolated(false)
@@ -35,6 +37,7 @@ final class MeshRadioHarness: Sendable {
         MeshtasticDriver(
             start: { [self] config in
                 let session = AsyncStream<MeshtasticDriverEvent>.makeStream()
+                startConfigs.withValue { $0.append(config) }
                 calls.withValue { $0.append(.start(config.radio)) }
                 sessions.withValue { $0.append(session.continuation) }
                 return session.stream
