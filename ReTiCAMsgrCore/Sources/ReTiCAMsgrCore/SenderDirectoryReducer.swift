@@ -2,18 +2,52 @@ import Foundation
 import ComposableArchitecture
 import GRDB
 import os
+import ReTiCA
+import ReTiCANode
 import ReTiCAPushCore
 
 /// Writes the app-group sender directory the Notification Service Extension reads (spec
-/// 2026-11-05 §4). Disabled in tests by default, so suites that don't opt in never see the effect.
+/// 2026-11-05 §4). The live writer is enabled on iOS only: macOS has no Notification Service
+/// Extension, so nothing there would read the directory. Disabled in tests by default, so suites
+/// that don't opt in never see the effect.
 struct SenderDirectoryWriter: Sendable {
     var isEnabled: Bool
     var write: @Sendable (SenderDirectoryStore, [String: SenderDirectory.Input]) throws -> Void
 }
 
 extension SenderDirectoryWriter: DependencyKey {
+    #if os(iOS)
     static let liveValue = SenderDirectoryWriter(isEnabled: true) { try $0.save($1) }
+    #else
+    static let liveValue = SenderDirectoryWriter(isEnabled: false) { try $0.save($1) }
+    #endif
     static let testValue = SenderDirectoryWriter(isEnabled: false) { _, _ in }
+}
+
+/// The raw state the fingerprint is projected from. Compared first on every action: equal
+/// unchanged tables compare by storage identity, so most actions skip the per-candidate projection.
+struct SenderDirectoryRawInputs: Equatable {
+    var peerConversations: Set<String>
+    var contactLinks: [String: ContactLink]
+    var contactCards: [String: ContactCard]
+    var peerProfiles: [String: PeerProfile]
+    var blockedPeers: Set<String>
+    var groupMembers: Set<String>
+    var rosterVersion: Int
+    var knownIdentities: [Data: Identity]
+    var learnedPeers: [Data: LXMFNode.LearnedPeer]
+
+    init(_ state: AppFeature.State) {
+        peerConversations = SenderDirectoryFingerprint.peerConversations(state)
+        contactLinks = state.contactLinks
+        contactCards = state.contactCards
+        peerProfiles = state.peerProfiles
+        blockedPeers = state.blockedPeers
+        groupMembers = state.senderDirectoryGroupMembers
+        rosterVersion = state.senderDirectoryRosterVersion
+        knownIdentities = state.node.client.router.knownIdentities
+        learnedPeers = state.node.client.learnedPeers
+    }
 }
 
 extension DependencyValues {
@@ -47,15 +81,22 @@ struct SenderDirectoryFingerprint: Equatable, Sendable {
     init() {}
 
     init(_ state: AppFeature.State) {
-        peerConversations = Set(state.conversations.filter { $0.kind == .peer }.map { $0.peerHex.lowercased() })
+        peerConversations = Self.peerConversations(state)
         rosterVersion = state.senderDirectoryRosterVersion
         contactLinks = state.contactLinks
         contactCards = state.contactCards
         peerProfiles = state.peerProfiles
         blockedPeers = state.blockedPeers
+        let known = state.node.client.router.knownIdentities
         for hex in state.senderDirectoryCandidates(groupMembers: Array(state.senderDirectoryGroupMembers)) {
-            candidates[hex] = Candidate(name: state.peerDisplayName(hex), hasKey: state.senderPublicKey(hex) != nil)
+            // A presence check, not `senderPublicKey`, which would build a 64-byte key per peer.
+            let hasKey = Data(hexString: hex).map { known[$0] != nil } ?? false
+            candidates[hex] = Candidate(name: state.peerDisplayName(hex), hasKey: hasKey)
         }
+    }
+
+    static func peerConversations(_ state: AppFeature.State) -> Set<String> {
+        Set(state.conversations.filter { $0.kind == .peer }.map { $0.peerHex.lowercased() })
     }
 }
 
@@ -88,6 +129,8 @@ struct SenderDirectoryReducer: Reducer {
                 do {
                     let members = try await database.read { db in try Self.openGroupMembers(db) }
                     await send(.senderDirectoryMembersLoaded(members))
+                } catch is CancellationError {
+                    // Superseded by a newer write: nothing to report.
                 } catch {
                     Self.log.error("sender directory member read failed: \(String(describing: error), privacy: .public)")
                 }
@@ -98,6 +141,7 @@ struct SenderDirectoryReducer: Reducer {
             state.senderDirectoryGroupMembers = members
             // This write resolves everything from the state as it is now, so it covers every
             // change up to here: store that fingerprint rather than scheduling another write.
+            state.senderDirectoryRawInputs = SenderDirectoryRawInputs(state)
             state.senderDirectoryFingerprint = SenderDirectoryFingerprint(state)
             return writeEffect(state)
 
@@ -108,6 +152,10 @@ struct SenderDirectoryReducer: Reducer {
         default:
             break
         }
+        // Most actions change none of the raw inputs: skip the per-candidate projection then.
+        let raw = SenderDirectoryRawInputs(state)
+        guard raw != state.senderDirectoryRawInputs else { return .none }
+        state.senderDirectoryRawInputs = raw
         let fingerprint = SenderDirectoryFingerprint(state)
         guard fingerprint != state.senderDirectoryFingerprint else { return .none }
         state.senderDirectoryFingerprint = fingerprint
@@ -126,39 +174,69 @@ struct SenderDirectoryReducer: Reducer {
         return Set(try GroupMember.where { $0.groupHex.in(open) }.fetchAll(db).map { $0.memberHex.lowercased() })
     }
 
-    /// Resolves names, keys and picture sources from `state` now (values only), then reads photo
-    /// files, fetches missing contact thumbnails and writes, off the reducer. Errors are logged.
-    private func writeEffect(_ state: State) -> Effect<Action> {
-        let candidates = state.senderDirectoryCandidates(groupMembers: Array(state.senderDirectoryGroupMembers))
-        var names: [String: String] = [:]
-        var keys: [String: Data] = [:]
-        var profiles: [String: PeerProfile] = [:]
-        for hex in candidates {
-            names[hex] = state.peerDisplayName(hex)
-            keys[hex] = state.senderPublicKey(hex)
-            profiles[hex] = state.peerProfiles[hex]
-        }
-        let me = state.myAddressHex
-        let blocked = state.blockedPeers
-        let links = state.contactLinks
-        let cards = state.contactCards
-        let store = state.push.storage.senderDirectory
-        return .run { [writer, avatarStore, contactsClient, names, keys, profiles] _ in
-            let thumbnails = await Self.contactThumbnails(links: links, cards: cards, profiles: profiles,
-                                                          candidates: candidates, contacts: contactsClient)
-            let inputs = SenderDirectoryBuilder.inputs(
-                candidates: candidates, me: me, blocked: blocked,
-                name: { names[$0] }, publicKey: { keys[$0] },
-                picture: { hex in
-                    Self.picture(profile: profiles[hex], contactThumbnail: thumbnails[hex], avatarStore: avatarStore)
-                })
-            do {
-                try writer.write(store, inputs)
-            } catch {
-                Self.log.error("sender directory write failed: \(String(describing: error), privacy: .public)")
+    /// Everything one write needs, resolved from state in the reducer (values only).
+    struct WriteSnapshot: Sendable {
+        var candidates: Set<String>
+        var me: String
+        var blocked: Set<String>
+        var names: [String: String]
+        var keys: [String: Data]
+        var profiles: [String: PeerProfile]
+        var links: [String: ContactLink]
+        var cards: [String: ContactCard]
+
+        init(_ state: AppFeature.State) {
+            candidates = state.senderDirectoryCandidates(groupMembers: Array(state.senderDirectoryGroupMembers))
+            names = [:]
+            keys = [:]
+            profiles = [:]
+            for hex in candidates {
+                names[hex] = state.peerDisplayName(hex)
+                keys[hex] = state.senderPublicKey(hex)
+                profiles[hex] = state.peerProfiles[hex]
             }
+            me = state.myAddressHex
+            blocked = state.blockedPeers
+            links = state.contactLinks
+            cards = state.contactCards
+        }
+    }
+
+    /// Resolves names, keys and picture sources from `state` now, then reads photo files, fetches
+    /// missing contact thumbnails and writes, off the reducer.
+    private func writeEffect(_ state: State) -> Effect<Action> {
+        let snapshot = WriteSnapshot(state)
+        let store = state.push.storage.senderDirectory
+        return .run { [writer, avatarStore, contactsClient] _ in
+            await Self.writeDirectory(snapshot, to: store, writer: writer, avatarStore: avatarStore,
+                                      contacts: contactsClient)
         }
         .cancellable(id: CancelID.write, cancelInFlight: true)
+    }
+
+    /// The write effect's body. Cancelling the effect does not interrupt the Contacts fetch or the
+    /// image encoding, so cancellation is checked right before the write: a superseded write must
+    /// not land after a newer one (its orphan sweep would delete the newer images). Write errors
+    /// are logged; a cancellation is not an error.
+    static func writeDirectory(_ snapshot: WriteSnapshot, to store: SenderDirectoryStore, writer: SenderDirectoryWriter,
+                               avatarStore: AvatarStore, contacts: ContactsClient) async {
+        let thumbnails = await contactThumbnails(links: snapshot.links, cards: snapshot.cards,
+                                                 profiles: snapshot.profiles, candidates: snapshot.candidates,
+                                                 contacts: contacts)
+        let inputs = SenderDirectoryBuilder.inputs(
+            candidates: snapshot.candidates, me: snapshot.me, blocked: snapshot.blocked,
+            name: { snapshot.names[$0] }, publicKey: { snapshot.keys[$0] },
+            picture: { hex in
+                picture(profile: snapshot.profiles[hex], contactThumbnail: thumbnails[hex], avatarStore: avatarStore)
+            })
+        do {
+            try Task.checkCancellation()
+            try writer.write(store, inputs)
+        } catch is CancellationError {
+            // Superseded by a newer write.
+        } catch {
+            log.error("sender directory write failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     /// Each linked candidate's contact thumbnail by peer hex: the loaded card's when there is one,

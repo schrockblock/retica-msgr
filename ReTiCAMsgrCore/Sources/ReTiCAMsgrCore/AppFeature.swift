@@ -458,6 +458,9 @@ public struct AppFeature {
         /// The open groups' members the last directory write read, so their names and keys are
         /// fingerprinted too.
         var senderDirectoryGroupMembers: Set<String> = []
+        /// The raw inputs the last fingerprint was projected from (nil until the first action with
+        /// the writer enabled).
+        var senderDirectoryRawInputs: SenderDirectoryRawInputs? = nil
 
         public init(identity: Identity,
                     pushStorage: PushStorage = .temporary(),

@@ -14,11 +14,12 @@ import ReTiCAPushCore
 // inputs, the whole directory is rewritten through `SenderDirectoryWriter`. Each test reads the
 // directory back from the store's temporary `PushStorage`.
 
-/// `makeBlockStore` with the writer enabled, a fixed contact thumbnail, an `AvatarStore` the test
-/// can write into, and a `TestClock` the test advances.
+/// `makeBlockStore` with the given writer (a `WriteLog`'s, or the disabled `.testValue`; the live
+/// value is off on macOS, where these tests run), a fixed contact thumbnail, an `AvatarStore` the
+/// test can write into, and a `ManualClock` the test advances.
 @MainActor
 private func makeDirectoryStore(_ db: any DatabaseWriter, clock: any Clock<Duration>,
-                                writer: SenderDirectoryWriter = .liveValue,
+                                writer: SenderDirectoryWriter,
                                 avatarStore: AvatarStore = .testValue,
                                 thumbnails: [String: Data] = [:],
                                 configure: ((inout AppFeature.State) -> Void)? = nil) -> TestStoreOf<AppFeature> {
@@ -148,6 +149,32 @@ private final class ManualClock: Clock, @unchecked Sendable {
     }
 
     /// Moves to the earliest pending deadline and wakes every sleeper due then; false when none.
+    var sleeperCount: Int { lock.withLock { sleepers.count } }
+
+    /// Moves time by `duration` and wakes exactly the sleepers due by then; returns how many woke.
+    @discardableResult
+    func advance(by duration: Duration) -> Int {
+        let due: [Sleeper] = lock.withLock {
+            _now = _now.advanced(by: duration)
+            let due = sleepers.filter { $0.deadline <= _now }
+            sleepers.removeAll { $0.deadline <= _now }
+            return due
+        }
+        for sleeper in due { sleeper.continuation.resume() }
+        return due.count
+    }
+
+    /// Returns once at least one sleeper is registered (the debounce, in a test with no other), or
+    /// once `stop` holds (checked after every event, a write among them).
+    func waitForSleeper(unless stop: @Sendable () -> Bool = { false }) async throws {
+        while sleeperCount == 0 && !stop() {
+            try Task.checkCancellation()
+            let seen = eventCount
+            if sleeperCount > 0 || stop() { return }
+            await waitForEvent(after: seen)
+        }
+    }
+
     func advanceToNextDeadline() -> Bool {
         let due: [Sleeper] = lock.withLock {
             guard let next = sleepers.map(\.deadline).min() else { return [] }
@@ -261,70 +288,76 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     }
 }
 
-@MainActor @Test func senderDirectoryWritesNamedPeersAfterTheDebounce() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryWritesNamedPeersAfterTheDebounce() async throws {
     let db = try AppDatabase.makeInMemory()
     let alice = Identity()
     let aliceHex = lxmfAddressHex(alice)
     try await seedMessage(from: aliceHex, db)
-    let clock = TestClock()
-    let store = makeDirectoryStore(db, clock: clock) { knowPeer(alice, announcing: "Alice", in: &$0) }
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { knowPeer(alice, announcing: "Alice", in: &$0) }
 
     try await reloadConversationList(store, db)
-    await clock.advance(by: .milliseconds(999))
+    // Once the debounce is asleep, 999 ms wake nothing, so nothing can have been written. (A write
+    // that skipped the debounce ends this wait too, and fails the checks below.)
+    try await clock.waitForSleeper(unless: { !log.writes.isEmpty })
+    #expect(clock.advance(by: .milliseconds(999)) == 0)
+    #expect(log.writes.isEmpty)
     #expect(directory(store).entries.isEmpty)
 
-    await clock.advance(by: .milliseconds(1))
-    await store.finish()
+    #expect(clock.advance(by: .milliseconds(1)) == 1)
+    try await advanceUntilWrite(clock, log) { _ in true }
     let entry = directory(store).entries[aliceHex]
     #expect(entry?.name == "Alice")
     // The key comes from `senderPublicKey` (the router's known identities).
     #expect(entry?.publicKey == alice.publicKey)
 }
 
-@MainActor @Test func senderDirectoryIncludesGroupMembersFromTheDatabase() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryIncludesGroupMembersFromTheDatabase() async throws {
     let db = try AppDatabase.makeInMemory()
     let dana = Identity()
     let danaHex = lxmfAddressHex(dana)
     let me = Identity()
     let meHex = lxmfAddressHex(me)
     try await seedGroup(me: meHex, members: [meHex, danaHex], db)
-    let clock = TestClock()
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
     var initial = AppFeature.State(identity: me, pushStorage: .temporary())
     knowPeer(dana, announcing: "Dana", in: &initial)
-    let store = makeDirectoryStore(db, clock: clock) { $0 = initial }
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { $0 = initial }
     #expect(store.state.openGroupMembers.isEmpty)
 
     try await reloadConversationList(store, db)
     #expect(!store.state.conversations.contains { $0.peerHex == danaHex })
     // The roster signal is the fingerprint change (a group conversation is not a peer one).
     await store.send(.senderDirectoryGroupsChanged)
-    await clock.advance(by: .seconds(1))
-    await store.finish()
+    try await advanceUntilWrite(clock, log) { _ in true }
     #expect(directory(store).entries[danaHex]?.name == "Dana")
     #expect(directory(store).entries[danaHex]?.publicKey == dana.publicKey)
     #expect(directory(store).entries[meHex] == nil)
 }
 
-@MainActor @Test func senderDirectoryDropsAPeerOnceBlocked() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryDropsAPeerOnceBlocked() async throws {
     let db = try AppDatabase.makeInMemory()
     let alice = Identity()
     let aliceHex = lxmfAddressHex(alice)
     try await seedMessage(from: aliceHex, db)
-    let clock = TestClock()
-    let store = makeDirectoryStore(db, clock: clock) { knowPeer(alice, announcing: "Alice", in: &$0) }
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { knowPeer(alice, announcing: "Alice", in: &$0) }
     try await reloadConversationList(store, db)
-    await clock.advance(by: .seconds(1))
-    await store.finish()
+    try await advanceUntilWrite(clock, log) { _ in true }
     #expect(directory(store).entries[aliceHex]?.name == "Alice")
 
+    let before = log.writes.count
     await store.send(.blockPeer(aliceHex))
-    await clock.advance(by: .seconds(1))
-    await store.finish()
+    try await advanceUntilWrite(clock, log, after: before) { _ in true }
+    await store.skipReceivedActions(strict: false)
     #expect(store.state.isBlocked(aliceHex))
     #expect(directory(store).entries[aliceHex] == nil)
 }
 
-@MainActor @Test func senderDirectoryCopiesAReceivedPhoto() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryCopiesAReceivedPhoto() async throws {
     let db = try AppDatabase.makeInMemory()
     let alice = Identity()
     let aliceHex = lxmfAddressHex(alice)
@@ -332,29 +365,30 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     let avatars = AvatarStore.testValue
     let jpeg = TestImages.jpeg(width: 256, height: 256)
     let path = try avatars.storePeer(jpeg, peerHex: aliceHex, version: "v1")
-    let clock = TestClock()
-    let store = makeDirectoryStore(db, clock: clock, avatarStore: avatars) { state in
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer, avatarStore: avatars) { state in
         knowPeer(alice, announcing: "Alice", in: &state)
         state.peerProfiles[aliceHex] = PeerProfile(peerHex: aliceHex, photoVersion: "v1", photoPath: path,
                                                    photoSetAt: blockT0, updatedAt: blockT0)
     }
 
     try await reloadConversationList(store, db)
-    await clock.advance(by: .seconds(1))
-    await store.finish()
+    try await advanceUntilWrite(clock, log) { _ in true }
     let sender = store.state.push.storage.senderDirectory
     let entry = try #require(directory(store).entries[aliceHex])
     let url = try #require(sender.imageURL(for: entry))
     #expect(try Data(contentsOf: url) == jpeg)
 }
 
-@MainActor @Test func senderDirectoryUsesTheLinkedContactThumbnail() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryUsesTheLinkedContactThumbnail() async throws {
     let db = try AppDatabase.makeInMemory()
     let alice = Identity()
     let aliceHex = lxmfAddressHex(alice)
     let thumbnail = TestImages.jpeg(width: 600, height: 400)
-    let clock = TestClock()
-    let store = makeDirectoryStore(db, clock: clock, thumbnails: ["c1": thumbnail]) { state in
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer, thumbnails: ["c1": thumbnail]) { state in
         knowPeer(alice, announcing: nil, in: &state)
     }
     #expect(store.state.contactCards.isEmpty)
@@ -363,8 +397,7 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     let link = ContactLinking.newLink(peerHex: aliceHex, identifier: "c1", name: "Alice Liddell",
                                       source: ContactLinkSource.manual, now: blockT0)
     await store.send(.contactLinksLoaded([link]))
-    await clock.advance(by: .seconds(1))
-    await store.finish()
+    try await advanceUntilWrite(clock, log) { _ in true }
     let sender = store.state.push.storage.senderDirectory
     let entry = try #require(directory(store).entries[aliceHex])
     #expect(entry.name == "Alice Liddell")
@@ -379,7 +412,7 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     let alice = Identity()
     let aliceHex = lxmfAddressHex(alice)
     try await seedMessage(from: aliceHex, db)
-    let clock = TestClock()
+    let clock = ManualClock()
     let store = makeDirectoryStore(db, clock: clock, writer: .testValue) { knowPeer(alice, announcing: "Alice", in: &$0) }
     store.exhaustivity = .on
 
@@ -390,9 +423,49 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     #expect(directory(store).entries.isEmpty)
 }
 
+/// A superseded write must not land: the effect's cancellation (a newer write's `cancelInFlight`)
+/// does not interrupt the Contacts fetch, so the body checks it before writing. The stub cancels
+/// the write's own task from inside the fetch, the moment a real supersede would; awaiting the
+/// task's value makes the outcome deterministic (the TestStore drops a cancelled effect at once,
+/// so it can't show what the zombie does afterwards).
+@MainActor @Test func senderDirectoryWriteCancelledDuringTheContactsFetchWritesNothing() async throws {
+    let alice = Identity()
+    let aliceHex = lxmfAddressHex(alice)
+    var state = AppFeature.State(identity: Identity(), pushStorage: .temporary())
+    knowPeer(alice, announcing: "Alice", in: &state)
+    state.contactLinks[aliceHex] = ContactLinking.newLink(peerHex: aliceHex, identifier: "c1", name: "Alice Liddell",
+                                                          source: ContactLinkSource.manual, now: blockT0)
+    let snapshot = SenderDirectoryReducer.WriteSnapshot(state)
+    let sender = state.push.storage.senderDirectory
+    let jpeg = TestImages.jpeg(width: 64, height: 64)
+
+    // Control: the same write, not cancelled, lands.
+    let control = WriteLog()
+    var plain = FakeContacts().client
+    plain.thumbnail = { _ in jpeg }
+    await Task {
+        await SenderDirectoryReducer.writeDirectory(snapshot, to: sender, writer: control.writer,
+                                                    avatarStore: .testValue, contacts: plain)
+    }.value
+    #expect(control.writes.count == 1)
+    #expect(control.writes.first?[aliceHex]?.name == "Alice Liddell")
+
+    let log = WriteLog()
+    var superseded = FakeContacts().client
+    superseded.thumbnail = { _ in
+        withUnsafeCurrentTask { $0?.cancel() }
+        return jpeg
+    }
+    await Task {
+        await SenderDirectoryReducer.writeDirectory(snapshot, to: sender, writer: log.writer,
+                                                    avatarStore: .testValue, contacts: superseded)
+    }.value
+    #expect(log.writes.isEmpty)
+}
+
 // MARK: - Fix round 1
 
-@MainActor @Test func senderDirectoryDownscalesALargeReceivedPhoto() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryDownscalesALargeReceivedPhoto() async throws {
     // The wire accepts received photos up to 512 px; the directory holds at most 256.
     let db = try AppDatabase.makeInMemory()
     let alice = Identity()
@@ -401,16 +474,16 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     let avatars = AvatarStore.testValue
     let jpeg = TestImages.jpeg(width: 512, height: 512)
     let path = try avatars.storePeer(jpeg, peerHex: aliceHex, version: "v1")
-    let clock = TestClock()
-    let store = makeDirectoryStore(db, clock: clock, avatarStore: avatars) { state in
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer, avatarStore: avatars) { state in
         knowPeer(alice, announcing: "Alice", in: &state)
         state.peerProfiles[aliceHex] = PeerProfile(peerHex: aliceHex, photoVersion: "v1", photoPath: path,
                                                    photoSetAt: blockT0, updatedAt: blockT0)
     }
 
     try await reloadConversationList(store, db)
-    await clock.advance(by: .seconds(1))
-    await store.finish()
+    try await advanceUntilWrite(clock, log) { _ in true }
     let sender = store.state.push.storage.senderDirectory
     let entry = try #require(directory(store).entries[aliceHex])
     let url = try #require(sender.imageURL(for: entry))
@@ -418,40 +491,41 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     #expect(max(dimensions.width, dimensions.height) <= ImageEncoder.avatarPixels)
 }
 
-@MainActor @Test func senderDirectoryWritesAConversationPeerOnceItsKeyIsLearned() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryWritesAConversationPeerOnceItsKeyIsLearned() async throws {
     // Spec §4 trigger: "an identity learned for a conversation peer".
     let db = try AppDatabase.makeInMemory()
     let bob = Identity()
     let bobHex = lxmfAddressHex(bob)
     let bobHash = Data(hexString: bobHex)!
     try await seedMessage(from: bobHex, db)
-    let clock = TestClock()
-    let store = makeDirectoryStore(db, clock: clock) { state in
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { state in
         state.node.client.learnedPeers[bobHash] = LXMFNode.LearnedPeer(
             displayName: "Bob", stampCost: nil, supportsCompression: false, learnedAt: blockT0)
     }
     try await reloadConversationList(store, db)
-    await clock.advance(by: .seconds(1))
-    await store.finish()
+    try await advanceUntilWrite(clock, log) { _ in true }
     #expect(directory(store).entries[bobHex] == nil, "no key yet, so no entry")
 
+    let before = log.writes.count
     await store.send(.node(.client(.router(.learnedIdentity(destinationHash: bobHash, identity: bob)))))
     #expect(store.state.node.client.router.knownIdentities[bobHash] != nil)
-    await clock.advance(by: .seconds(1))
-    await store.finish()
+    try await advanceUntilWrite(clock, log, after: before) { _ in true }
     #expect(directory(store).entries[bobHex]?.name == "Bob")
     #expect(directory(store).entries[bobHex]?.publicKey == bob.publicKey)
 }
 
-@MainActor @Test func senderDirectoryIgnoresANewMessageInAnExistingConversation() async throws {
+@MainActor @Test(.timeLimit(.minutes(5))) func senderDirectoryIgnoresANewMessageInAnExistingConversation() async throws {
     let db = try AppDatabase.makeInMemory()
     let alice = Identity()
     let aliceHex = lxmfAddressHex(alice)
     try await seedMessage(from: aliceHex, db)
-    let clock = TestClock()
-    let store = makeDirectoryStore(db, clock: clock) { knowPeer(alice, announcing: "Alice", in: &$0) }
+    let clock = ManualClock()
+    let log = WriteLog(signalling: clock)
+    let store = makeDirectoryStore(db, clock: clock, writer: log.writer) { knowPeer(alice, announcing: "Alice", in: &$0) }
     try await reloadConversationList(store, db)
-    await clock.advance(by: .seconds(1))
+    try await advanceUntilWrite(clock, log) { _ in true }
     await store.finish()
     #expect(directory(store).entries[aliceHex]?.name == "Alice")
 
