@@ -64,4 +64,14 @@ enum SystemSettings {
         URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")
         #endif
     }
+
+    /// The Local Network permission (AutoInterface, spec 2026-11-10 §8.2). iOS has no deep link to
+    /// that pane, so it opens the app's own settings, which list Local Network.
+    static var localNetworkURL: URL? {
+        #if canImport(UIKit)
+        URL(string: UIApplication.openSettingsURLString)
+        #else
+        URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
+        #endif
+    }
 }

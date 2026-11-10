@@ -189,7 +189,7 @@ extension DiagnosticsSnapshot {
         rows.append(contentsOf: peerIDs.map { Row($0, "connected") })
 
         // First match wins, worst first.
-        if notices.localNetworkDenied {
+        if state.autoInterfaceLocalNetworkDenied {
             return Layer(title: title, health: .problem,
                          reason: "local network access denied — allow it in Settings", rows: rows)
         }

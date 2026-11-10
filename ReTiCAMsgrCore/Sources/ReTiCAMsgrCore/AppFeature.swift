@@ -319,6 +319,9 @@ public struct AppFeature {
         /// The Local Network alert was shown this run: it shows at most once per launch, since a
         /// denied permission is reported again by every restart. Session-only.
         public var localNetworkAlertShown = false
+        /// Disconnect was tapped and no Connect or foreground has run since: turning AutoInterface
+        /// on then leaves the new slot stopped, as Disconnect left everything else. Session-only.
+        public var disconnectedByUser = false
         /// Opt-in: carry OTHER nodes' traffic through this device (Reticulum "transport" mode). OFF
         /// by default — relaying installs this device's identity as the Transport identity, the value
         /// every relay branch in `Transport` gates on, and turns on recursive path requests so the
@@ -1190,6 +1193,8 @@ public struct AppFeature {
                 // Disappearing messages: the open thread is being looked at again (first view for
                 // rows that arrived while suspended), and rows that fell due meanwhile go now.
                 state.isForeground = true
+                // The re-dial below restarts what a Disconnect stopped, AutoInterface included.
+                state.disconnectedByUser = false
                 let resumed = state.suspendedSinceForeground
                 state.suspendedSinceForeground = false
                 let expiryCatchUp = viewOpenThreadEffect(state)
@@ -1419,6 +1424,7 @@ public struct AppFeature {
                 // The same for an RNode the user may have fixed (paired it, updated it, changed the
                 // settings): `.endpoint(.start)` below restarts it.
                 state.rnodeNeedsUserAction = false
+                state.disconnectedByUser = false
                 // `.endpoint(.start)` below starts a stopped AutoInterface slot afresh, and the new
                 // session reports again (a denial too, so it may count toward dialing once more).
                 resetAutoInterfaceNoticesIfStopped(&state)
@@ -1435,6 +1441,8 @@ public struct AppFeature {
 
             case .disconnectTapped:
                 state.connection = .disconnected
+                // Turning AutoInterface on now creates the slot but leaves it stopped.
+                state.disconnectedByUser = true
                 // A radio swap that finishes after this leaves the new radio stopped.
                 state.meshtasticSwap?.startNext = false
                 state.meshCoreSwap?.startNext = false
@@ -2231,6 +2239,10 @@ public struct AppFeature {
                 // Every edit is saved, so backgrounding or leaving the chat loses nothing.
                 state.saveDraft(now: date.now)
                 return .none
+
+            case .binding(\.autoInterfaceEnabled):
+                // Applied at once, unlike the listener (`autoInterfaceToggleChanged`).
+                return autoInterfaceToggleChanged(&state)
 
             case let .node(.client(.endpoint(.delegate(.pathLearned(h, _))))):
                 // LXMFNode's Scope reducer has already run and updated state.node.client.learnedPeers[h]

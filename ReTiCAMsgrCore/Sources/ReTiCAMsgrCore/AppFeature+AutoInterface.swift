@@ -15,7 +15,22 @@ extension AppFeature.State {
     /// The slot counts toward `somethingWillDial`: wanted, and not known to be denied the local
     /// network (spec §8.4). A denied slot keeps running but would never bring anything up, so it
     /// must not hold the app at Connecting….
-    var autoInterfaceWillDial: Bool { autoInterfaceWanted && !autoInterfaceNotices.localNetworkDenied }
+    var autoInterfaceWillDial: Bool { autoInterfaceWanted && !autoInterfaceLocalNetworkDenied }
+
+    /// The interface reported `.localNetworkDenied` and no adopted NIC has heard its own multicast
+    /// echo since. The report is once per session, and on a Mac the user may grant the permission
+    /// while the session runs: the first echo after that proves the local network works, so the
+    /// denial no longer stands.
+    public var autoInterfaceLocalNetworkDenied: Bool {
+        guard autoInterfaceNotices.localNetworkDenied else { return false }
+        let nics = node.client.endpoint.auto?.interface.nics.values
+        return !(nics?.contains { $0.firstEcho != nil } ?? false)
+    }
+
+    /// The slot may be created or started now: anywhere but an iOS app in the background (spec §8.5),
+    /// which covers a background launch for a push or a Bluetooth wake (`isForeground` starts false
+    /// then, see `AppRuntime.build`). The foreground's sync creates and starts it.
+    var autoInterfaceMayStartNow: Bool { !autoInterfaceStopsInBackground || isForeground }
 
     /// Live peers: the slot's own map. A stop sends no per-peer `peerRemoved`, so counting delegates
     /// would drift.
@@ -56,12 +71,13 @@ extension AppFeature {
 /// note in `syncEndpointNodes` explains). Removal is `.removeAuto`, which deregisters the peers and
 /// stops the driver before the slot goes; never `auto = nil` (spec §5.7). A slot whose removal is
 /// still waiting for the driver is left to finish: `autoInterfaceRemovalFinished` recreates it if
-/// the setting came back on meanwhile.
+/// the setting came back on meanwhile. An iOS app in the background creates no slot
+/// (`autoInterfaceMayStartNow`): `.onLaunch`'s `.endpoint(.start)` would start it there.
 func syncAutoInterfaceSlot(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
     let wanted = state.autoInterfaceWanted
     let current = state.node.client.endpoint.auto
     if wanted {
-        guard current == nil else { return .none }
+        guard current == nil, state.autoInterfaceMayStartNow else { return .none }
         state.node.client.endpoint.auto = AutoEndpoint.State(config: AutoInterfaceConfig())
         state.autoInterfaceNotices = AutoInterfaceNotices()
         return .none
@@ -83,9 +99,12 @@ func resetAutoInterfaceNoticesIfStopped(_ state: inout AppFeature.State) {
 /// The `.foregrounded` restart (spec §8.5): a stopped slot starts afresh, rebinding and
 /// re-announcing, so peers come back within about 3.5 s. Not from `.pushWake`: a background wake
 /// must not start it on iOS. A running slot (the Mac, which never stops it) is left alone, and so
-/// is one being removed.
+/// is one being removed, and one no longer wanted: the same foreground's sync has just sent it
+/// `.removeAuto` (not yet reduced, so `removalPending` is still false), and a `.start` now would
+/// bind the interface the user turned off, or reach a slot already gone.
 func autoInterfaceForegroundStart(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
-    guard let auto = state.node.client.endpoint.auto, !auto.removalPending,
+    guard state.autoInterfaceWanted, state.autoInterfaceMayStartNow,
+          let auto = state.node.client.endpoint.auto, !auto.removalPending,
           auto.interface.status == .stopped else { return .none }
     resetAutoInterfaceNoticesIfStopped(&state)
     return .send(.node(.client(.endpoint(.auto(.start)))))
@@ -103,10 +122,21 @@ func autoInterfaceBackgroundStop(_ state: AppFeature.State) -> Effect<AppFeature
 /// A removal's `driver.stop()` returned and the container dropped the slot. If the setting came back
 /// on while it ran, put a fresh slot in and start it, so the toggle does not need a second Connect.
 func autoInterfaceRemovalFinished(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
-    guard state.node.client.endpoint.auto == nil, state.autoInterfaceWanted else { return .none }
+    guard state.node.client.endpoint.auto == nil, state.autoInterfaceWanted,
+          state.autoInterfaceMayStartNow else { return .none }
     state.node.client.endpoint.auto = AutoEndpoint.State(config: AutoInterfaceConfig())
     state.autoInterfaceNotices = AutoInterfaceNotices()
     return .send(.node(.client(.endpoint(.auto(.start)))))
+}
+
+/// The Settings toggle, applied at once (unlike the listener's, read at the next Connect): the
+/// caption promises reachability, so turning it off must stop discovery now. Off runs the removal
+/// side of the slot sync (`.removeAuto`). On creates the slot and starts it, unless the user has
+/// Disconnected (`disconnectedByUser`): then the next Connect or foreground starts it.
+func autoInterfaceToggleChanged(_ state: inout AppFeature.State) -> Effect<AppFeature.Action> {
+    let sync = syncAutoInterfaceSlot(&state)
+    guard state.autoInterfaceWanted, !state.disconnectedByUser else { return sync }
+    return .merge(sync, autoInterfaceForegroundStart(&state))
 }
 
 /// The interface's hatch-only delegates (spec §6). Peer registration itself is the endpoint's;

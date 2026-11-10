@@ -516,12 +516,12 @@ struct SettingsView: View {
         Toggle(AutoInterfaceText.toggleTitle, isOn: $store.autoInterfaceEnabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-        if store.autoInterfaceEnabled, store.autoInterfaceNotices.localNetworkDenied {
+        if store.autoInterfaceEnabled, store.state.autoInterfaceLocalNetworkDenied {
             Text(AutoInterfaceText.localNetworkDenied)
                 .font(.caption)
                 .foregroundStyle(.red)
             Button("Open Settings") {
-                if let url = SystemSettings.url { openURL(url) }
+                if let url = SystemSettings.localNetworkURL { openURL(url) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())

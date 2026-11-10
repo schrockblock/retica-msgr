@@ -42,7 +42,7 @@ private struct LocalNetworkAlertModifier: ViewModifier {
             set: { if !$0 { store.send(.localNetworkAlertDismissed) } }
         )) {
             Button("Open Settings") {
-                if let url = SystemSettings.url { openURL(url) }
+                if let url = SystemSettings.localNetworkURL { openURL(url) }
                 store.send(.localNetworkAlertDismissed)
             }
             Button("Not Now", role: .cancel) { store.send(.localNetworkAlertDismissed) }

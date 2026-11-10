@@ -472,3 +472,121 @@ private func autoBringPeerOnline(_ store: TestStoreOf<AppFeature>, _ auto: AutoD
     await store.receive({ isInterfaceConnected($0, autoPeerID) }, timeout: .seconds(2))
     #expect(!store.state.autoInterfaceNoPeersHint(at: autoNow.addingTimeInterval(31)), "hint with a peer up")
 }
+
+// MARK: - Fix round 1
+
+/// Review I1: a slot stopped by Disconnect, the setting turned off (here without the Settings binding,
+/// which now removes at once), then a foreground. The sync sends `.removeAuto`; the foreground must not
+/// also start the slot it is removing.
+@MainActor @Test func autoForegroundAfterDisconnectAndToggleOffRemovesWithoutARestart() async {
+    let auto = AutoDriverHarness()
+    let store = autoStore(auto)
+    await store.send(.connectTapped)
+    await auto.waitForRuns(1)
+    await store.send(.disconnectTapped)
+    await auto.waitForCall(.stopReturned)
+    await store.receive(isAutoDriverStopped, timeout: .seconds(2))
+    let shared = store.state
+    shared.$autoInterfaceEnabled.withLock { $0 = false }
+    await store.send(.foregrounded)
+    for _ in 0..<50 where store.state.node.client.endpoint.auto != nil {
+        await Task.megaYield()
+        await store.skipReceivedActions(strict: false)
+    }
+    for _ in 0..<20 { await Task.megaYield() }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.auto == nil, "the slot was not removed")
+    #expect(auto.runCount == 1, "the foreground restarted a slot it was removing")
+}
+
+/// Review m3: an iOS launch in the background (a push or a Bluetooth wake; `AppRuntime.build` sets
+/// `isForeground` false) neither creates nor starts the slot. The first foreground does both.
+@MainActor @Test func autoIOSBackgroundLaunchWaitsForTheForeground() async {
+    let auto = AutoDriverHarness()
+    let store = autoStore(auto) {
+        $0.autoInterfaceStopsInBackground = true
+        $0.isForeground = false
+    }
+    await store.send(.onLaunch)
+    await store.send(.pushWake)
+    for _ in 0..<20 { await Task.megaYield() }
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.auto == nil, "a background launch created the slot")
+    #expect(auto.runCount == 0, "a background launch started AutoInterface")
+    await store.send(.foregrounded)
+    await auto.waitForRuns(1)
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.auto != nil)
+    #expect(auto.runCount == 1, "the foreground did not start AutoInterface")
+}
+
+/// The Mac is unchanged: a launch with nobody looking still starts it.
+@MainActor @Test func autoMacLaunchStartsEvenWhenInactive() async {
+    let auto = AutoDriverHarness()
+    let store = autoStore(auto) { $0.isForeground = false }
+    await store.send(.onLaunch)
+    await auto.waitForRuns(1)
+    await store.skipReceivedActions(strict: false)
+    #expect(auto.runCount == 1)
+}
+
+/// Review m4: turning the setting off removes the slot at once, with no Connect or foreground.
+@MainActor @Test func autoToggleOffTakesEffectAtOnce() async {
+    let auto = AutoDriverHarness()
+    let clock = TestClock<Duration>()
+    let store = autoStore(auto, clock: clock)
+    await autoBringPeerOnline(store, auto, clock)
+    await store.send(.binding(.set(\.autoInterfaceEnabled, false)))
+    await store.receive(isAutoDriverStopped, timeout: .seconds(2))
+    await store.skipReceivedActions(strict: false)
+    #expect(store.state.node.client.endpoint.auto == nil)
+    #expect(store.state.node.client.endpoint.interfaces[autoPeerID] == nil)
+    #expect(auto.calls.value == [.run, .stopEntered, .stopReturned])
+}
+
+/// Review m4: turning it on creates and starts the slot at once, except after Disconnect, where the
+/// slot waits for the next Connect.
+@MainActor @Test func autoToggleOnStartsAtOnceUnlessDisconnected() async {
+    let auto = AutoDriverHarness()
+    let store = autoStore(auto) { $0.$autoInterfaceEnabled.withLock { $0 = false } }
+    await store.send(.connectTapped)
+    #expect(store.state.node.client.endpoint.auto == nil)
+    await store.send(.binding(.set(\.autoInterfaceEnabled, true)))
+    await auto.waitForRuns(1)
+    #expect(auto.runCount == 1, "turning it on did not start it")
+
+    let later = AutoDriverHarness()
+    let disconnected = autoStore(later) { $0.$autoInterfaceEnabled.withLock { $0 = false } }
+    await disconnected.send(.connectTapped)
+    await disconnected.send(.disconnectTapped)
+    await disconnected.send(.binding(.set(\.autoInterfaceEnabled, true)))
+    for _ in 0..<20 { await Task.megaYield() }
+    #expect(disconnected.state.node.client.endpoint.auto != nil, "the slot was not created")
+    #expect(later.runCount == 0, "turning it on after Disconnect started it")
+    await disconnected.send(.connectTapped)
+    await later.waitForRuns(1)
+    #expect(later.runCount == 1)
+}
+
+/// Review m2: on a Mac the user may grant Local Network while the session runs. The first echo then
+/// proves the network works: the denial no longer shows or blocks dialing.
+@MainActor @Test func autoDenialClearsOnceAnEchoArrives() async {
+    let auto = AutoDriverHarness()
+    let clock = TestClock<Duration>()
+    let store = autoStore(auto, clock: clock)
+    await store.send(.connectTapped)
+    await auto.waitForRuns(1)
+    await clock.advance(by: .seconds(2))
+    await store.receive(isPeeringWaitElapsed, timeout: .seconds(2))
+    await store.send(autoDelegate(.localNetworkDenied))
+    #expect(store.state.autoInterfaceLocalNetworkDenied)
+    #expect(!store.state.somethingWillDial)
+    auto.yield(discovery(from: autoOwnLL))
+    for _ in 0..<50 where store.state.node.client.endpoint.auto?.interface.nics[autoNIC]?.firstEcho == nil {
+        await Task.megaYield()
+        await store.skipReceivedActions(strict: false)
+    }
+    #expect(!store.state.autoInterfaceLocalNetworkDenied, "the denial outlived the first echo")
+    #expect(store.state.somethingWillDial)
+    #expect(DiagnosticsSnapshot.autoInterfaceLayer(store.state, at: autoNow).health != .problem)
+}
