@@ -29,13 +29,17 @@ final class NotificationService: UNNotificationServiceExtension {
         let original = request.content
         work = Task {
             let outcome = await handler.outcome(userInfo: userInfo)
+            if Task.isCancelled { return } // timed out: that path delivers
             // The (async) intent step can outlast the timeout, so the content is built before the
-            // lock is taken and WITHOUT counting (`badgeDefaults: nil`). Whichever path wins the lock
-            // then counts exactly one push, inside `finish`.
-            let content = await PushBanner.content(for: outcome, original: original, badgeDefaults: nil)
-            switch outcome.verdict {
-            case .deliverOriginal: finish { PushBanner.badged(content) }
-            case .suppress: finish { content }
+            // lock is taken. It carries the NEXT badge value (stored count + 1) but stores nothing,
+            // and is never copied afterwards (a Communication Notification must stay as
+            // `updating(from:)` returned it). Both paths read the same base count and only the one
+            // that wins the lock commits it, so a push is counted once.
+            let defaults = BadgeCounter.appGroupDefaults()
+            let content = await PushBanner.content(for: outcome, original: original, badgeDefaults: defaults)
+            finish {
+                PushBanner.commitBadge(of: content, badgeDefaults: defaults)
+                return content
             }
         }
     }

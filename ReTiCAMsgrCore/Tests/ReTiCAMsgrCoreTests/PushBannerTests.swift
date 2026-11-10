@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import UserNotifications
-import ReTiCAMsgrPushService
+@testable import ReTiCAMsgrPushService
 
 private func freshDefaults() -> UserDefaults {
     UserDefaults(suiteName: "test.\(UUID())")!
@@ -72,6 +72,69 @@ private func outcome(_ name: String?, verdict: PushVerdict = .deliverOriginal) -
     #expect(c.threadIdentifier == hex)
     #expect(c.sound == .default)
     #expect(c.badge == 3)
+}
+
+@Test func pushBannerPeeksTheBadgeWithoutStoringIt() async {
+    let defaults = freshDefaults()
+    BadgeCounter.set(2, defaults)
+    let c = await PushBanner.content(for: outcome("Alice"), original: original(),
+                                     badgeDefaults: defaults, applyIntent: { c, _ in c })
+    #expect(c.badge == 3)
+    #expect(BadgeCounter.next(defaults) == 3) // still 2 stored
+}
+
+@Test func pushBannerWithoutBadgeDefaultsLeavesTheBadgeUnset() async {
+    let c = await PushBanner.content(for: outcome("Alice"), original: original(),
+                                     badgeDefaults: nil, applyIntent: { c, _ in c })
+    #expect(c.badge == nil)
+    #expect(c.sound == .default)
+}
+
+@Test func pushBannerCommitStoresTheContentsBadgeExactlyOnce() async {
+    let defaults = freshDefaults()
+    BadgeCounter.set(2, defaults)
+    let c = await PushBanner.content(for: outcome("Alice"), original: original(),
+                                     badgeDefaults: defaults, applyIntent: { c, _ in c })
+    PushBanner.commitBadge(of: c, badgeDefaults: defaults)
+    #expect(c.badge == 3)
+    #expect(BadgeCounter.next(defaults) == 4) // stored is 3, not 4 or 2
+}
+
+@Test func pushBannerCommitIgnoresContentWithoutABadge() async {
+    let defaults = freshDefaults()
+    BadgeCounter.set(2, defaults)
+    let suppressed = await PushBanner.content(for: outcome("Alice", verdict: .suppress), original: original(),
+                                              badgeDefaults: defaults, applyIntent: { c, _ in c })
+    PushBanner.commitBadge(of: suppressed, badgeDefaults: defaults)
+    PushBanner.commitBadge(of: original(), badgeDefaults: defaults)
+    #expect(BadgeCounter.next(defaults) == 3) // still 2
+}
+
+@Test func pushBannerSetsEverythingBeforeTheIntentStepAndReturnsItsResultAsIs() async {
+    let defaults = freshDefaults()
+    BadgeCounter.set(2, defaults)
+    nonisolated(unsafe) var seen: UNMutableNotificationContent?
+    let c = await PushBanner.content(for: outcome("Alice"), original: original(),
+                                     badgeDefaults: defaults, applyIntent: { c, _ in seen = c; return c })
+    #expect(seen?.title == "Alice")
+    #expect(seen?.threadIdentifier == hex)
+    #expect(seen?.sound == .default)
+    #expect(seen?.badge == 3)
+    #expect(c === seen)
+}
+
+// Dispatch semaphores, not async/await, so the timing does not depend on the cooperative pool
+// (a loaded full-suite run can starve it for a minute).
+@Test func pushBannerDonationHangingStillFinishesAtTheDeadline() {
+    let done = DispatchSemaphore(value: 0)
+    PushBanner.raceDeadline(seconds: 0.1, start: { _ in }, finished: { done.signal() })
+    #expect(done.wait(timeout: .now() + 5) == .success)
+}
+
+@Test func pushBannerDonationAcknowledgedFinishesBeforeTheDeadline() {
+    let done = DispatchSemaphore(value: 0)
+    PushBanner.raceDeadline(seconds: 60, start: { ack in ack() }, finished: { done.signal() })
+    #expect(done.wait(timeout: .now() + 5) == .success)
 }
 
 @Test func pushBannerSuppressesToEmptyContentForAnOutcome() async {

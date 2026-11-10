@@ -15,11 +15,21 @@ public enum BadgeCounter {
         UserDefaults(suiteName: ReTiCAMsgrPush.appGroupID)
     }
 
-    /// Adds one and returns the new count.
+    /// What the count would be after one more push, without storing it.
+    public static func next(_ defaults: UserDefaults) -> Int {
+        defaults.integer(forKey: key) + 1
+    }
+
+    /// Stores a count previously read with `next`.
+    public static func commit(_ n: Int, _ defaults: UserDefaults) {
+        defaults.set(n, forKey: key)
+    }
+
+    /// Adds one and returns the new count (`next` then `commit`).
     @discardableResult
     public static func increment(_ defaults: UserDefaults) -> Int {
-        let n = defaults.integer(forKey: key) + 1
-        defaults.set(n, forKey: key)
+        let n = next(defaults)
+        commit(n, defaults)
         return n
     }
 

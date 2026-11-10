@@ -17,6 +17,20 @@ private func freshDefaults() -> UserDefaults {
     #expect(BadgeCounter.increment(defaults) == 3)
 }
 
+@Test func nextPeeksWithoutStoring() {
+    let defaults = freshDefaults()
+    BadgeCounter.set(4, defaults)
+    #expect(BadgeCounter.next(defaults) == 5)
+    #expect(BadgeCounter.next(defaults) == 5)
+    #expect(BadgeCounter.increment(defaults) == 5)
+}
+
+@Test func commitStoresTheGivenCount() {
+    let defaults = freshDefaults()
+    BadgeCounter.commit(6, defaults)
+    #expect(BadgeCounter.next(defaults) == 7)
+}
+
 @Test func setOverwrites() {
     let defaults = freshDefaults()
     BadgeCounter.increment(defaults)
