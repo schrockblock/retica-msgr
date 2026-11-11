@@ -954,6 +954,7 @@ public struct AppFeature {
     @Dependency(\.localNotifications) var localNotifications
     @Dependency(\.meshCoreKeyStore) var meshCoreKeyStore
     @Dependency(\.ownRatchetStore) var ownRatchetStore
+    @Dependency(\.tunnelIdentityStore) var tunnelIdentityStore
 
     /// Path expiry for pruning `learnedDestinationRows`, taken from the library rather than copied.
     ///
@@ -1056,7 +1057,12 @@ public struct AppFeature {
                 }
                 let sync = syncEndpointNodes(&state)
                 let enableRatchets = enableOwnRatchetsEffect(&state)
+                let tunnelIdentity = setTunnelIdentityEffect(state)
                 return .concatenate(
+                    // The tunnel identity likewise reaches Transport before `.endpoint(.start)`: a TCP
+                    // client synthesizes its tunnel on connect, and one that connected first would
+                    // send nothing until its next reconnect.
+                    tunnelIdentity,
                     // Own ratchets go first: the ring is read synchronously above, and this `.send`
                     // reaches Transport before `.endpoint(.start)` below, so before any interface can
                     // come up and `registerDelivery` (at `interfaceConnected`) announce.
@@ -4959,6 +4965,18 @@ extension AppFeature {
         }
         state.ownRatchetsEnabled = true
         return .send(.node(.client(.endpoint(.enableRatchets(destinationHash: deliveryHash, ring: ring)))))
+    }
+
+    /// Hands Transport the persisted tunnel identity (see `TunnelIdentityStore`), read synchronously
+    /// at launch. Read only while Transport has none, so a second `.onLaunch` costs no Keychain
+    /// read. A failed read leaves it unset for the run: no tunnel synthesis, nothing else changes.
+    func setTunnelIdentityEffect(_ state: State) -> Effect<Action> {
+        guard state.node.client.endpoint.transport.tunnelIdentity == nil else { return .none }
+        guard let identity = tunnelIdentityStore.load() else {
+            AppFeature.inbound.error("tunnel identity unavailable: hubs restore our paths only after we announce, this run")
+            return .none
+        }
+        return .send(.node(.client(.endpoint(.setTunnelIdentity(identity)))))
     }
 
     /// Writes Transport's current ring for the delivery destination to the Keychain, if there is

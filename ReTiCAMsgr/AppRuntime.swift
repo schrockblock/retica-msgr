@@ -36,6 +36,9 @@ final class AppRuntime {
         /// The delivery destination's own ratchet ring (private keys). Inert by default for the same
         /// reason as `meshCoreKeyStore`; inert means ratchets stay off.
         var ownRatchetStore: OwnRatchetStore = .inert
+        /// The identity that signs tunnel-synthesis packets on each TCP connect. Inert by default for
+        /// the same reason as `meshCoreKeyStore`; inert means no tunnel is synthesized.
+        var tunnelIdentityStore: TunnelIdentityStore = .inert
 
         static func live() -> Environment {
             let dbPath = URL.documentsDirectory.appending(path: "reticamsgr.sqlite").path()
@@ -55,7 +58,8 @@ final class AppRuntime {
                 anchor: IdentityAnchor(defaults: .standard),
                 pushStorage: pushStorage ?? .temporary(),
                 meshCoreKeyStore: .live(ops: .live),
-                ownRatchetStore: .live(ops: .live))
+                ownRatchetStore: .live(ops: .live),
+                tunnelIdentityStore: .live(ops: .live))
         }
 
         /// Hosted XCTest runs and UI-test launches never touch the real Keychain, database or
@@ -74,7 +78,8 @@ final class AppRuntime {
                 anchor: IdentityAnchor(defaults: defaults),
                 wakeHold: .zero,
                 meshCoreKeyStore: .live(ops: keychain.ops),
-                ownRatchetStore: .live(ops: keychain.ops))
+                ownRatchetStore: .live(ops: keychain.ops),
+                tunnelIdentityStore: .live(ops: keychain.ops))
         }
 
         static var isTestHost: Bool {
@@ -112,6 +117,7 @@ final class AppRuntime {
         let pushStorage = environment.pushStorage
         let meshCoreKeyStore = environment.meshCoreKeyStore
         let ownRatchetStore = environment.ownRatchetStore
+        let tunnelIdentityStore = environment.tunnelIdentityStore
         var initialState = AppFeature.State(identity: identity, pushStorage: pushStorage)
         #if os(iOS)
         // A background launch (a push, a Bluetooth restore) starts with nobody looking, so the app
@@ -177,6 +183,8 @@ final class AppRuntime {
             $0.meshCoreKeyStore = meshCoreKeyStore
             // Likewise for the own ratchet ring, read at `.onLaunch` and written on each rotation.
             $0.ownRatchetStore = ownRatchetStore
+            // Likewise for the tunnel identity, read at `.onLaunch`.
+            $0.tunnelIdentityStore = tunnelIdentityStore
             // Settings' Copy button. Local-only with an expiry on iOS (ruling R8); revealed only here.
             // The copy effect runs off the main actor; the pasteboard is used from the main actor.
             $0.meshCoreKeyPasteboard = MeshCoreKeyPasteboard { text in
