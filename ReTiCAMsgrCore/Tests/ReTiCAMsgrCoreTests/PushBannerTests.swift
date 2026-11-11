@@ -58,6 +58,25 @@ private func outcome(_ name: String?, verdict: PushVerdict = .deliverOriginal) -
     #expect(PushBanner.plan(for: outcome("  "))?.title == "aaaaaaaa")
 }
 
+@Test func pushBannerPlanCarriesTheLinkedContactIdentifier() {
+    let linked = PushOutcome(verdict: .deliverOriginal, sender: PushSenderMatch(hex: hex,
+        entry: .init(name: "Alice", publicKey: Data(repeating: 1, count: 64), imageFile: nil,
+                     contactIdentifier: "CN-1"), imageURL: nil))
+    #expect(PushBanner.plan(for: linked)?.contactIdentifier == "CN-1")
+    #expect(PushBanner.plan(for: outcome("Alice"))?.contactIdentifier == nil)
+}
+
+@Test func pushBannerSenderNamesTheLinkedContact() throws {
+    let plan = try #require(PushBanner.plan(for: PushOutcome(verdict: .deliverOriginal, sender: PushSenderMatch(hex: hex,
+        entry: .init(name: "Alice", publicKey: Data(repeating: 1, count: 64), imageFile: nil,
+                     contactIdentifier: "CN-1"), imageURL: nil))))
+    let person = PushBanner.sender(for: plan, image: nil)
+    #expect(person.contactIdentifier == "CN-1")
+    #expect(person.customIdentifier == hex)
+    #expect(person.displayName == "Alice")
+    #expect(PushBanner.sender(for: try #require(PushBanner.plan(for: outcome("Bob"))), image: nil).contactIdentifier == nil)
+}
+
 @Test func pushBannerHasNoPlanWithoutASender() {
     #expect(PushBanner.plan(for: PushOutcome(verdict: .deliverOriginal, sender: nil)) == nil)
 }

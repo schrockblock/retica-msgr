@@ -402,6 +402,7 @@ private func seedGroup(me meHex: String, members: [String], _ db: any DatabaseWr
     let sender = store.state.push.storage.senderDirectory
     let entry = try #require(directory(store).entries[aliceHex])
     #expect(entry.name == "Alice Liddell")
+    #expect(entry.contactIdentifier == "c1")
     let url = try #require(sender.imageURL(for: entry))
     let dimensions = ImageEncoder.dimensions(of: try Data(contentsOf: url))
     #expect(dimensions?.width == 256)

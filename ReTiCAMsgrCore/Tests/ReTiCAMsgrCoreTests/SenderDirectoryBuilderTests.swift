@@ -16,6 +16,14 @@ private let key = Data(repeating: 9, count: 64)
     #expect(out == [a: .init(name: "Alice", publicKey: key, imageData: nil)])
 }
 
+@Test func senderDirectoryBuilderCarriesTheLinkedContactIdentifier() {
+    let out = SenderDirectoryBuilder.inputs(candidates: [a, b], me: me, blocked: [],
+        name: { _ in "X" }, publicKey: { _ in key }, picture: { _ in nil },
+        contactIdentifier: { $0 == a ? "CN-A" : nil })
+    #expect(out[a]?.contactIdentifier == "CN-A")
+    #expect(out[b]?.contactIdentifier == nil)
+}
+
 @Test func senderDirectoryBuilderSkipsPeersWithoutAKey() {
     let out = SenderDirectoryBuilder.inputs(candidates: [a], me: me, blocked: [],
         name: { _ in "Alice" }, publicKey: { _ in nil }, picture: { _ in nil })

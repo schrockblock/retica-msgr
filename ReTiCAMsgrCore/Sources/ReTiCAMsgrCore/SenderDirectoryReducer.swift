@@ -186,12 +186,15 @@ struct SenderDirectoryReducer: Reducer {
         let thumbnails = await contactThumbnails(links: snapshot.links, cards: snapshot.cards,
                                                  profiles: snapshot.profiles, candidates: snapshot.candidates,
                                                  contacts: contacts)
+        let contactIDs = Dictionary(snapshot.links.map { ($0.key.lowercased(), $0.value.contactIdentifier) },
+                                    uniquingKeysWith: { first, _ in first })
         let inputs = SenderDirectoryBuilder.inputs(
             candidates: snapshot.candidates, me: snapshot.me, blocked: snapshot.blocked,
             name: { snapshot.names[$0] }, publicKey: { snapshot.keys[$0] },
             picture: { hex in
                 picture(profile: snapshot.profiles[hex], contactThumbnail: thumbnails[hex], avatarStore: avatarStore)
-            })
+            },
+            contactIdentifier: { contactIDs[$0] })
         do {
             try Task.checkCancellation()
             try writer.write(store, inputs)

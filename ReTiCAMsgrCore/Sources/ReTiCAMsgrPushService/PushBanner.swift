@@ -13,13 +13,18 @@ public enum PushBanner {
         public var threadIdentifier: String
         public var senderHex: String
         public var imageURL: URL?
+        /// The linked `CNContact.identifier`, so iOS knows which card the sender is (Focus's
+        /// allowed people match on it).
+        public var contactIdentifier: String?
 
-        public init(title: String, body: String, threadIdentifier: String, senderHex: String, imageURL: URL?) {
+        public init(title: String, body: String, threadIdentifier: String, senderHex: String, imageURL: URL?,
+                    contactIdentifier: String? = nil) {
             self.title = title
             self.body = body
             self.threadIdentifier = threadIdentifier
             self.senderHex = senderHex
             self.imageURL = imageURL
+            self.contactIdentifier = contactIdentifier
         }
     }
 
@@ -32,7 +37,8 @@ public enum PushBanner {
                     body: "New message",
                     threadIdentifier: sender.hex,
                     senderHex: sender.hex,
-                    imageURL: sender.imageURL)
+                    imageURL: sender.imageURL,
+                    contactIdentifier: sender.entry.contactIdentifier)
     }
 
     /// A mutable copy of `original` with the default sound (the hub's payload carries none, so
@@ -150,17 +156,23 @@ public enum PushBanner {
         }
     }
 
+    /// The banner's sender: the Reticulum address as handle and custom identifier, and the linked
+    /// Contacts card when there is one.
+    static func sender(for plan: Plan, image: INImage?) -> INPerson {
+        INPerson(personHandle: INPersonHandle(value: plan.senderHex, type: .unknown),
+                 nameComponents: nil,
+                 displayName: plan.title,
+                 image: image,
+                 contactIdentifier: plan.contactIdentifier,
+                 customIdentifier: plan.senderHex)
+    }
+
     /// Turns `content` into a Communication Notification: an incoming `INSendMessageIntent` whose
     /// sender carries the picture. `content` already carries the title, body, thread, sound and
     /// badge, and the result of `updating(from:)` is returned as is.
     public static func liveIntent(_ content: UNMutableNotificationContent, _ plan: Plan) async throws -> UNNotificationContent {
         let image = plan.imageURL.flatMap { try? Data(contentsOf: $0) }.map(INImage.init(imageData:))
-        let person = INPerson(personHandle: INPersonHandle(value: plan.senderHex, type: .unknown),
-                              nameComponents: nil,
-                              displayName: plan.title,
-                              image: image,
-                              contactIdentifier: nil,
-                              customIdentifier: plan.senderHex)
+        let person = sender(for: plan, image: image)
         let intent = INSendMessageIntent(recipients: nil,
                                          outgoingMessageType: .outgoingMessageText,
                                          content: nil,

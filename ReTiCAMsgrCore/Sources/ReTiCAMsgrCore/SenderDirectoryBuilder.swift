@@ -13,7 +13,8 @@ enum SenderDirectoryBuilder {
         blocked: Set<String>,
         name: (String) -> String?,
         publicKey: (String) -> Data?,
-        picture: (String) -> Data?
+        picture: (String) -> Data?,
+        contactIdentifier: (String) -> String? = { _ in nil }
     ) -> [String: SenderDirectory.Input] {
         let me = me.lowercased()
         let blocked = Set(blocked.map { $0.lowercased() })
@@ -24,7 +25,8 @@ enum SenderDirectoryBuilder {
             let displayName = name(hex)
             let image = picture(hex)
             guard displayName != nil || image != nil else { continue }
-            out[hex] = SenderDirectory.Input(name: displayName, publicKey: key, imageData: image)
+            out[hex] = SenderDirectory.Input(name: displayName, publicKey: key, imageData: image,
+                                             contactIdentifier: contactIdentifier(hex))
         }
         return out
     }
