@@ -30,7 +30,7 @@ public enum PNPeerCodec {
         func date(_ d: Date) -> MsgPackValue { .double(d.timeIntervalSince1970) }
         func bin(_ d: Data?) -> MsgPackValue { d.map { .bin($0) } ?? .null }
         func sorted(_ s: Set<Data>) -> MsgPackValue {
-            .array(s.sorted { $0.hexString < $1.hexString }.map { .bin($0) })
+            .array(s.sorted { $0.lexicographicallyPrecedes($1) }.map { .bin($0) })
         }
         let announce: MsgPackValue
         if let a = p.announce {

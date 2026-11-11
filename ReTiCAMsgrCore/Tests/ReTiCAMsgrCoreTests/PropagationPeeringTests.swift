@@ -79,6 +79,7 @@ struct PropagationPeeringTests {
         }
 
         await store.send(.onLaunch)
+        #expect(store.state.awaitingPeeringRehydrate)
         // `receive` consumes in order, so each of these only matches AFTER the one before it.
         await store.receive { action in
             if case let .node(.rehydrate(entries, got)) = action { return entries == [entry] && got == peers }
@@ -86,9 +87,83 @@ struct PropagationPeeringTests {
         }
         await store.receive { if case .node(.setAutopeer(true)) = $0 { return true }; return false }
         await store.receive { if case .node(.setStaticPeers(let s)) = $0 { return s.isEmpty }; return false }
+        await store.receive { if case .node(.delegate(.peersChanged)) = $0 { return true }; return false }
+        #expect(store.state.pnPeerCount == 3)
+        #expect(!store.state.awaitingPeeringRehydrate)
+        // The interface comes up after the rehydrate: node mode starts then.
         await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(DefaultNode.entry.interfaceID, .tcp))))))
         await store.receive { if case .node(.setNodeMode(true)) = $0 { return true }; return false }
-        #expect(store.state.pnPeerCount == 3)
+    }
+
+    /// The race: the interface connects BEFORE the launch read returns. Node mode must wait, then
+    /// start from the rehydrate chain, after the settings, exactly once.
+    @Test func interfaceConnectingBeforeRehydrateStillStartsNodeModeLast() async throws {
+        let db = try AppDatabase.makeInMemory()
+        let store = makeStore(db) {
+            $0.$nodeModeEnabled.withLock { $0 = true }
+            $0.$autopeerEnabled.withLock { $0 = true }
+            $0.$staticPeerHexes.withLock { $0 = [] }
+            $0.awaitingPeeringRehydrate = true      // what onLaunch sets while the read is out
+        }
+        await store.send(.node(.client(.endpoint(.transport(.interfaceConnected(DefaultNode.entry.interfaceID, .tcp))))))
+        #expect(store.state.awaitingPeeringRehydrate)
+        // Let anything the connect sent reach the library, then ask it: node mode must not be on yet.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        await store.skipReceivedActions(strict: false)
+        #expect(!store.state.node.nodeModeEnabled)
+        let peers = [peer(0x01)]
+        await store.send(.rehydratePropagationStore(entries: [], peers: peers))
+
+        // Ordered receives: the chain ends with node mode, after the settings.
+        await store.receive { if case let .node(.rehydrate(_, got)) = $0 { return got == peers }; return false }
+        await store.receive { if case .node(.setAutopeer(true)) = $0 { return true }; return false }
+        await store.receive { if case .node(.setStaticPeers) = $0 { return true }; return false }
+        await store.receive { if case .node(.setNodeMode(true)) = $0 { return true }; return false }
+        await store.skipReceivedActions(strict: false)
+        #expect(!store.state.awaitingPeeringRehydrate)
+    }
+
+    /// A stored "off" is the library's setting from the first announce: no default-on window.
+    @Test func storedAutopeerOffIsHonouredFromTheFirstAnnounce() async throws {
+        let db = try AppDatabase.makeInMemory()
+        let store = makeStore(db) {
+            $0.$autopeerEnabled.withLock { $0 = false }
+            $0.$staticPeerHexes.withLock { $0 = [] }
+        }
+        await store.send(.onLaunch)    // seeds synchronously; the DB read is not awaited
+        let announce = PNAnnounce(timebase: 1, nodeState: true, perTransferLimit: 1, perSyncLimit: 1,
+                                  targetStampCost: 16, stampCostFlexibility: 3, peeringCost: 18)
+        let dest = Data(repeating: 0x42, count: 16)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        var table = store.state.node.peering
+        _ = table.announceHeard(dest, announce: announce, hops: 1, isPathResponse: false, now: now)
+        #expect(table.peers.isEmpty)
+        // Control: the same announce does peer when autopeer is on, so the check can fail.
+        var on = table
+        on.config.autopeer = true
+        _ = on.announceHeard(dest, announce: announce, hops: 1, isPathResponse: false, now: now)
+        #expect(on.peers.count == 1)
+    }
+
+    /// A corrupt peer row is skipped; the others load and launch is not blocked.
+    @Test func corruptPeerRowIsSkippedAtLaunch() async throws {
+        let db = try AppDatabase.makeInMemory()
+        let good = [peer(0x01), peer(0x03)]
+        try await db.write { db in
+            var rows = PNPeerRow.rows(for: good)
+            rows.insert(PNPeerRow(peerHex: Data(repeating: 0x02, count: 16).hexString, position: 1,
+                                  blob: Data([0xC1, 0x00, 0xFF])), at: 1)
+            rows[2].position = 2
+            for row in rows { try PNPeerRow.insert { row }.execute(db) }
+        }
+        let store = makeStore(db) { $0.$nodeModeEnabled.withLock { $0 = false } }
+        await store.send(.onLaunch)
+        await store.receive { action in
+            if case let .node(.rehydrate(_, got)) = action { return got == good }
+            return false
+        }
+        #expect(!store.state.awaitingPeeringRehydrate)
     }
 
     // MARK: Persistence
@@ -119,8 +194,8 @@ struct PropagationPeeringTests {
         #expect(store.state.pnPeerCount == 0)
     }
 
-    /// An unchanged row is left alone: a rewrite would change its rowid-less identity not at all, so
-    /// count the writes with an UPDATE/INSERT trigger instead.
+    /// An unchanged row is not rewritten. `sync` rewrites a changed row as delete + insert, so an
+    /// INSERT trigger counts the rewrites; if `sync` ever moves to UPDATE, add an UPDATE trigger.
     @Test func syncDoesNotRewriteUnchangedRows() async throws {
         let db = try AppDatabase.makeInMemory()
         let a = peer(0x0A), b = peer(0x0B)

@@ -286,6 +286,8 @@ public struct AppFeature {
         @Shared(.appStorage("propagationStaticPeers")) public var staticPeerHexes: [String] = []
         /// How many propagation nodes we are peered with: the size of the latest `peersChanged`.
         public var pnPeerCount: Int = 0
+        /// True from `onLaunch` until the launch rehydrate is sent: node mode is not started before it.
+        var awaitingPeeringRehydrate = false
         @Shared(.appStorage("displayName")) public var displayName: String = ""
         /// Unread incoming messages per conversation key (lowercased), for the chat list's row
         /// indicators. Written by `refreshBadge` alongside the icon badge, so every trigger that
@@ -1026,6 +1028,12 @@ public struct AppFeature {
         Reduce { state, action in
             switch action {
             case .onLaunch:
+                // The service node's peering config comes from the stored settings before anything
+                // can reach it, so an announce never meets a default the user turned off. Node mode
+                // is held back until the launch rehydrate has been sent (see `interfaceConnected`).
+                state.node.peering.config.autopeer = state.autopeerEnabled
+                state.node.peering.config.staticPeers = Self.staticPeerSet(state.staticPeerHexes)
+                state.awaitingPeeringRehydrate = true
                 // First, and synchronously: lane D's slot sync later in this arm reads it.
                 state.meshCoreKeyPresence = meshCoreKeyStore.presence()
                 // Rows this run sends are stamped from here on; older `sending` rows are orphans
@@ -1104,10 +1112,12 @@ public struct AppFeature {
                         // ORDER BY storedAt so eviction during rehydration is deterministic across
                         // launches: the oldest entries are ingested first, matching the order in which
                         // they were originally inserted, so the same entries are evicted at the cap.
-                        let (rows, peerRows): ([PropagationEntryRow], [PNPeerRow]) = try await database.read {
-                            (try PropagationEntryRow.all.order(by: \.storedAt).fetchAll($0),
-                             try PNPeerRow.all.order(by: \.position).fetchAll($0))
-                        }
+                        // A failed read still sends the rehydrate (empty): node mode waits on it.
+                        let (rows, peerRows): ([PropagationEntryRow], [PNPeerRow]) =
+                            (try? await database.read {
+                                (try PropagationEntryRow.all.order(by: \.storedAt).fetchAll($0),
+                                 try PNPeerRow.all.order(by: \.position).fetchAll($0))
+                            }) ?? ([], [])
                         await send(.rehydratePropagationStore(
                             entries: rows.map(\.lxmfData),
                             peers: peerRows.compactMap { PNPeerCodec.decode($0.blob) }))
@@ -1577,7 +1587,9 @@ public struct AppFeature {
                     effects.append(.send(.node(.client(.setPropagationNode(destinationHash: pn)))))
                     effects.append(.send(.node(.client(.syncFromPropagationNode))))
                 }
-                if state.nodeModeEnabled {
+                // Not before the launch rehydrate: the rehydrate chain sends it itself if an
+                // interface is already up by then, so exactly one of the two paths fires.
+                if state.nodeModeEnabled && !state.awaitingPeeringRehydrate {
                     effects.append(.send(.node(.setNodeMode(true))))
                 }
                 // Re-apply a persisted relay-mode setting so the node relays again after relaunch.
@@ -3047,8 +3059,9 @@ public struct AppFeature {
 
             case let .node(.delegate(.peersChanged(peers))):
                 state.pnPeerCount = peers.count
-                let rows = PNPeerRow.rows(for: peers)
+                // Encoding is the expensive part (this fires on every peer change): off the reducer.
                 return .run { [database] _ in
+                    let rows = PNPeerRow.rows(for: peers)
                     try await database.write { db in try PNPeerRow.sync(rows, in: db) }
                 }
 
@@ -3056,11 +3069,15 @@ public struct AppFeature {
                 // One library action: entries ingested first, then the peers pruned to them. The
                 // peering settings follow, so they are in place before node mode starts (which the
                 // interface-connected handler sends later).
-                state.pnPeerCount = peers.count
+                state.awaitingPeeringRehydrate = false
+                // An interface that came up before this ran skipped node mode; start it now, last.
+                let startNodeMode: Effect<Action> = state.nodeModeEnabled && !state.connectedInterfaces.isEmpty
+                    ? .send(.node(.setNodeMode(true))) : .none
                 return .concatenate(
                     .send(.node(.rehydrate(entries: entries, peers: peers))),
                     .send(.node(.setAutopeer(state.autopeerEnabled))),
-                    .send(.node(.setStaticPeers(Self.staticPeerSet(state.staticPeerHexes)))))
+                    .send(.node(.setStaticPeers(Self.staticPeerSet(state.staticPeerHexes)))),
+                    startNodeMode)
 
             case let .setAutopeer(enabled):
                 state.$autopeerEnabled.withLock { $0 = enabled }

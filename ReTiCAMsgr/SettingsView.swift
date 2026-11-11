@@ -47,6 +47,20 @@ struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     @FocusState private var focusedField: Field?
 
+    /// The static-peer field's text as the reducer will read it (trimmed, lowercased).
+    private var staticPeerCandidate: String {
+        staticPeerInput.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+    /// A valid address that is not already listed: the only input that clears the field.
+    private var staticPeerInputIsAddable: Bool {
+        isValidPeerAddress(staticPeerCandidate) && !store.staticPeerHexes.contains(staticPeerCandidate)
+    }
+    private func addStaticPeer() {
+        guard staticPeerInputIsAddable else { return }
+        store.send(.addStaticPeer(staticPeerInput))
+        staticPeerInput = ""
+    }
+
     private enum Field { case name, listenPort, propagationNode, rnodeFrequency, rnodeBandwidth }
 
     private var pushStatusIsFailure: Bool {
@@ -527,12 +541,10 @@ struct SettingsView: View {
                     .platformAutocapitalization(.never)
                     .font(.system(.body, design: .monospaced))
                     .submitLabel(.done)
-                Button("Add static peer") {
-                    store.send(.addStaticPeer(staticPeerInput))
-                    staticPeerInput = ""
-                }
-                .disabled(!isValidPeerAddress(staticPeerInput.trimmingCharacters(in: .whitespacesAndNewlines)))
-                Text("Peered with \(store.pnPeerCount) nodes")
+                    .onSubmit(addStaticPeer)
+                Button("Add static peer", action: addStaticPeer)
+                    .disabled(!staticPeerInputIsAddable)
+                Text("Peered with \(store.pnPeerCount) \(store.pnPeerCount == 1 ? "node" : "nodes")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
