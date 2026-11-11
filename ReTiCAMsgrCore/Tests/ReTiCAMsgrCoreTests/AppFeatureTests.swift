@@ -1086,7 +1086,7 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     await store.send(.onLaunch)
     var receivedData: [Data] = []
     await store.receive { action in
-        if case let .rehydratePropagationStore(data) = action { receivedData = data; return true }
+        if case let .rehydratePropagationStore(data, _) = action { receivedData = data; return true }
         return false
     }
     // Oldest first (storedAt=1700000001 < 1700000002), so bytesA must precede bytesB.

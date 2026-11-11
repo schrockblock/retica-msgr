@@ -281,6 +281,11 @@ public struct AppFeature {
         public var publicKeyRequests: [String: PublicKeyRequestStatus] = [:]
         @Shared(.appStorage("propagationNodeHex")) public var propagationNodeHex: String = ""
         @Shared(.appStorage("propagationNodeModeEnabled")) public var nodeModeEnabled: Bool = false
+        /// Propagation-node peering (lxmd `autopeer` / `static_peers`); only used while node mode is on.
+        @Shared(.appStorage("propagationAutopeer")) public var autopeerEnabled: Bool = true
+        @Shared(.appStorage("propagationStaticPeers")) public var staticPeerHexes: [String] = []
+        /// How many propagation nodes we are peered with: the size of the latest `peersChanged`.
+        public var pnPeerCount: Int = 0
         @Shared(.appStorage("displayName")) public var displayName: String = ""
         /// Unread incoming messages per conversation key (lowercased), for the chat list's row
         /// indicators. Written by `refreshBadge` alongside the icon badge, so every trigger that
@@ -849,7 +854,12 @@ public struct AppFeature {
         /// The send could not write the attachment's bytes, so nothing was sent: show `storeFailed`
         /// in the attachment bar and give the caption back. Internal.
         case attachmentSendFailed(draft: String)
-        case rehydratePropagationStore([Data])
+        /// Launch rehydration of the propagation node: the stored entries and the persisted peers,
+        /// handed to the library in one `.node(.rehydrate)` (entries first, peers pruned to them).
+        case rehydratePropagationStore(entries: [Data], peers: [PNPeerTable.Peer])
+        case setAutopeer(Bool)
+        case addStaticPeer(String)
+        case removeStaticPeer(String)
         /// Restore the router's dedup sets (seen-message hashes + downloaded transient IDs) from the
         /// previous session. Sent on launch after reading the three durability tables.
         case rehydrateDedup(seenHashes: [Data], downloadedTransientIds: [Data])
@@ -974,6 +984,12 @@ public struct AppFeature {
     /// A slow LoRa radio's interface: a Meshtastic (`meshtastic:`), MeshCore (`meshcore:`) or RNode
     /// (`rnode:`) slot. The profile photo doesn't ride on these alone, and one going down
     /// re-announces over TCP.
+    /// The static peers setting (hex strings) as the library's destination hashes. A string that is
+    /// not a valid address is dropped, never trapped on.
+    static func staticPeerSet(_ hexes: [String]) -> Set<Data> {
+        Set(hexes.compactMap { isValidPeerAddress($0) ? Data(hexString: $0) : nil })
+    }
+
     static func isLoRaRadio(_ id: InterfaceID) -> Bool {
         id.rawValue.hasPrefix("meshtastic:") || id.rawValue.hasPrefix("meshcore:")
             || id.rawValue.hasPrefix("rnode:")
@@ -1088,10 +1104,13 @@ public struct AppFeature {
                         // ORDER BY storedAt so eviction during rehydration is deterministic across
                         // launches: the oldest entries are ingested first, matching the order in which
                         // they were originally inserted, so the same entries are evicted at the cap.
-                        let rows = try await database.read {
-                            try PropagationEntryRow.all.order(by: \.storedAt).fetchAll($0)
+                        let (rows, peerRows): ([PropagationEntryRow], [PNPeerRow]) = try await database.read {
+                            (try PropagationEntryRow.all.order(by: \.storedAt).fetchAll($0),
+                             try PNPeerRow.all.order(by: \.position).fetchAll($0))
                         }
-                        await send(.rehydratePropagationStore(rows.map(\.lxmfData)))
+                        await send(.rehydratePropagationStore(
+                            entries: rows.map(\.lxmfData),
+                            peers: peerRows.compactMap { PNPeerCodec.decode($0.blob) }))
                     },
                     .run { [database] send in
                         // Restore the router's dedup state. ORDER BY storedAt ASC is load-bearing
@@ -3026,12 +3045,37 @@ public struct AppFeature {
                     }
                 }
 
-            case let .rehydratePropagationStore(entries):
-                // Restore through the tested ingest path (re-validates + re-dedups) rather than a bypass.
-                guard !entries.isEmpty else { return .none }
-                let container = LXMFPropagation.container(timestamp: date.now.timeIntervalSince1970,
-                                                          entries: entries)
-                return .send(.node(.pn(.ingestContainer(container))))
+            case let .node(.delegate(.peersChanged(peers))):
+                state.pnPeerCount = peers.count
+                let rows = PNPeerRow.rows(for: peers)
+                return .run { [database] _ in
+                    try await database.write { db in try PNPeerRow.sync(rows, in: db) }
+                }
+
+            case let .rehydratePropagationStore(entries, peers):
+                // One library action: entries ingested first, then the peers pruned to them. The
+                // peering settings follow, so they are in place before node mode starts (which the
+                // interface-connected handler sends later).
+                state.pnPeerCount = peers.count
+                return .concatenate(
+                    .send(.node(.rehydrate(entries: entries, peers: peers))),
+                    .send(.node(.setAutopeer(state.autopeerEnabled))),
+                    .send(.node(.setStaticPeers(Self.staticPeerSet(state.staticPeerHexes)))))
+
+            case let .setAutopeer(enabled):
+                state.$autopeerEnabled.withLock { $0 = enabled }
+                return .send(.node(.setAutopeer(enabled)))
+
+            case let .addStaticPeer(input):
+                let hex = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard isValidPeerAddress(hex), !state.staticPeerHexes.contains(hex) else { return .none }
+                state.$staticPeerHexes.withLock { $0.append(hex) }
+                return .send(.node(.setStaticPeers(Self.staticPeerSet(state.staticPeerHexes))))
+
+            case let .removeStaticPeer(hex):
+                guard state.staticPeerHexes.contains(hex) else { return .none }
+                state.$staticPeerHexes.withLock { $0.removeAll { $0 == hex } }
+                return .send(.node(.setStaticPeers(Self.staticPeerSet(state.staticPeerHexes))))
 
             case let .rehydrateDedup(seenHashes, downloadedTransientIds):
                 // Forward to the library reducer — it inserts hashes into the RingSet and unions

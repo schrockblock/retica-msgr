@@ -707,6 +707,7 @@ extension DiagnosticsSnapshot {
             Row("display name", state.displayName.isEmpty ? "(unset)" : state.displayName),
             Row("delivery registered", registered ? "yes" : "no"),
             Row("node mode", state.nodeModeEnabled ? "on" : "off"),
+            Row("pn peers", "\(state.pnPeerCount)"),
         ]
         guard registered else {
             return Layer(title: "Identity", health: .problem,

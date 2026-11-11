@@ -23,6 +23,7 @@ struct SettingsView: View {
     /// passes through `AppFeature`.
     let meshCoreKeyStore: MeshCoreKeyStore
     @State private var pnInput: String = ""
+    @State private var staticPeerInput: String = ""
     @State private var nameInput: String = ""
     @State private var showingAddress = false
     @State private var showingAddNode = false
@@ -501,9 +502,40 @@ struct SettingsView: View {
                 get: { store.nodeModeEnabled },
                 set: { store.send(.setNodeMode($0)) }
             ))
-            Text("Stores and forwards messages for other users while this app is open.")
+            Text("Stores and forwards messages for other users while this app is open, and exchanges them with nearby propagation nodes.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if store.nodeModeEnabled {
+                Toggle("Peer with other propagation nodes", isOn: Binding(
+                    get: { store.autopeerEnabled },
+                    set: { store.send(.setAutopeer($0)) }
+                ))
+                ForEach(store.staticPeerHexes, id: \.self) { hex in
+                    Text(hex)
+                        .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .swipeActions {
+                            Button("Delete", role: .destructive) {
+                                store.send(.removeStaticPeer(hex))
+                            }
+                        }
+                }
+                TextField("Static peer address (hex)", text: $staticPeerInput)
+                    .autocorrectionDisabled()
+                    .platformAutocapitalization(.never)
+                    .font(.system(.body, design: .monospaced))
+                    .submitLabel(.done)
+                Button("Add static peer") {
+                    store.send(.addStaticPeer(staticPeerInput))
+                    staticPeerInput = ""
+                }
+                .disabled(!isValidPeerAddress(staticPeerInput.trimmingCharacters(in: .whitespacesAndNewlines)))
+                Text("Peered with \(store.pnPeerCount) nodes")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
 
         // The radios come last, under a "Radios" heading on the first of them; MeshCore follows

@@ -369,6 +369,15 @@ public enum AppDatabase {
                 t.rename(column: "stampCostReal", to: "stampCost")
             }
         }
+        m.registerMigration("createPNPeers") { db in
+            // Propagation-node peers (see PNPeerRow): one row per peer, the whole peer as a msgpack
+            // blob. `position` keeps the library's table order across a relaunch.
+            try db.create(table: "pnPeerRows") { t in
+                t.primaryKey("peerHex", .text).notNull()
+                t.column("position", .integer).notNull()
+                t.column("blob", .blob).notNull()
+            }
+        }
         return m
     }
 
