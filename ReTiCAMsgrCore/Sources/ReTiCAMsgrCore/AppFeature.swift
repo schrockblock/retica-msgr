@@ -188,6 +188,11 @@ public struct AppFeature {
         /// Whether ReTiCA's outbound retries are held (amendment A3): set when the background time
         /// ran out, released on foreground or the next `interfaceConnected`. Session-only.
         public var outboundHeld = false
+        /// The propagation sync state as the library last reported it. Only the library sets it: a
+        /// sync request, a connect or a foreground leaves it as it is until the next report. Not persisted.
+        public var propagationSyncState: LXMFRouter.PropagationTransferState = .idle
+        /// The message count the last completed sync reported, nil when none has.
+        public var propagationSyncLastResult: Int? = nil
         /// Retried one-to-one sends still in flight, by hash, with their conversation: when one is
         /// stored or delivered, that conversation's "Message not sent" notification is withdrawn.
         /// Session-only.
@@ -2670,6 +2675,11 @@ public struct AppFeature {
             case let .node(.client(.delegate(.deliveryRejected(hash)))):
                 // The recipient refused the transfer: terminal, styled as failed with a reason.
                 return markUndeliverable(&state, hash, status: MessageStatus.failed, reason: FailureReason.rejected)
+
+            case let .node(.client(.delegate(.propagationTransferStateChanged(transferState, lastResult)))):
+                state.propagationSyncState = transferState
+                state.propagationSyncLastResult = lastResult
+                return .none
 
             case let .node(.client(.delegate(.deliveryCancelled(hash)))):
                 // The user stopped the send: its own status, same guards and milestone as failed.

@@ -487,7 +487,13 @@ struct SettingsView: View {
         } header: {
             Text("Propagation Node")
         } footer: {
-            Text("Holds messages sent to you while you're offline, so you can collect them later.")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Holds messages sent to you while you're offline, so you can collect them later.")
+                if let sync = PropagationSyncText.describe(store.propagationSyncState,
+                                                           lastResult: store.propagationSyncLastResult) {
+                    Text(sync)
+                }
+            }
         }
 
         Section("Run as Propagation Node") {
