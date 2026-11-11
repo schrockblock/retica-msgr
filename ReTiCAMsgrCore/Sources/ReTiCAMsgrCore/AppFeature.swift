@@ -3167,9 +3167,12 @@ public struct AppFeature {
             case let ._recheckUnverified(peers):
                 return recheckUnverified(state, peers: peers)
 
-            case let .node(.client(.router(.messagesDownloaded(transientIds)))):
+            case let .node(.client(.router(.messagesDownloaded(transientIds)))),
+                 let .node(.client(.router(.propagatedMessagesDeliveredLocally(transientIds)))):
                 // Persist the newly-downloaded transient IDs so a cold start doesn't re-request
-                // them on the next sync. An empty batch requires no write.
+                // them on the next sync. An empty batch requires no write. The second pattern is
+                // propagated messages our own node delivered locally (a peer or uploader synced
+                // them in): the router marks them downloaded, so they must survive a relaunch too.
                 guard !transientIds.isEmpty else { return .none }
                 let tidRows = transientIds.map {
                     DownloadedTransientIdRow(transientIdHex: $0.hexString, storedAt: date.now)

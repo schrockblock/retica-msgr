@@ -1293,6 +1293,38 @@ private let pnHex = String(repeating: "c", count: 32)   // valid 16-byte hex
     #expect(tidCount == 3, "Transient-ID table must NOT be pruned")
 }
 
+/// Propagated messages our own node delivered locally are recorded in the same table launch
+/// rehydrates `downloadedTransientIds` from, so a relaunch doesn't fetch them again via /get.
+@MainActor @Test func propagatedMessagesDeliveredLocallyAreRehydratedAfterRestart() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let me = Identity()
+    let tid1 = Data(repeating: 0xD1, count: 32)
+    let tid2 = Data(repeating: 0xD2, count: 32)
+
+    let store1 = makeStore(db, identity: me)
+    await store1.send(.node(.client(.router(.propagatedMessagesDeliveredLocally(transientIds: [tid1, tid2])))))
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let rows = try await db.read { try DownloadedTransientIdRow.all.fetchAll($0) }
+    #expect(Set(rows.map(\.transientIdHex)) == Set([tid1.hexString, tid2.hexString]))
+    await store1.finish()
+    await store1.skipReceivedActions(strict: false)
+
+    let store2 = makeStore(db, identity: me)
+    await store2.send(.onLaunch)
+    var capturedTransientIds: [Data] = []
+    await store2.receive { action in
+        if case let .rehydrateDedup(_, tids) = action {
+            capturedTransientIds = tids
+            return true
+        }
+        return false
+    }
+    #expect(Set(capturedTransientIds) == Set([tid1, tid2]),
+            "rehydrateDedup must carry ids delivered locally by our own node")
+    try await Task.sleep(nanoseconds: 50_000_000)
+    await store2.skipReceivedActions(strict: false)
+}
+
 /// A peer's stamp cost survives a restart and the post-restart send carries a stamp.
 ///
 /// Mechanism: `.pathLearned` for a delivery-destination announce writes `LearnedPeerRow`; on the
