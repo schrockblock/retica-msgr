@@ -178,12 +178,12 @@ extension PNPeerRow {
     /// Makes the table equal `rows`: upserts the rows that are new or differ, deletes the rest, in
     /// the caller's write transaction. Unchanged rows are not rewritten (`peersChanged` fires on
     /// every peer state change).
-    static func sync(_ rows: [PNPeerRow], in db: Database) throws {
+    static func sync(_ rows: [PNPeerRow], deletingAbsent: Bool = true, in db: Database) throws {
         let existing = Dictionary(uniqueKeysWithValues:
             try PNPeerRow.all.fetchAll(db).map { ($0.peerHex, $0) })
         let keep = Set(rows.map(\.peerHex))
         let gone = existing.keys.filter { !keep.contains($0) }
-        if !gone.isEmpty {
+        if deletingAbsent && !gone.isEmpty {
             try PNPeerRow.where { $0.peerHex.in(gone) }.delete().execute(db)
         }
         for row in rows where existing[row.peerHex] != row {

@@ -288,6 +288,9 @@ public struct AppFeature {
         public var pnPeerCount: Int = 0
         /// True from `onLaunch` until the launch rehydrate is sent: node mode is not started before it.
         var awaitingPeeringRehydrate = false
+        /// The launch read failed, so what is stored is unknown: for the rest of the session
+        /// `peersChanged` upserts and never deletes stored peer rows.
+        var peerReadFailed = false
         @Shared(.appStorage("displayName")) public var displayName: String = ""
         /// Unread incoming messages per conversation key (lowercased), for the chat list's row
         /// indicators. Written by `refreshBadge` alongside the icon badge, so every trigger that
@@ -859,6 +862,8 @@ public struct AppFeature {
         /// Launch rehydration of the propagation node: the stored entries and the persisted peers,
         /// handed to the library in one `.node(.rehydrate)` (entries first, peers pruned to them).
         case rehydratePropagationStore(entries: [Data], peers: [PNPeerTable.Peer])
+        /// The launch read of stored entries and peers failed: peer writes become upsert-only.
+        case propagationReadFailed
         case setAutopeer(Bool)
         case addStaticPeer(String)
         case removeStaticPeer(String)
@@ -1113,11 +1118,13 @@ public struct AppFeature {
                         // launches: the oldest entries are ingested first, matching the order in which
                         // they were originally inserted, so the same entries are evicted at the cap.
                         // A failed read still sends the rehydrate (empty): node mode waits on it.
-                        let (rows, peerRows): ([PropagationEntryRow], [PNPeerRow]) =
-                            (try? await database.read {
-                                (try PropagationEntryRow.all.order(by: \.storedAt).fetchAll($0),
-                                 try PNPeerRow.all.order(by: \.position).fetchAll($0))
-                            }) ?? ([], [])
+                        let read = try? await database.read {
+                            (try PropagationEntryRow.all.order(by: \.storedAt).fetchAll($0),
+                             try PNPeerRow.all.order(by: \.position).fetchAll($0))
+                        }
+                        // The stored peers are unknown, not absent: later writes must not delete them.
+                        if read == nil { await send(.propagationReadFailed) }
+                        let (rows, peerRows): ([PropagationEntryRow], [PNPeerRow]) = read ?? ([], [])
                         await send(.rehydratePropagationStore(
                             entries: rows.map(\.lxmfData),
                             peers: peerRows.compactMap { PNPeerCodec.decode($0.blob) }))
@@ -3060,10 +3067,16 @@ public struct AppFeature {
             case let .node(.delegate(.peersChanged(peers))):
                 state.pnPeerCount = peers.count
                 // Encoding is the expensive part (this fires on every peer change): off the reducer.
-                return .run { [database] _ in
+                return .run { [database, upsertOnly = state.peerReadFailed] _ in
                     let rows = PNPeerRow.rows(for: peers)
-                    try await database.write { db in try PNPeerRow.sync(rows, in: db) }
+                    try await database.write { db in
+                        try PNPeerRow.sync(rows, deletingAbsent: !upsertOnly, in: db)
+                    }
                 }
+
+            case .propagationReadFailed:
+                state.peerReadFailed = true
+                return .none
 
             case let .rehydratePropagationStore(entries, peers):
                 // One library action: entries ingested first, then the peers pruned to them. The

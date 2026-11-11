@@ -146,6 +146,28 @@ struct PropagationPeeringTests {
         #expect(on.peers.count == 1)
     }
 
+    /// A failed launch read leaves what is stored unknown: a later peersChanged must not wipe it.
+    /// (The normal path still deletes absent rows: see peersChangedUpsertsAndRemovesRows.)
+    @Test func failedLaunchReadKeepsStoredPeersThroughPeersChanged() async throws {
+        let db = try AppDatabase.makeInMemory()
+        let a = peer(0x0A), b = peer(0x0B), c = peer(0x0C)
+        try await db.write { db in
+            for row in PNPeerRow.rows(for: [a, b]) { try PNPeerRow.insert { row }.execute(db) }
+            // The launch read touches this table too: dropping it makes that read throw.
+            try db.execute(sql: "DROP TABLE propagationEntryRows")
+        }
+        let store = makeStore(db)
+        await store.send(.onLaunch)
+        await store.receive { if case .propagationReadFailed = $0 { return true }; return false }
+        await store.receive { if case let .rehydratePropagationStore(_, got) = $0 { return got.isEmpty }; return false }
+        #expect(store.state.peerReadFailed)
+
+        await store.send(.node(.delegate(.peersChanged([c]))))
+        await store.finish()
+        let hexes = try storedPeerRows(db).map(\.peerHex)
+        #expect(Set(hexes) == Set([a, b, c].map { $0.destinationHash.hexString }))
+    }
+
     /// A corrupt peer row is skipped; the others load and launch is not blocked.
     @Test func corruptPeerRowIsSkippedAtLaunch() async throws {
         let db = try AppDatabase.makeInMemory()
