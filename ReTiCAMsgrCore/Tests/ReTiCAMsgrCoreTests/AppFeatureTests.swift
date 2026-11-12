@@ -7480,3 +7480,27 @@ private func answerUnregister(_ store: TestStoreOf<AppFeature>, hub: Data) async
     #expect(store.state.conversationRows.isEmpty)
     await store.skipReceivedActions(strict: false)
 }
+
+// MARK: - Periodic re-announce
+
+/// The app re-announces every `reannounceInterval` without a relaunch, so a hub that lost an
+/// announce (rnsd drops packets until its transport identity loads) gets another. Each tick goes
+/// through `.reannounceDue` to the node's `announceDelivery`, as the Announce tap does.
+@MainActor @Test func reannouncesEveryIntervalAfterLaunch() async throws {
+    let db = try AppDatabase.makeInMemory()
+    let clock = TestClock()
+    let store = makeStore(db, identity: Identity(), clock: clock)
+    await store.send(.onLaunch)
+    await store.skipReceivedActions(strict: false)
+    // One second short of the interval nothing fires: anything received here is skipped, so an
+    // early tick would leave the `receive` after the last second with nothing to receive.
+    await clock.advance(by: AppFeature.reannounceInterval - .seconds(1))
+    await store.skipReceivedActions(strict: false)
+    await clock.advance(by: .seconds(1))
+    await store.receive(.reannounceDue)
+    await store.receive(.node(.client(.announceDelivery)))
+    await clock.advance(by: AppFeature.reannounceInterval)
+    await store.receive(.reannounceDue)
+    await store.receive(.node(.client(.announceDelivery)))
+    #expect(AppFeature.reannounceInterval == .seconds(36_000))
+}

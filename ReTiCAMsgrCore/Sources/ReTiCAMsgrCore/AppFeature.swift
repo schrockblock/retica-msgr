@@ -81,6 +81,14 @@ public struct AppFeature {
     public static let backgroundTimeMargin: TimeInterval = 5
     /// The early deadline when the time left is huge or infinite (as it reads in the foreground).
     public static let backgroundDeadlineCap: TimeInterval = 25
+    /// How often the app re-announces its delivery destination unprompted. The only other
+    /// announces are at launch, on `interfaceConnected` and on the Announce tap, so one that a
+    /// hub lost (rnsd discards every packet until its transport identity has loaded, which can
+    /// be a minute after it accepts the socket) stayed lost until the next launch: the hub had
+    /// no path to the app and every message for it fell back to propagation. Long-running
+    /// instances, the Mac app above all, never relaunch. Ten hours keeps well inside the week
+    /// a path lives and costs nothing on the network.
+    public static let reannounceInterval: Duration = .seconds(10 * 60 * 60)
 
     /// The early deadline for `remaining` seconds of background time: the margin before it, at
     /// least zero, at most the cap.
@@ -660,6 +668,9 @@ public struct AppFeature {
 
     public enum Action: Equatable, BindableAction {
         case onLaunch
+        /// `reannounceInterval` has passed since launch or the last tick: announce again, so a
+        /// hub that lost an earlier announce gets another without a relaunch.
+        case reannounceDue
         /// The app returned to the foreground. iOS tears the socket down while suspended, so this
         /// re-dials rather than trusting a reconnect timer that could not run while suspended.
         case foregrounded
@@ -937,6 +948,8 @@ public struct AppFeature {
         case backgroundTask
         /// The early deadline before the background time runs out. Cancelled when the task is ended.
         case backgroundDeadline
+        /// The periodic re-announce ticker, armed at launch for the life of the store.
+        case reannounce
     }
 
     @Dependency(\.defaultDatabase) var database
@@ -1058,7 +1071,17 @@ public struct AppFeature {
                 let sync = syncEndpointNodes(&state)
                 let enableRatchets = enableOwnRatchetsEffect(&state)
                 let tunnelIdentity = setTunnelIdentityEffect(state)
-                return .concatenate(
+                // Every `reannounceInterval` for the life of the store (see the constant), timed
+                // from launch itself rather than from the end of the launch reads below.
+                // `announceDelivery` is a documented no-op before `registerDelivery`, so a tick
+                // with nothing connected costs nothing.
+                let reannounce: Effect<Action> = .run { [clock] send in
+                    for await _ in clock.timer(interval: AppFeature.reannounceInterval) {
+                        await send(.reannounceDue)
+                    }
+                }
+                .cancellable(id: CancelID.reannounce, cancelInFlight: true)
+                return .merge(reannounce, .concatenate(
                     // The tunnel identity likewise reaches Transport before `.endpoint(.start)`: a TCP
                     // client synthesizes its tunnel on connect, and one that connected first would
                     // send nothing until its next reconnect.
@@ -1242,7 +1265,7 @@ public struct AppFeature {
                         // only orphans older than the grace interval go.
                         try await database.write { try Reaction.pruneOrphans(olderThan: cutoff, $0) }
                     }
-                ))
+                )))
 
             case .foregrounded:
                 // Only re-dial when the TCP socket specifically is down. iOS tears the TCP socket
@@ -2944,6 +2967,9 @@ public struct AppFeature {
                 return .send(.node(.client(.syncFromPropagationNode)))
 
             case .announceTapped:
+                return .send(.node(.client(.announceDelivery)))
+
+            case .reannounceDue:
                 return .send(.node(.client(.announceDelivery)))
 
             case let .announceRowTapped(hex):
