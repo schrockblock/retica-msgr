@@ -8,10 +8,10 @@ import Foundation
 public enum AutoInterfaceAvailability {
     /// iOS needs `com.apple.developer.networking.multicast` to send or receive multicast over BSD
     /// sockets (spec §8.1), and Apple grants it only on request. Without it AutoInterface can
-    /// discover no one. Flip to true once Apple grants com.apple.developer.networking.multicast
-    /// and the entitlement is added to `ReTiCAMsgr.entitlements` (spec §9 R1). Until then the iOS
-    /// toggle is hidden and the slot is never created. macOS needs no entitlement.
-    public static let isEntitledOniOS = false
+    /// discover no one. Apple granted it on 2026-11-13 and `ReTiCAMsgr.entitlements` carries it
+    /// (spec §9 R1). While this is false the iOS toggle is hidden and the slot is never created;
+    /// set it back to false if the entitlement is ever removed. macOS needs no entitlement.
+    public static let isEntitledOniOS = true
 
     /// AutoInterface can run in this build on this platform: always on the Mac, on iOS only once
     /// entitled.

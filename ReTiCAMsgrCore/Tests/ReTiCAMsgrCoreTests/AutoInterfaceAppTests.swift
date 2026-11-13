@@ -154,8 +154,8 @@ private func autoBringPeerOnline(_ store: TestStoreOf<AppFeature>, _ auto: AutoD
     #expect(state.autoInterfaceEnabled, "AutoInterface must default on (spec §9 R2/R3)")
     #expect(state.autoInterfaceAvailable == AutoInterfaceAvailability.isAvailable)
     #expect(state.autoInterfaceStopsInBackground == AutoInterfaceAvailability.stopsInBackground)
-    // R1: iOS stays gated until Apple grants the multicast entitlement.
-    #expect(!AutoInterfaceAvailability.isEntitledOniOS)
+    // R1: Apple granted the multicast entitlement, so iOS is no longer gated.
+    #expect(AutoInterfaceAvailability.isEntitledOniOS)
     #if os(macOS)
     #expect(AutoInterfaceAvailability.isAvailable, "the Mac needs no entitlement")
     #expect(!AutoInterfaceAvailability.stopsInBackground, "the Mac keeps running in the background")

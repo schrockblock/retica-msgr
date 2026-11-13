@@ -431,8 +431,8 @@ struct SettingsView: View {
                  + "device — anyone on the same network can reach it. On by default.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            // AutoInterface (spec 2026-11-10 §5.8). Hidden where it can't run: iOS until Apple
-            // grants the multicast entitlement (`AutoInterfaceAvailability.isEntitledOniOS`).
+            // AutoInterface (spec 2026-11-10 §5.8). Hidden where it can't run: an iOS build
+            // without the multicast entitlement (`AutoInterfaceAvailability.isEntitledOniOS`).
             if store.autoInterfaceAvailable {
                 autoInterfaceRows
             }
