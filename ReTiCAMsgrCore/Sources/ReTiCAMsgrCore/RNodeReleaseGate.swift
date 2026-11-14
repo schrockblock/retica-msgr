@@ -1,14 +1,8 @@
 import Foundation
 
-/// The one compile-time switch for the RNode feature. RNode is Debug-only until lane E removes this
-/// gate. Logic reads this value (through `AppFeature.State.rnodeAvailable`) instead of using
-/// `#if DEBUG` itself, so tests can turn the feature off.
+/// The one switch for the RNode feature. It was Debug-only until the owner confirmed it on hardware
+/// (lane E) on 2026-11-13; it is now on in every build. Logic reads this value through
+/// `AppFeature.State.rnodeAvailable`, so tests can still turn the feature off.
 public enum RNodeReleaseGate {
-    public static var isCompiledIn: Bool {
-        #if DEBUG
-        true
-        #else
-        false
-        #endif
-    }
+    public static let isCompiledIn = true
 }

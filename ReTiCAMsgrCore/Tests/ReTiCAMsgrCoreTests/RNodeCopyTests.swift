@@ -1,4 +1,3 @@
-#if DEBUG
 import Testing
 @testable import ReTiCAMsgrCore
 
@@ -109,4 +108,3 @@ import Testing
     #expect(RNodeCopy.applyChanges == "Apply changes")
     #expect(RNodeCopy.pairingNotice.contains("tap Connect RNode"))
 }
-#endif

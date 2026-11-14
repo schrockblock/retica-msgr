@@ -392,7 +392,7 @@ public struct AppFeature {
         /// A Generate is running. Settings disables the button and the reducer ignores another tap,
         /// so a double tap can't make two key changes (two reconnects). Session-only.
         public var meshCoreKeyGenerating = false
-        /// The Release gate. Stored so tests can turn it off (`swift test` always compiles DEBUG).
+        /// The MeshCore gate (on in every build). Stored so tests can turn it off.
         public var meshCoreAvailable = MeshCoreReleaseGate.isCompiledIn
         /// The MeshCore radio's state for Diagnostics and Settings. Lane D fills it. Session-only.
         public var meshCoreStatus = MeshCoreStatus()
@@ -412,7 +412,7 @@ public struct AppFeature {
         @Shared(.appStorage("rnodeSpreadingFactor")) public var rnodeSpreadingFactor: Int = 8
         @Shared(.appStorage("rnodeCodingRate")) public var rnodeCodingRate: Int = 6
         @Shared(.appStorage("rnodeTXPowerDBm")) public var rnodeTXPowerDBm: Int = 0
-        /// The RNode Release gate. Stored so tests can turn it off (`swift test` always compiles DEBUG).
+        /// The RNode gate (on in every build). Stored so tests can turn it off.
         public var rnodeAvailable = RNodeReleaseGate.isCompiledIn
         /// The RNode radio's state for Diagnostics and Settings. Lane D fills it. Session-only.
         public var rnodeStatus = RNodeStatus()

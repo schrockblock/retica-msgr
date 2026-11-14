@@ -1,8 +1,7 @@
-#if DEBUG
 import Foundation
 
-/// The MeshCore Settings section's user-facing text (spec 2026-11-07 §6). Debug-only, like the
-/// section itself: lane E removes the gate. Says "this app", never the app's name, which is pending.
+/// The MeshCore Settings section's user-facing text (spec 2026-11-07 §6). Says "this app", never
+/// the app's name.
 public enum MeshCoreCopy {
     /// The section sits last in Settings under this header; the toggle still names MeshCore.
     public static let header = "Experimental"
@@ -88,4 +87,3 @@ public enum MeshCoreCopy {
         }
     }
 }
-#endif

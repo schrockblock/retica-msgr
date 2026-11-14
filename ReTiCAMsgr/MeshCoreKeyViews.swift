@@ -3,7 +3,6 @@
 //  ReTiCAMsgr
 //
 
-#if DEBUG
 import SwiftUI
 import ComposableArchitecture
 import ReTiCAMsgrCore
@@ -143,5 +142,4 @@ private struct MeshCoreActivityView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
-#endif
 #endif

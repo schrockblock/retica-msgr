@@ -33,7 +33,6 @@ struct SettingsView: View {
     @State private var showingCamera = false
     @State private var photoItem: PhotosPickerItem?
     @State private var cropTarget: CropTarget?
-    #if DEBUG
     /// The key the share sheet shows, nil when it is closed: dismissing drops it.
     @State private var meshCoreShareText: MeshCoreKeyText?
     @State private var showingMeshCorePaste = false
@@ -43,7 +42,6 @@ struct SettingsView: View {
     /// section appears. Typing sends the text to the reducer, which stores what it can read.
     @State private var rnodeFrequencyText = ""
     @State private var rnodeBandwidthText = ""
-    #endif
     @Environment(\.openURL) private var openURL
     @FocusState private var focusedField: Field?
 
@@ -141,7 +139,6 @@ struct SettingsView: View {
                 RadioPickerView(store: pickerStore)
                     .macSheetFrame()
             }
-            #if DEBUG
             // At Form level, like the sheets above: a Form row only presents while it is drawn.
             .modifier(MeshCoreKeyPresentations(
                 store: store,
@@ -150,7 +147,6 @@ struct SettingsView: View {
                 showingPaste: $showingMeshCorePaste,
                 shareText: $meshCoreShareText,
                 onReplace: meshCoreKeyReplacementConfirmed))
-            #endif
             // Seed the field from persisted state, so opening Settings with a name set does not
             // show a blank box whose Save button would clear it. (The propagation-node field below
             // deliberately starts blank — pasting a fresh hex address is its normal use — but a
@@ -159,9 +155,7 @@ struct SettingsView: View {
                 nameInput = store.displayName
                 // The Contacts section shows access state and import candidates: refresh both.
                 store.send(.contactLinkSheetAppeared)
-                #if DEBUG
                 rnodeReseedFields()
-                #endif
             }
         }
     }
@@ -553,10 +547,8 @@ struct SettingsView: View {
         // The radios come last, under a "Radios" heading on the first of them; MeshCore follows
         // under "Experimental" (`MeshCoreCopy.header`), last in Settings.
         meshtasticSection
-        #if DEBUG
         rnodeSection
         meshCoreSection
-        #endif
     }
 
     /// The AutoInterface toggle and what the interface last reported, in the Direct Connections
@@ -686,9 +678,8 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - MeshCore (Debug-only until lane E)
+    // MARK: - MeshCore
 
-    #if DEBUG
     private var meshCoreKeyIsPresent: Bool { store.meshCoreKeyPresence == .present }
 
     private var meshCoreSection: some View {
@@ -747,7 +738,7 @@ struct SettingsView: View {
             .foregroundStyle(color)
     }
 
-    // MARK: - RNode (Debug-only until lane E)
+    // MARK: - RNode
 
     private var rnodeSection: some View {
         Section {
@@ -854,10 +845,8 @@ struct SettingsView: View {
             showingMeshCorePaste = true
         }
     }
-    #endif
 }
 
-#if DEBUG
 private extension View {
     /// The RNode frequency and bandwidth fields: a keyboard with a "." (`.numbersAndPunctuation`, not
     /// `.decimalPad`, which types "," in comma-decimal locales and would strand "868,1" users), and no
@@ -914,7 +903,6 @@ private struct MeshCoreKeyPresentations: ViewModifier {
             }
     }
 }
-#endif
 
 /// A picked library photo waiting in the crop screen.
 private struct CropTarget: Identifiable {

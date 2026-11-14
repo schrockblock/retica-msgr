@@ -1,8 +1,7 @@
-#if DEBUG
 import Foundation
 
-/// The RNode Settings section's user-facing text (spec 2026-11-08 §6). Debug-only, like the section
-/// itself: lane E removes the gate. Says "this app", never the app's name, which is pending.
+/// The RNode Settings section's user-facing text (spec 2026-11-08 §6). Says "this app", never the
+/// app's name.
 public enum RNodeCopy {
     public static let header = "RNode"
     public static let toggle = "Connect through an RNode"
@@ -80,4 +79,3 @@ public enum RNodeCopy {
         boardsNotice, pairingNotice, footer,
     ]
 }
-#endif

@@ -194,13 +194,10 @@ private func mcSettingsWillDialNeedsEveryCondition(_ c: MCDialCase) {
     #expect(!state.meshCoreWillDial)
 }
 
-/// On in Debug, off in Release: the gate must follow the build configuration either way.
-@Test func mcSettingsGateIsOnInThisBuild() {
-    #if DEBUG
+/// MeshCore ships in every build since 2026-11-13 (still under "Experimental").
+@Test func mcSettingsGateIsOnInEveryBuild() {
     #expect(MeshCoreReleaseGate.isCompiledIn)
-    #else
-    #expect(!MeshCoreReleaseGate.isCompiledIn)
-    #endif
+    #expect(MeshCoreCopy.header == "Experimental")
 }
 
 // MARK: - Settings copy, notices and Generate (T7)

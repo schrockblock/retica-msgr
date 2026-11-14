@@ -381,26 +381,15 @@ private func rnSettingsWillDialNeedsEveryCondition(_ c: RNDialCase) {
     }
 }
 
-@Test func rnSettingsGateIsOnInDebug() {
-    #if DEBUG
+/// RNode ships in every build since the hardware run passed (2026-11-13).
+@Test func rnSettingsGateIsOnInEveryBuild() {
     #expect(RNodeReleaseGate.isCompiledIn)
-    #else
-    #expect(!RNodeReleaseGate.isCompiledIn)
-    #endif
 }
 
-/// `swift test` compiles DEBUG only, so `rnodeAvailable = true` can't fail this here; the `#else`
-/// branch states the Release expectation. A Release test build of this target doesn't compile today
-/// (existing MeshCore tests use the DEBUG-only `MeshCoreCopy`), so the Release default is guarded by
-/// Task 5's Release-binary grep and review.
 @MainActor @Test func rnSettingsAvailableDefaultsToTheGate() {
     let state = rnStore().state
     #expect(state.rnodeAvailable == RNodeReleaseGate.isCompiledIn)
-    #if DEBUG
     #expect(state.rnodeAvailable)
-    #else
-    #expect(!state.rnodeAvailable)
-    #endif
 }
 
 /// Review Focus 2: stale defaults with a problem can still be turned off.
