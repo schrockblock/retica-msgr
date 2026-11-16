@@ -57,7 +57,9 @@ struct ChatView: View {
     @State private var highlightedMessageID: Message.ID?
     /// Bumped per quote tap, so only the latest tap's timer clears the highlight.
     @State private var highlightGeneration = 0
-    @FocusState private var draftFocused: Bool
+    /// Whether the composer's field has the keyboard. Plain state, not `@FocusState`:
+    /// `ComposerTextField` owns its field's focus on iOS.
+    @State private var draftFocused = false
     @State private var showingGroupInfo = false
     @State private var showingPeerInfo = false
     /// Set once the thread has been scrolled to its latest message, so a later message never
@@ -457,10 +459,9 @@ struct ChatView: View {
             }
             VStack(spacing: 0) {
                 composerAccessories
-                TextField("Message", text: $store.draft, axis: .vertical)
-                    .lineLimit(1...5)
-                    .textFieldStyle(.plain)
-                    .focused($draftFocused)
+                // Not SwiftUI's `TextField`, which can keep showing sent text after Send clears the
+                // draft (see `ComposerTextField`).
+                ComposerTextField(placeholder: "Message", text: $store.draft, isFocused: $draftFocused)
                     // One line plus this is 44 pt, the buttons' height, so they line up.
                     .padding(.vertical, 11)
                     .padding(.horizontal, 16)
