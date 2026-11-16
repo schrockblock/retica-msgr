@@ -1359,3 +1359,126 @@ private func rnDiagState(enabled: Bool = true, frequencyHz: Int? = 868_100_000, 
             == "The Bluetooth path to the radio is unavailable.")
     #expect(RNodeStatus().userMessage == nil)
 }
+
+// MARK: - Network-sized tables (the screen's row limit)
+
+// `learned` and `learnedPeers` are NETWORK-sized. On a public network they gain an entry for every
+// destination that announces during the week a path lives — one install held 31,936 paths and
+// 18,872 peers — and one of them is written on every accepted announce. The screen derives its
+// snapshot again on each of those writes, so what it derives from these two tables has to stay the
+// same size however large they are. The shared text is built when asked for and keeps every row.
+
+/// The `index`-th hash of a table. Byte order, and so row order, follows `index`; the second byte
+/// takes every value, so digits and letters of the hex form both take part in the ordering.
+private func tableHash(_ index: Int) -> Data {
+    var bytes = [UInt8](repeating: 0x11, count: 16)
+    bytes[0] = UInt8(index >> 8)
+    bytes[1] = UInt8(index & 0xFF)
+    return Data(bytes)
+}
+
+/// A healthy state with `paths` learned paths, all on the live interface, and `peers` peers. Peer
+/// `n` shares its hash with path `n`, so a peer has a path exactly when `n < paths`.
+@MainActor
+private func tableState(paths: Int, peers: Int) -> AppFeature.State {
+    var state = healthyState()
+    let identity = Identity()
+    var learned: [Data: LearnedDestination] = [:]
+    for index in 0..<paths {
+        learned[tableHash(index)] = LearnedDestination(
+            identity: identity, appData: nil, ratchet: nil,
+            interfaceID: gaefuID, hops: 1, nextHop: nil, announceEmitted: 0)
+    }
+    var learnedPeers: [Data: LXMFNode.LearnedPeer] = [:]
+    for index in 0..<peers {
+        learnedPeers[tableHash(index)] = LXMFNode.LearnedPeer(
+            displayName: "Peer \(index)", stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+    }
+    state.node.client.endpoint.transport.learned = learned
+    state.node.client.learnedPeers = learnedPeers
+    return state
+}
+
+// The cause of the janky, eventually unusable screen: its row count followed the tables.
+@MainActor @Test func theScreenSnapshotHasABoundedNumberOfPathAndPeerRowsHoweverManyAreKnown() {
+    for known in [40, 400, 1_200] {
+        let snapshot = DiagnosticsSnapshot(from: tableState(paths: known, peers: known), at: fixedDate,
+                                           tableRowLimit: 25)
+        // 25 entries, and one row that says how many more there are.
+        #expect(layer(snapshot, "Paths").rows.count == 26)
+        #expect(layer(snapshot, "Peers").rows.count == 26)
+    }
+}
+
+@MainActor @Test func theRowAfterTheLimitSaysHowManyEntriesAreNotShown() {
+    let snapshot = DiagnosticsSnapshot(from: tableState(paths: 300, peers: 120), at: fixedDate,
+                                       tableRowLimit: 20)
+    #expect(layer(snapshot, "Paths").rows.last
+            == DiagnosticsSnapshot.Row("(280 more)", "not shown here — the shared text lists every path"))
+    #expect(layer(snapshot, "Peers").rows.last
+            == DiagnosticsSnapshot.Row("(100 more)", "not shown here — the shared text lists every peer"))
+}
+
+@MainActor @Test func theScreenSnapshotShowsTheFirstRowsOfTheExportInTheSameOrder() {
+    let state = tableState(paths: 300, peers: 120)
+    let export = DiagnosticsSnapshot(from: state, at: fixedDate)
+    let screen = DiagnosticsSnapshot(from: state, at: fixedDate, tableRowLimit: 20)
+    for title in ["Paths", "Peers"] {
+        #expect(Array(layer(screen, title).rows.dropLast()) == Array(layer(export, title).rows.prefix(20)))
+    }
+}
+
+// The order these two tables have always been listed in: ascending by hash, which is the order of
+// the hex form the export prints.
+@MainActor @Test func pathAndPeerRowsAreListedInAscendingHashOrder() {
+    let snapshot = DiagnosticsSnapshot(from: tableState(paths: 300, peers: 300), at: fixedDate)
+    #expect(layer(snapshot, "Paths").rows.map(\.label) == (0..<300).map { tableHash($0).hexString })
+    #expect(layer(snapshot, "Paths").rows.map(\.label) == layer(snapshot, "Paths").rows.map(\.label).sorted())
+    #expect(layer(snapshot, "Peers").rows.map(\.label) == (0..<300).map { "Peer \($0)" })
+}
+
+// A layer's health is about the whole table. Both faults here sit past the rows the screen shows.
+@MainActor @Test func healthAndReasonCountEveryEntryNotOnlyTheRowsShown() {
+    var state = tableState(paths: 100, peers: 100)
+    state.node.client.endpoint.transport.learned[tableHash(90)] = LearnedDestination(
+        identity: Identity(), appData: nil, ratchet: nil,
+        interfaceID: InterfaceID("gone"), hops: 1, nextHop: nil, announceEmitted: 0)
+    state.node.client.learnedPeers[tableHash(150)] = LXMFNode.LearnedPeer(
+        displayName: "Ghost", stampCost: 8, supportsCompression: true, learnedAt: fixedDate)
+    let screen = DiagnosticsSnapshot(from: state, at: fixedDate, tableRowLimit: 10)
+    let paths = layer(screen, "Paths")
+    let peers = layer(screen, "Peers")
+
+    // Precondition: neither faulty entry is among the rows shown.
+    #expect(!paths.rows.contains { $0.value.contains("reachable=NO") })
+    #expect(!peers.rows.contains { $0.value.contains("path=NO") })
+
+    #expect(paths.health == .warn)
+    #expect(paths.reason == "1 path names an interface that is gone")
+    #expect(peers.health == .warn)
+    #expect(peers.reason == "1 peer has no path — known but not reachable")
+}
+
+@MainActor @Test func aTableWithinTheLimitIsShownWholeWithNoRowAboutMore() {
+    let full = tableState(paths: 20, peers: 20)
+    #expect(DiagnosticsSnapshot(from: full, at: fixedDate, tableRowLimit: 20)
+            == DiagnosticsSnapshot(from: full, at: fixedDate))
+    // An empty table keeps its placeholder row.
+    let empty = healthyState()
+    #expect(DiagnosticsSnapshot(from: empty, at: fixedDate, tableRowLimit: 20)
+            == DiagnosticsSnapshot(from: empty, at: fixedDate))
+    #expect(layer(DiagnosticsSnapshot(from: empty, at: fixedDate, tableRowLimit: 20), "Paths").rows
+            == [DiagnosticsSnapshot.Row("(none)", "no paths learned this session")])
+}
+
+// The limit is the screen's. A snapshot built without one — what Share and Copy render — is whole.
+@MainActor @Test func theSharedTextCarriesEveryPathAndPeerPastTheScreenLimit() {
+    let known = DiagnosticsSnapshot.screenTableRowLimit + 30
+    let snapshot = DiagnosticsSnapshot(from: tableState(paths: known, peers: known), at: fixedDate)
+    #expect(layer(snapshot, "Paths").rows.count == known)
+    #expect(layer(snapshot, "Peers").rows.count == known)
+    let text = snapshot.text
+    #expect((0..<known).allSatisfy { text.contains("  \(tableHash($0).hexString) ") })
+    #expect((0..<known).allSatisfy { text.contains("  Peer \($0) ") })
+    #expect(!text.contains("more)"))
+}

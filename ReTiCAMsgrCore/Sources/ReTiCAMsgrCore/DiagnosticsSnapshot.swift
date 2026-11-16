@@ -54,7 +54,16 @@ public struct DiagnosticsSnapshot: Equatable {
     public let generatedAt: Date
     public let layers: [Layer]
 
-    public init(from state: AppFeature.State, at date: Date) {
+    /// How many entries of each NETWORK-SIZED table (Paths, Peers) the screen lists. The screen
+    /// derives a snapshot on every change to those tables — one per accepted announce — so the
+    /// work that takes must not follow their size: a week on a public network is tens of
+    /// thousands of entries. The shared text is built on request and is not limited.
+    public static let screenTableRowLimit = 50
+
+    /// - Parameter tableRowLimit: the most entries Paths and Peers each list, lowest hash first.
+    ///   Past it, one closing row says how many are not shown. Health and reason always count
+    ///   every entry. The default lists everything, which is what `text` is for.
+    public init(from state: AppFeature.State, at date: Date, tableRowLimit: Int = .max) {
         self.generatedAt = date
         var layers = [Self.socketLayer(state)]
         if state.autoInterfaceAvailable {
@@ -72,8 +81,8 @@ public struct DiagnosticsSnapshot: Equatable {
         }
         layers += [
             Self.identityLayer(state),
-            Self.pathsLayer(state),
-            Self.peersLayer(state, at: date),
+            Self.pathsLayer(state, rowLimit: tableRowLimit),
+            Self.peersLayer(state, at: date, rowLimit: tableRowLimit),
             Self.linksLayer(state, at: date),
             Self.deliveryLayer(state),
         ]
@@ -594,7 +603,7 @@ extension DiagnosticsSnapshot {
     /// network `key` and its Ed25519 `seed` — membership credentials for an access-controlled
     /// network. Only `interfaceID.rawValue` is rendered here, and nothing on this layer may ever
     /// widen to the full profile.
-    static func pathsLayer(_ state: AppFeature.State) -> Layer {
+    static func pathsLayer(_ state: AppFeature.State, rowLimit: Int = .max) -> Layer {
         let endpoint = state.node.client.endpoint
         let interfaces = endpoint.interfaces
         let learned = endpoint.learned
@@ -610,19 +619,23 @@ extension DiagnosticsSnapshot {
         // UP — that is a stale routing entry, which is a different fault with a different fix.
         let interfacesKnown = !interfaces.isEmpty
 
-        let entries = learned
-            .map { hash, entry -> (hash: Data, reachable: Bool?, row: Row) in
-                let reachable: Bool? = interfacesKnown ? (interfaces[entry.interfaceID] != nil) : nil
-                let next = entry.nextHop.map { $0.hexString } ?? "direct"
-                return (hash, reachable, Row(
-                    hash.hexString,
-                    "hops=\(entry.hops) next=\(next) if=\(entry.interfaceID.rawValue) "
-                    + "reachable=\(reachable.map { $0 ? "yes" : "NO" } ?? "?")"))
-            }
-            .sorted { $0.hash.hexString < $1.hash.hexString }
-
-        let rows = entries.isEmpty ? [Row("(none)", "no paths learned this session")]
-                                   : entries.map(\.row)
+        // A row is built only for an entry that is listed: each costs two hex strings.
+        let listed = firstHashes(of: learned.keys, limit: rowLimit)
+        var rows = listed.compactMap { hash -> Row? in
+            guard let entry = learned[hash] else { return nil }
+            let reachable: Bool? = interfacesKnown ? (interfaces[entry.interfaceID] != nil) : nil
+            let next = entry.nextHop.map { $0.hexString } ?? "direct"
+            return Row(
+                hash.hexString,
+                "hops=\(entry.hops) next=\(next) if=\(entry.interfaceID.rawValue) "
+                + "reachable=\(reachable.map { $0 ? "yes" : "NO" } ?? "?")")
+        }
+        if learned.isEmpty {
+            rows = [Row("(none)", "no paths learned this session")]
+        } else if learned.count > listed.count {
+            rows.append(Row("(\(learned.count - listed.count) more)",
+                            "not shown here — the shared text lists every path"))
+        }
 
         guard interfacesKnown else {
             // Nothing to say about paths that Socket has not already said better. Report it
@@ -636,7 +649,10 @@ extension DiagnosticsSnapshot {
                          rows: rows)
         }
 
-        let unreachable = entries.filter { $0.reachable == false }.count
+        // Counted over the whole table, listed or not.
+        let unreachable = learned.values.reduce(into: 0) { count, entry in
+            if interfaces[entry.interfaceID] == nil { count += 1 }
+        }
         guard unreachable == 0 else {
             return Layer(title: "Paths", health: .warn,
                          reason: "\(unreachable) path\(unreachable == 1 ? "" : "s") "
@@ -664,28 +680,38 @@ extension DiagnosticsSnapshot {
     /// the app cannot message — opportunistic send needs the identity, `openLink` needs the
     /// path. This row names that state instead of leaving it to be inferred from a greyed-out
     /// Send button.
-    static func peersLayer(_ state: AppFeature.State, at date: Date) -> Layer {
+    static func peersLayer(_ state: AppFeature.State, at date: Date,
+                           rowLimit: Int = .max) -> Layer {
         let learned = state.node.client.endpoint.learned
         let peers = state.node.client.learnedPeers
         let now = date.timeIntervalSince1970
 
-        let entries = peers
-            .map { hash, peer -> (hash: Data, hasPath: Bool, row: Row) in
-                let hasPath = learned[hash] != nil
-                let cost = peer.stampCost.map(formatStampCost) ?? "-"
-                // `heard` is the whole point of the cross-check below: it separates "announced
-                // 3s ago and we simply have not filed the path yet" from "restored from disk 40
-                // days ago and this peer may not exist any more". Derived from the INJECTED
-                // date — a `Date()` here would make the export non-deterministic and untestable.
-                return (hash, hasPath, Row(
-                    peer.displayName ?? "(unnamed)",
-                    "\(hash.hexString) heard=\(age(peer.learnedAt.timeIntervalSince1970, now)) "
-                    + "cost=\(cost) path=\(hasPath ? "yes" : "NO")"))
-            }
-            .sorted { $0.hash.hexString < $1.hash.hexString }
+        // A row is built only for a peer that is listed, as in `pathsLayer`.
+        let listed = firstHashes(of: peers.keys, limit: rowLimit)
+        var rows = listed.compactMap { hash -> Row? in
+            guard let peer = peers[hash] else { return nil }
+            let hasPath = learned[hash] != nil
+            let cost = peer.stampCost.map(formatStampCost) ?? "-"
+            // `heard` is the whole point of the cross-check below: it separates "announced
+            // 3s ago and we simply have not filed the path yet" from "restored from disk 40
+            // days ago and this peer may not exist any more". Derived from the INJECTED
+            // date — a `Date()` here would make the export non-deterministic and untestable.
+            return Row(
+                peer.displayName ?? "(unnamed)",
+                "\(hash.hexString) heard=\(age(peer.learnedAt.timeIntervalSince1970, now)) "
+                + "cost=\(cost) path=\(hasPath ? "yes" : "NO")")
+        }
+        if peers.isEmpty {
+            rows = [Row("(none)", "no peers detected")]
+        } else if peers.count > listed.count {
+            rows.append(Row("(\(peers.count - listed.count) more)",
+                            "not shown here — the shared text lists every peer"))
+        }
 
-        let rows = entries.isEmpty ? [Row("(none)", "no peers detected")] : entries.map(\.row)
-        let pathless = entries.filter { !$0.hasPath }.count
+        // Counted over the whole table, listed or not.
+        let pathless = peers.keys.reduce(into: 0) { count, hash in
+            if learned[hash] == nil { count += 1 }
+        }
         guard pathless == 0 else {
             return Layer(title: "Peers", health: .warn,
                          reason: "\(pathless) \(pluralize(pathless, "peer", "peers")) "
@@ -1018,5 +1044,52 @@ extension DiagnosticsSnapshot {
     /// — the same mistake (singular pronoun with plural noun) has recurred three times.
     static func pluralize(_ count: Int, _ singular: String, _ plural: String) -> String {
         count == 1 ? singular : plural
+    }
+
+    /// The `limit` lowest of `hashes`, ascending. Paths and Peers list their entries in this
+    /// order, so a limited table is the start of the unlimited one.
+    ///
+    /// The order is by BYTES, which is the order of the lowercase hex strings the rows print.
+    /// Comparing those strings instead cost two `hexString` calls per comparison — about 94% of
+    /// the time a snapshot took, and seconds of it once a table held a thousand entries.
+    ///
+    /// With a limit below the count this keeps only the lowest `limit` seen so far, so one pass
+    /// costs a comparison per hash rather than a sort of the whole table.
+    static func firstHashes<Hashes: Collection>(of hashes: Hashes, limit: Int) -> [Data]
+    where Hashes.Element == Data {
+        let limit = max(0, limit)
+        guard limit < hashes.count else { return hashes.sorted(by: bytesPrecede) }
+        guard limit > 0 else { return [] }
+
+        var lowest: [Data] = []
+        lowest.reserveCapacity(limit)
+        for hash in hashes {
+            if lowest.count == limit {
+                guard let highest = lowest.last, bytesPrecede(hash, highest) else { continue }
+                lowest.removeLast()
+            }
+            var low = 0
+            var high = lowest.count
+            while low < high {
+                let middle = (low + high) / 2
+                if bytesPrecede(lowest[middle], hash) { low = middle + 1 } else { high = middle }
+            }
+            lowest.insert(hash, at: low)
+        }
+        return lowest
+    }
+
+    /// Lexicographic order of the bytes, each read as unsigned; a prefix sorts before a longer
+    /// value that starts with it.
+    static func bytesPrecede(_ lhs: Data, _ rhs: Data) -> Bool {
+        lhs.withUnsafeBytes { left in
+            rhs.withUnsafeBytes { right in
+                let shared = min(left.count, right.count)
+                guard shared > 0, let leftBase = left.baseAddress, let rightBase = right.baseAddress
+                else { return left.count < right.count }
+                let order = memcmp(leftBase, rightBase, shared)
+                return order == 0 ? left.count < right.count : order < 0
+            }
+        }
     }
 }
