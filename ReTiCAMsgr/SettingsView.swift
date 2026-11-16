@@ -17,54 +17,25 @@ import ReTiCAPush
 /// Ordered like a mainstream messenger: profile, privacy, notifications and contacts first, so
 /// nobody needs to know how Reticulum works to set the app up. The network controls follow, under
 /// their own "Network" heading.
+///
+/// Only the profile and the connection row are on this screen. Every other section is a row that
+/// pushes its own screen (`SettingsGeneralViews`, `SettingsNetworkViews`, `SettingsRadioViews`),
+/// and each of those screens owns its fields' state and the sheets its rows present.
 struct SettingsView: View {
     @Bindable var store: StoreOf<AppFeature>
     /// The MeshCore paste and share sheets talk to the key store directly, so the key never
     /// passes through `AppFeature`.
     let meshCoreKeyStore: MeshCoreKeyStore
-    @State private var pnInput: String = ""
-    @State private var staticPeerInput: String = ""
     @State private var nameInput: String = ""
     @State private var showingAddress = false
-    @State private var showingAddNode = false
-    @State private var editingNode: NodeEntry? = nil
     @State private var showingPhotoOptions = false
     @State private var showingPhotoLibrary = false
     @State private var showingCamera = false
     @State private var photoItem: PhotosPickerItem?
     @State private var cropTarget: CropTarget?
-    /// The key the share sheet shows, nil when it is closed: dismissing drops it.
-    @State private var meshCoreShareText: MeshCoreKeyText?
-    @State private var showingMeshCorePaste = false
-    /// A Generate or Paste over an existing key, waiting for "Replace".
-    @State private var meshCorePendingReplace: MeshCoreKeyReplacement?
-    /// The RNode frequency and bandwidth fields' text, seeded from the stored values when the
-    /// section appears. Typing sends the text to the reducer, which stores what it can read.
-    @State private var rnodeFrequencyText = ""
-    @State private var rnodeBandwidthText = ""
-    @Environment(\.openURL) private var openURL
     @FocusState private var focusedField: Field?
 
-    /// The static-peer field's text as the reducer will read it (trimmed, lowercased).
-    private var staticPeerCandidate: String {
-        staticPeerInput.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-    /// A valid address that is not already listed: the only input that clears the field.
-    private var staticPeerInputIsAddable: Bool {
-        isValidPeerAddress(staticPeerCandidate) && !store.staticPeerHexes.contains(staticPeerCandidate)
-    }
-    private func addStaticPeer() {
-        guard staticPeerInputIsAddable else { return }
-        store.send(.addStaticPeer(staticPeerInput))
-        staticPeerInput = ""
-    }
-
-    private enum Field { case name, listenPort, propagationNode, rnodeFrequency, rnodeBandwidth }
-
-    private var pushStatusIsFailure: Bool {
-        if case .failed = store.push.status { return true }
-        return false
-    }
+    private enum Field { case name }
 
     /// The default's propagation node is in effect: a default exists and the toggle is on.
     private var usesDefaultPropagation: Bool {
@@ -91,18 +62,12 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 profileSection
-                privacySection
-                notificationsSection
-                #if os(macOS)
-                LaunchAtLoginSection()
-                #endif
-                contactsSection
-                networkSections
+                messagingSection
+                networkSection
             }
             .scrollingFormStyle()
             .navigationTitle("Settings")
-            // The listen-port number pad has no return key, so every field gets a Done above the
-            // keyboard, and scrolling the form drops it too.
+            // Every field gets a Done above the keyboard, and scrolling the form drops it too.
             .scrollDismissesKeyboard(.interactively)
             // Leaving the name field by any route (Done, a scroll) saves it, as return does.
             .onChange(of: focusedField) { old, _ in
@@ -117,46 +82,24 @@ struct SettingsView: View {
                     .accessibilityLabel("Diagnostics")
                 }
             }
-            #if os(iOS)
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") { focusedField = nil }
-                }
-            }
-            #endif
+            .keyboardDoneButton { focusedField = nil }
             .sheet(isPresented: $showingAddress) {
                 AddressView(store: store)
             }
-            .sheet(isPresented: $showingAddNode) {
-                NodeFormView(store: store, existing: nil)
-            }
-            .sheet(item: $editingNode) { node in
-                NodeFormView(store: store, existing: node)
-            }
-            // Driven by state: a swipe sends `.radioPicker(.dismiss)`, like Cancel and a pick.
-            .sheet(item: $store.scope(state: \.radioPicker, action: \.radioPicker)) { pickerStore in
-                RadioPickerView(store: pickerStore)
-                    .macSheetFrame()
-            }
-            // At Form level, like the sheets above: a Form row only presents while it is drawn.
-            .modifier(MeshCoreKeyPresentations(
-                store: store,
-                keyStore: meshCoreKeyStore,
-                pendingReplace: $meshCorePendingReplace,
-                showingPaste: $showingMeshCorePaste,
-                shareText: $meshCoreShareText,
-                onReplace: meshCoreKeyReplacementConfirmed))
             // Seed the field from persisted state, so opening Settings with a name set does not
-            // show a blank box whose Save button would clear it. (The propagation-node field below
+            // show a blank box whose Save button would clear it. (The propagation-node field
             // deliberately starts blank — pasting a fresh hex address is its normal use — but a
             // name is edited, not replaced.)
             .onAppear {
                 nameInput = store.displayName
-                // The Contacts section shows access state and import candidates: refresh both.
-                store.send(.contactLinkSheetAppeared)
-                rnodeReseedFields()
             }
+        }
+        // On the stack, not on a screen in it: the three radio screens share this one picker, and
+        // a screen that is covered by a pushed one presents nothing.
+        // Driven by state: a swipe sends `.radioPicker(.dismiss)`, like Cancel and a pick.
+        .sheet(item: $store.scope(state: \.radioPicker, action: \.radioPicker)) { pickerStore in
+            RadioPickerView(store: pickerStore)
+                .macSheetFrame()
         }
     }
 
@@ -272,8 +215,10 @@ struct SettingsView: View {
         store.send(.setDisplayName(nameInput))
     }
 
-    private var privacySection: some View {
-        Section("Privacy") {
+    /// Privacy, Notifications, the Mac's own section and Contacts, one row each. Privacy only ever
+    /// held the Blocked link, so that link is its row.
+    private var messagingSection: some View {
+        Section {
             NavigationLink { BlockedAddressesView(store: store) } label: {
                 HStack {
                     Label("Blocked", systemImage: "hand.raised")
@@ -283,75 +228,27 @@ struct SettingsView: View {
                     }
                 }
             }
-        }
-    }
-
-    private var notificationsSection: some View {
-        Section {
-            Toggle("Notify me when the app is closed", isOn: Binding(
-                get: { store.push.enabled },
-                set: { store.send(.push(.setEnabled($0))) }
-            ))
-            .disabled(store.pushNode == nil && !store.push.enabled)
-            // While off, the status would only repeat the toggle.
-            if store.pushNode != nil, store.push.enabled {
-                Text(store.pushStatusText)
-                    .font(.caption)
-                    .foregroundStyle(pushStatusIsFailure ? .red : .secondary)
+            NavigationLink { NotificationsSettingsView(store: store) } label: {
+                SettingsRowLabel("Notifications", systemImage: "bell",
+                                 value: SettingsSummary.onOff(store.push.enabled))
             }
-        } header: {
-            Text("Notifications")
-        } footer: {
-            if store.pushNode == nil {
-                Text("Unavailable: none of your nodes offers notifications. See Network below.")
-            } else {
-                Text("Notifications only ever say \"New message\"; nothing about the sender or the "
-                     + "content leaves the device unencrypted.")
+            #if os(macOS)
+            NavigationLink { MacSettingsView() } label: {
+                SettingsRowLabel("Mac", systemImage: "desktopcomputer")
             }
-        }
-    }
-
-    private var contactsSection: some View {
-        Section("Contacts") {
-            Toggle("Save addresses to Contacts", isOn: Binding(
-                get: { store.contactMirrorEnabled },
-                set: { store.send(.setContactMirror($0)) }
-            ))
-            Text("Adds your chats' addresses to their contact cards, so your other devices and apps "
-                 + "can find them. Needs full Contacts access.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if store.contactMirrorEnabled, store.contactsAuthorization == .denied {
-                Text("Contacts access is off, so nothing is written to cards. Allow it in Settings.")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                Button("Open Settings") {
-                    if let url = SystemSettings.url { openURL(url) }
-                }
-            } else if store.contactMirrorEnabled, store.contactsAuthorization == .limited {
-                Text("Only the contacts you selected are available, and their cards cannot be "
-                     + "updated with limited access.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if !store.contactMirrorEnabled, !store.contactLinks.isEmpty {
-                Text("Addresses already saved to Contacts stay there, and are offered for import "
-                     + "again when you turn this back on.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if !store.importCandidates.isEmpty {
-                Button("Import \(store.importCandidates.count) addresses found in Contacts") {
-                    store.send(.importContactLinks)
-                }
+            #endif
+            NavigationLink { ContactsSettingsView(store: store) } label: {
+                SettingsRowLabel("Contacts", systemImage: "person.crop.circle",
+                                 value: SettingsSummary.onOff(store.contactMirrorEnabled))
             }
         }
     }
 
     // MARK: - Network
 
-    @ViewBuilder
-    private var networkSections: some View {
+    /// The connection row, then one row per network section. The radios stay last, as the footer
+    /// says.
+    private var networkSection: some View {
         Section {
             HStack(spacing: 8) {
                 Circle().fill(connectionColor).frame(width: 10, height: 10)
@@ -372,6 +269,27 @@ struct SettingsView: View {
                 }
                 .fixedSize(horizontal: true, vertical: false)
             }
+            NavigationLink { TransportsSettingsView(store: store) } label: {
+                SettingsRowLabel("Transports", systemImage: "point.3.connected.trianglepath.dotted",
+                                 value: SettingsSummary.countOn(TransportsSettingsView.enabledFlags(store.state)))
+            }
+            NavigationLink { RelaySettingsView(store: store) } label: {
+                SettingsRowLabel("Relay", systemImage: "arrow.triangle.branch",
+                                 value: SettingsSummary.onOff(store.relayEnabled))
+            }
+            NavigationLink { PropagationNodeSettingsView(store: store) } label: {
+                SettingsRowLabel("Propagation Node", systemImage: "tray.and.arrow.down",
+                                 value: SettingsSummary.propagationNode(usesDefault: usesDefaultPropagation,
+                                                                        hex: store.propagationNodeHex))
+            }
+            NavigationLink { RunAsPropagationNodeSettingsView(store: store) } label: {
+                SettingsRowLabel("Run as Propagation Node", systemImage: "server.rack",
+                                 value: SettingsSummary.onOff(store.nodeModeEnabled))
+            }
+            NavigationLink { RadiosSettingsView(store: store, meshCoreKeyStore: meshCoreKeyStore) } label: {
+                SettingsRowLabel("Radios", systemImage: "antenna.radiowaves.left.and.right",
+                                 value: SettingsSummary.countOn(RadiosSettingsView.enabledFlags(store.state)))
+            }
         } header: {
             Text("Network")
                 .font(.title3.weight(.semibold))
@@ -383,524 +301,81 @@ struct SettingsView: View {
                  + "Bluetooth and direct-connection changes take effect on the next Connect. Radios "
                  + "are at the bottom, each with its own Connect button.")
         }
+    }
+}
 
-        Section {
-            ForEach(store.nodes) { node in
-                NodeRow(
-                    node: node,
-                    isConnected: store.connectedInterfaces.contains(node.interfaceID),
-                    isPushNode: store.pushNode?.id == node.id,
-                    onTap: node.isBuiltIn ? nil : { editingNode = node },
-                    onToggle: { store.send(.setNodeEnabled(id: node.id, enabled: $0)) }
-                )
-                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    if !node.isBuiltIn {
-                        Button("Delete", role: .destructive) { store.send(.removeNode(id: node.id)) }
-                    }
-                }
-            }
-            Button("Add node") { showingAddNode = true }
-        } header: {
-            Text("Nodes")
-        } footer: {
-            if store.enabledNodes.isEmpty {
-                Text("No node is enabled. The app reaches peers only over Bluetooth or direct "
-                     + "connections.")
-            } else {
-                Text("Connect and Disconnect act on every enabled node. Tap a node to edit it, "
-                     + "swipe to delete. The node marked Push delivers notifications; changing it "
-                     + "re-registers with the new hub as soon as it is reachable.")
-            }
-        }
+/// A drill-down row's label: an icon and a title, then what the screen behind it is set to.
+struct SettingsRowLabel: View {
+    let title: String
+    let systemImage: String
+    let value: String?
 
-        Section("Direct Connections") {
-            // Standard Toggle in a Form row: the whole row is already hittable, so no
-            // explicit contentShape is needed here.
-            Toggle("Listen for direct connections", isOn: $store.listenEnabled)
-            TextField("Listen port", value: $store.listenPort, format: .number)
-                .platformKeyboard(.numberPad)
-                .focused($focusedField, equals: .listenPort)
-                .disabled(!store.listenEnabled)
-            Text("Lets other Reticulum nodes on your local Wi-Fi connect directly to this "
-                 + "device — anyone on the same network can reach it. On by default.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            // AutoInterface (spec 2026-11-10 §5.8). Hidden where it can't run: an iOS build
-            // without the multicast entitlement (`AutoInterfaceAvailability.isEntitledOniOS`).
-            if store.autoInterfaceAvailable {
-                autoInterfaceRows
-            }
-        }
-
-        Section("Bluetooth") {
-            // Standard Toggle in a Form row: the whole row is already hittable.
-            Toggle("Connect over Bluetooth", isOn: $store.bleEnabled)
-            if store.bluetoothAlert == .permissionDenied {
-                Text("Bluetooth permission is denied. Allow it in Settings to connect to "
-                     + "nearby devices.")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                Button("Open Settings") {
-                    if let url = SystemSettings.url {
-                        openURL(url)
-                    }
-                }
-            } else if store.bluetoothAlert == .unsupported {
-                Text("This device doesn’t support Bluetooth LE, so Bluetooth connections "
-                     + "aren’t available.")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            } else {
-                Text("Connects directly to nearby Reticulum devices (other iPhones, "
-                     + "Raspberry Pis) over Bluetooth to send and relay messages — no Wi-Fi "
-                     + "or shared server needed. Off by default.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-
-        Section("Relay") {
-            Toggle("Relay traffic for other nodes", isOn: Binding(
-                get: { store.relayEnabled },
-                set: { store.send(.setRelayMode($0)) }
-            ))
-            Text("Carries other users' messages through this device so the mesh reaches "
-                 + "further — it forwards transit traffic and answers path requests for "
-                 + "peers it hasn't met. Off by default. Uses more battery and data.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-
-        Section {
-            if DefaultNode.propagationHex != nil {
-                Toggle("Use the default node's propagation node", isOn: Binding(
-                    get: { store.usePropagationDefault },
-                    set: { store.send(.setUsePropagationDefault($0)) }
-                ))
-            }
-            TextField("Node LXMF address (hex)", text: $pnInput)
-                .autocorrectionDisabled()
-                .platformAutocapitalization(.never)
-                .font(.system(.body, design: .monospaced))
-                .submitLabel(.done)
-                .focused($focusedField, equals: .propagationNode)
-                .disabled(usesDefaultPropagation)
-            Button("Save node") { store.send(.setPropagationNode(pnInput)) }
-                .disabled(usesDefaultPropagation || !isValidPeerAddress(pnInput))
-            if !store.propagationNodeHex.isEmpty {
-                Text("Current: \(store.propagationNodeHex)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-        } header: {
-            Text("Propagation Node")
-        } footer: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Holds messages sent to you while you're offline, so you can collect them later.")
-                if let sync = PropagationSyncText.describe(store.propagationSyncState,
-                                                           lastResult: store.propagationSyncLastResult) {
-                    Text(sync)
-                }
-            }
-        }
-
-        Section("Run as Propagation Node") {
-            Toggle("Act as a propagation node", isOn: Binding(
-                get: { store.nodeModeEnabled },
-                set: { store.send(.setNodeMode($0)) }
-            ))
-            Text("Stores and forwards messages for other users while this app is open, and exchanges them with nearby propagation nodes.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if store.nodeModeEnabled {
-                Toggle("Peer with other propagation nodes", isOn: Binding(
-                    get: { store.autopeerEnabled },
-                    set: { store.send(.setAutopeer($0)) }
-                ))
-                ForEach(store.staticPeerHexes, id: \.self) { hex in
-                    Text(hex)
-                        .font(.system(.footnote, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .swipeActions {
-                            Button("Delete", role: .destructive) {
-                                store.send(.removeStaticPeer(hex))
-                            }
-                        }
-                }
-                TextField("Static peer address (hex)", text: $staticPeerInput)
-                    .autocorrectionDisabled()
-                    .platformAutocapitalization(.never)
-                    .font(.system(.body, design: .monospaced))
-                    .submitLabel(.done)
-                    .onSubmit(addStaticPeer)
-                Button("Add static peer", action: addStaticPeer)
-                    .disabled(!staticPeerInputIsAddable)
-                Text("Peered with \(store.pnPeerCount) \(store.pnPeerCount == 1 ? "node" : "nodes")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-
-        // The radios come last, under a "Radios" heading on the first of them; MeshCore follows
-        // under "Experimental" (`MeshCoreCopy.header`), last in Settings.
-        meshtasticSection
-        rnodeSection
-        meshCoreSection
+    init(_ title: String, systemImage: String, value: String? = nil) {
+        self.title = title
+        self.systemImage = systemImage
+        self.value = value
     }
 
-    /// The AutoInterface toggle and what the interface last reported, in the Direct Connections
-    /// section. The status lines replace the caption the way Bluetooth's alerts do, worst first.
-    @ViewBuilder
-    private var autoInterfaceRows: some View {
-        Toggle(AutoInterfaceText.toggleTitle, isOn: $store.autoInterfaceEnabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        if store.autoInterfaceEnabled, store.state.autoInterfaceLocalNetworkDenied {
-            Text(AutoInterfaceText.localNetworkDenied)
-                .font(.caption)
-                .foregroundStyle(.red)
-            Button("Open Settings") {
-                if let url = SystemSettings.localNetworkURL { openURL(url) }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        } else if store.autoInterfaceEnabled, !store.autoInterfaceDataPortInUse.isEmpty {
-            Text(AutoInterfaceText.dataPortInUse)
-                .font(.caption)
-                .foregroundStyle(.red)
-        } else if store.autoInterfaceEnabled, store.autoInterfaceNoUsableInterfaces {
-            Text(AutoInterfaceText.noUsableInterfaces)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else if store.autoInterfaceEnabled, store.state.autoInterfaceNoPeersHint(at: Date()) {
-            Text(AutoInterfaceText.noPeersYet)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else {
-            Text(store.autoInterfaceEnabled && store.autoInterfacePeerCount > 0
-                 ? AutoInterfaceText.caption + " Connected to \(store.autoInterfacePeerCount) "
-                    + (store.autoInterfacePeerCount == 1 ? "device." : "devices.")
-                 : AutoInterfaceText.caption)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var meshtasticSection: some View {
-        Section {
-            // Standard Toggle in a Form row: the whole row is already hittable.
-            Toggle("Connect through a Meshtastic radio", isOn: $store.meshtasticEnabled)
-            radioRow("Radio", value: store.meshtasticRadioLabel, light: store.state.radioLight(.meshtastic))
-            // A standard Form button row is hittable across its width already.
-            Button("Choose radio…") { store.send(.chooseRadioTapped) }
-            radioConnectRow(.meshtastic, connect: MeshtasticCopy.connectButton,
-                            connecting: MeshtasticCopy.connecting, apply: MeshtasticCopy.applyChanges)
-            // Shows the clamped value; a change reaches a running radio through Apply changes.
-            Stepper(value: Binding(get: { store.meshtasticHopLimitValue },
-                                   set: { store.send(.binding(.set(\.meshtasticHopLimit, $0))) }),
-                    in: MeshtasticHopLimit.range) {
-                Text(MeshtasticCopy.hopLimitRow(store.meshtasticHopLimitValue))
-            }
-            Text(MeshtasticCopy.hopLimitNotice)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } header: {
-            VStack(alignment: .leading, spacing: 12) {
-                // Styled like the "Network" heading.
-                Text("Radios")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .textCase(nil)
-                    .padding(.top, 16)
-                Text("Meshtastic")
-            }
-        } footer: {
-            Text("Sends and receives messages over LoRa through a Meshtastic radio paired with "
-                 + "this device over Bluetooth. Set the radio to a Short preset (ShortTurbo or "
-                 + "ShortFast): longer presets are too slow for most messages. The radio must not "
-                 + "be connected to another app, such as the Meshtastic app, at the same time. "
-                 + "Text messages waiting on the radio may be removed when this app connects, and "
-                 + "may not reach the Meshtastic app. "
-                 + "Choosing a radio pauses Bluetooth connections to nearby devices until the list "
-                 + "closes. Off by default.")
-        }
-    }
-
-    /// A radio section's own Connect button: shown while the radio is set up and not online,
-    /// disabled with `connecting` while it dials, and `apply` while the running radio differs from
-    /// Settings. The label spans the row and is its hit shape, so a tap anywhere on the row connects.
-    @ViewBuilder
-    private func radioConnectRow(_ kind: RadioKind, connect: String, connecting: String,
-                                 apply: String) -> some View {
-        let button = store.state.radioConnectButton(kind)
-        if button != .hidden {
-            Button { store.send(.radioConnectTapped(kind)) } label: {
-                Text(radioConnectLabel(button, connect: connect, connecting: connecting, apply: apply))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .disabled(button == .connecting)
-        }
-    }
-
-    /// A radio section's Radio row, with the radio's status light before its title (as the Network
-    /// row has one before its status).
-    private func radioRow(_ title: String, value: String, light: RadioLight) -> some View {
-        LabeledContent {
-            Text(value)
-        } label: {
-            HStack(spacing: 8) {
-                Circle().fill(radioLightColor(light)).frame(width: 10, height: 10)
-                    .accessibilityLabel(light.accessibilityText)
-                Text(title)
-            }
-        }
-    }
-
-    private func radioLightColor(_ light: RadioLight) -> Color {
-        switch light {
-        case .off: return .gray
-        case .connecting: return .yellow
-        case .connected: return .green
-        case .problem: return .red
-        }
-    }
-
-    private func radioConnectLabel(_ button: RadioConnectButton, connect: String, connecting: String,
-                                   apply: String) -> String {
-        switch button {
-        case .hidden, .connect: return connect
-        case .connecting: return connecting
-        case .applyChanges: return apply
-        }
-    }
-
-    // MARK: - MeshCore
-
-    private var meshCoreKeyIsPresent: Bool { store.meshCoreKeyPresence == .present }
-
-    private var meshCoreSection: some View {
-        Section {
-            // Standard Toggle in a Form row: the whole row is already hittable. It stays enabled
-            // while on, so restored defaults without a key can still be turned off.
-            Toggle(MeshCoreCopy.toggle, isOn: $store.meshCoreEnabled)
-                .disabled(!store.meshCoreEnabled && !meshCoreKeyIsPresent)
-            if !meshCoreKeyIsPresent {
-                meshCoreNote(MeshCoreCopy.noKeyNotice)
-            }
-            if let message = store.meshCoreStatus.userMessage {
-                meshCoreNote(message, color: .red)
-            }
-            radioRow(MeshCoreCopy.radioRow, value: store.meshCoreRadioLabel, light: store.state.radioLight(.meshCore))
-            // A standard Form button row is hittable across its width already.
-            Button(MeshCoreCopy.chooseRadio) { store.send(.chooseMeshCoreRadioTapped) }
-            radioConnectRow(.meshCore, connect: MeshCoreCopy.connectButton, connecting: MeshCoreCopy.connecting,
-                            apply: MeshCoreCopy.applyChanges)
-            if store.meshCoreRadioUUID != nil {
-                meshCoreNote(MeshCoreCopy.radioChangeNotice)
-            }
-            // Its confirmation and sheets are on the Form (`MeshCoreKeyPresentations`).
-            LabeledContent(MeshCoreCopy.keyRow, value: MeshCoreCopy.keyValue(store.meshCoreKeyPresence))
-            if let message = store.meshCoreKeyMessage {
-                meshCoreNote(message, color: .red)
-            }
-            // Disabled while a Generate runs: each one is a real key change and a reconnect.
-            Button(MeshCoreCopy.generateKey) { meshCoreKeyChangeTapped(.generate) }
-                .disabled(store.meshCoreKeyGenerating)
-            Button(MeshCoreCopy.pasteKey) { meshCoreKeyChangeTapped(.paste) }
-                .disabled(store.meshCoreKeyGenerating)
-            if meshCoreKeyIsPresent {
-                Button(MeshCoreCopy.copyKey) { store.send(.meshCoreCopyKeyTapped) }
-                Button(MeshCoreCopy.shareKey) {
-                    // nil (the key went away or can't be read) presents nothing.
-                    meshCoreShareText = meshCoreKeyStore.exportText()
-                }
-            }
-            if store.meshCoreStatus.channelLeftOnRadio {
-                meshCoreNote(MeshCoreCopy.channelLeftNotice)
-            }
-            if store.meshCoreTurnOffNoticeVisible {
-                meshCoreNote(MeshCoreCopy.turnOffNotice)
-            }
-        } header: {
-            Text(MeshCoreCopy.header)
-        } footer: {
-            Text(MeshCoreCopy.footer)
-        }
-    }
-
-    private func meshCoreNote(_ text: String, color: Color = .secondary) -> some View {
-        Text(text)
-            .font(.caption)
-            .foregroundStyle(color)
-    }
-
-    // MARK: - RNode
-
-    private var rnodeSection: some View {
-        Section {
-            // Standard Toggle in a Form row: the whole row is already hittable. It stays enabled
-            // while on (`rnodeToggleDisabled`), so stale defaults can still be turned off.
-            Toggle(RNodeCopy.toggle, isOn: $store.rnodeEnabled)
-                .disabled(store.rnodeToggleDisabled)
-            if store.rnodeIncompleteNoticeVisible {
-                rnodeNote(RNodeCopy.incompleteNotice)
-            }
-            if let message = store.rnodeStatus.userMessage {
-                rnodeNote(message, color: .red)
-            }
-            radioRow(RNodeCopy.radioRow, value: store.rnodeRadioLabel, light: store.state.radioLight(.rnode))
-            // A standard Form button row is hittable across its width already.
-            Button(RNodeCopy.chooseRadio) { store.send(.chooseRNodeRadioTapped) }
-            radioConnectRow(.rnode, connect: RNodeCopy.connectButton, connecting: RNodeCopy.connecting,
-                            apply: RNodeCopy.applyChanges)
-            rnodeNumberRow(RNodeCopy.frequencyRow, prompt: RNodeCopy.frequencyPrompt,
-                           text: $rnodeFrequencyText, field: .rnodeFrequency)
-                .onChange(of: rnodeFrequencyText) { _, text in
-                    store.send(.rnodeFrequencyTextChanged(text))
-                }
-            rnodeNumberRow(RNodeCopy.bandwidthRow, prompt: "", text: $rnodeBandwidthText,
-                           field: .rnodeBandwidth)
-                .onChange(of: rnodeBandwidthText) { _, text in
-                    store.send(.rnodeBandwidthTextChanged(text))
-                }
-            Stepper(value: Binding(get: { store.rnodeSpreadingFactor },
-                                   set: { store.send(.rnodeSpreadingFactorChanged($0)) }),
-                    in: RNodeRadioSettings.spreadingFactorRange) {
-                Text("\(RNodeCopy.spreadingFactorRow): \(store.rnodeSpreadingFactor)")
-            }
-            Stepper(value: Binding(get: { store.rnodeCodingRate },
-                                   set: { store.send(.rnodeCodingRateChanged($0)) }),
-                    in: RNodeRadioSettings.codingRateRange) {
-                Text("\(RNodeCopy.codingRateRow): \(store.rnodeCodingRate)")
-            }
-            Stepper(value: Binding(get: { store.rnodeTXPowerDBm },
-                                   set: { store.send(.rnodeTXPowerChanged($0)) }),
-                    in: RNodeRadioSettings.txPowerRange) {
-                Text("\(RNodeCopy.txPowerRow): \(store.rnodeTXPowerDBm)")
-            }
-            ForEach(store.rnodeShownProblems, id: \.self) { problem in
-                rnodeNote(RNodeCopy.problemMessage(problem), color: .red)
-            }
-            rnodeNote(RNodeCopy.boardsNotice)
-            rnodeNote(RNodeCopy.pairingNotice)
-        } header: {
-            Text(RNodeCopy.header)
-        } footer: {
-            Text(RNodeCopy.footer)
-        }
-    }
-
-    /// Called once from the Settings screen's own `onAppear` (not from a row, which would fire again
-    /// whenever the row scrolls back into view and overwrite what is being typed). Re-seeds the fields
-    /// from the stored values and sends both texts, which clears a text problem left over from an
-    /// earlier visit (the field no longer shows that text).
-    private func rnodeReseedFields() {
-        rnodeFrequencyText = store.rnodeFrequencyHz.map(RNodeRadioSettings.megahertzText) ?? ""
-        rnodeBandwidthText = RNodeRadioSettings.kilohertzText(store.rnodeBandwidthHz)
-        store.send(.rnodeFrequencyTextChanged(rnodeFrequencyText))
-        store.send(.rnodeBandwidthTextChanged(rnodeBandwidthText))
-    }
-
-    /// A labelled number field. A bare `TextField` in a Form hides its title once it has text (and
-    /// next to a prompt), so the label is its own `Text`; the row is a custom tappable row and
-    /// focuses the field from anywhere across its width.
-    private func rnodeNumberRow(_ label: String, prompt: String, text: Binding<String>,
-                                field: Field) -> some View {
+    var body: some View {
         HStack {
-            Text(label)
-            TextField(label, text: text, prompt: Text(prompt))
-                .multilineTextAlignment(.trailing)
-                .rnodeNumberField()
-                .focused($focusedField, equals: field)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture { focusedField = field }
-    }
-
-    private func rnodeNote(_ text: String, color: Color = .secondary) -> some View {
-        Text(text)
-            .font(.caption)
-            .foregroundStyle(color)
-    }
-
-    /// Over an existing key, Generate and Paste ask first; otherwise they go straight ahead.
-    private func meshCoreKeyChangeTapped(_ replacement: MeshCoreKeyReplacement) {
-        if meshCoreKeyIsPresent {
-            meshCorePendingReplace = replacement
-        } else {
-            meshCoreKeyReplacementConfirmed(replacement)
-        }
-    }
-
-    private func meshCoreKeyReplacementConfirmed(_ replacement: MeshCoreKeyReplacement) {
-        switch replacement {
-        case .generate: store.send(.meshCoreGenerateKeyTapped)
-        case .paste:
-            store.send(.meshCorePasteKeyOpened)
-            showingMeshCorePaste = true
+            Label(title, systemImage: systemImage)
+            Spacer()
+            if let value {
+                Text(value)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
     }
 }
 
-private extension View {
-    /// The RNode frequency and bandwidth fields: a keyboard with a "." (`.numbersAndPunctuation`, not
-    /// `.decimalPad`, which types "," in comma-decimal locales and would strand "868,1" users), and no
-    /// autocorrection or capitalization.
-    func rnodeNumberField() -> some View {
+/// The trailing text on a drill-down row.
+enum SettingsSummary {
+    static func onOff(_ on: Bool) -> String { on ? "On" : "Off" }
+
+    /// How many of a screen's switches are on: "2 on", or "Off" when none is.
+    static func countOn(_ flags: [Bool]) -> String {
+        let count = flags.filter { $0 }.count
+        return count == 0 ? "Off" : "\(count) on"
+    }
+
+    static func nodes(enabled: Int, total: Int) -> String { "\(enabled) of \(total) on" }
+
+    static func propagationNode(usesDefault: Bool, hex: String) -> String {
+        if usesDefault { return "Default" }
+        return hex.isEmpty ? "None" : shortHex(hex)
+    }
+
+    /// A radio type's row: "Off", or while it is switched on the chosen radio's name ("On" until
+    /// one is chosen, where the radio's own label would read "None").
+    static func radio(enabled: Bool, chosen: Bool, label: String) -> String {
+        guard enabled else { return "Off" }
+        return chosen ? label : "On"
+    }
+}
+
+extension View {
+    /// What every Settings drill-down shares: the grouped form the main screen uses, the section's
+    /// name as an inline title, and a scroll that drops the keyboard.
+    func settingsScreen(_ title: String) -> some View {
+        scrollingFormStyle()
+            .navigationTitle(title)
+            .inlineNavigationTitle()
+            .scrollDismissesKeyboard(.interactively)
+    }
+
+    /// A Done above the keyboard: the number pads have no return key. Nothing on the Mac.
+    func keyboardDoneButton(_ action: @escaping () -> Void) -> some View {
         #if os(iOS)
-        self.keyboardType(.numbersAndPunctuation)
-            .autocorrectionDisabled()
-            .textInputAutocapitalization(.never)
+        toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done", action: action)
+            }
+        }
         #else
-        self.autocorrectionDisabled()
+        self
         #endif
-    }
-}
-
-/// Which key change the "Replace the channel key?" confirmation is for.
-private enum MeshCoreKeyReplacement {
-    case generate, paste
-}
-
-/// The MeshCore key section's "Replace the channel key?" confirmation and its paste and share
-/// sheets. Applied to the Form, never to a row: a lazily drawn row that is off screen presents
-/// nothing, and would present late (holding the key in `shareText`) once scrolled back.
-private struct MeshCoreKeyPresentations: ViewModifier {
-    let store: StoreOf<AppFeature>
-    let keyStore: MeshCoreKeyStore
-    @Binding var pendingReplace: MeshCoreKeyReplacement?
-    @Binding var showingPaste: Bool
-    @Binding var shareText: MeshCoreKeyText?
-    let onReplace: (MeshCoreKeyReplacement) -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .confirmationDialog(MeshCoreCopy.replaceTitle,
-                                isPresented: Binding(get: { pendingReplace != nil },
-                                                     set: { if !$0 { pendingReplace = nil } }),
-                                titleVisibility: .visible,
-                                presenting: pendingReplace) { replacement in
-                Button(MeshCoreCopy.replaceButton, role: .destructive) {
-                    pendingReplace = nil
-                    onReplace(replacement)
-                }
-                Button(MeshCoreCopy.cancelButton, role: .cancel) { pendingReplace = nil }
-            } message: { _ in
-                Text(MeshCoreCopy.replaceMessage)
-            }
-            // The paste sheet clears its own field on Save, Cancel and disappear (R7).
-            .sheet(isPresented: $showingPaste) {
-                MeshCorePasteKeySheet(store: store, keyStore: keyStore)
-            }
-            // `item:` already sets it to nil on dismissal; onDismiss makes the drop explicit.
-            .sheet(item: $shareText, onDismiss: { shareText = nil }) { key in
-                MeshCoreShareKeySheet(key: key)
-            }
     }
 }
 
