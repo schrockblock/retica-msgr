@@ -58,48 +58,43 @@ struct SettingsView: View {
         }
     }
 
+    /// Pushed on the Chats screen's stack (`ConversationListView`), which also presents the radio
+    /// picker that the radio screens share.
     var body: some View {
-        NavigationStack {
-            Form {
-                profileSection
-                messagingSection
-                networkSection
-            }
-            .scrollingFormStyle()
-            .navigationTitle("Settings")
-            // Every field gets a Done above the keyboard, and scrolling the form drops it too.
-            .scrollDismissesKeyboard(.interactively)
-            // Leaving the name field by any route (Done, a scroll) saves it, as return does.
-            .onChange(of: focusedField) { old, _ in
-                if old == .name { saveName() }
-            }
-            .toolbar {
-                // Connection, paths, peers, links and delivery state, and a snapshot for bug reports.
-                ToolbarItem(placement: .primaryAction) {
-                    NavigationLink { DiagnosticsView(store: store) } label: {
-                        Image(systemName: "stethoscope")
-                    }
-                    .accessibilityLabel("Diagnostics")
+        Form {
+            profileSection
+            messagingSection
+            networkSection
+        }
+        .scrollingFormStyle()
+        .navigationTitle("Settings")
+        // Every field gets a Done above the keyboard, and scrolling the form drops it too.
+        .scrollDismissesKeyboard(.interactively)
+        // Leaving the name field by any route (Done, a scroll) saves it, as return does.
+        .onChange(of: focusedField) { old, _ in
+            if old == .name { saveName() }
+        }
+        // Back with the name field still focused leaves the screen without a focus change.
+        .onDisappear { saveName() }
+        .toolbar {
+            // Connection, paths, peers, links and delivery state, and a snapshot for bug reports.
+            ToolbarItem(placement: .primaryAction) {
+                NavigationLink { DiagnosticsView(store: store) } label: {
+                    Image(systemName: "stethoscope")
                 }
-            }
-            .keyboardDoneButton { focusedField = nil }
-            .sheet(isPresented: $showingAddress) {
-                AddressView(store: store)
-            }
-            // Seed the field from persisted state, so opening Settings with a name set does not
-            // show a blank box whose Save button would clear it. (The propagation-node field
-            // deliberately starts blank — pasting a fresh hex address is its normal use — but a
-            // name is edited, not replaced.)
-            .onAppear {
-                nameInput = store.displayName
+                .accessibilityLabel("Diagnostics")
             }
         }
-        // On the stack, not on a screen in it: the three radio screens share this one picker, and
-        // a screen that is covered by a pushed one presents nothing.
-        // Driven by state: a swipe sends `.radioPicker(.dismiss)`, like Cancel and a pick.
-        .sheet(item: $store.scope(state: \.radioPicker, action: \.radioPicker)) { pickerStore in
-            RadioPickerView(store: pickerStore)
-                .macSheetFrame()
+        .keyboardDoneButton { focusedField = nil }
+        .sheet(isPresented: $showingAddress) {
+            AddressView(store: store)
+        }
+        // Seed the field from persisted state, so opening Settings with a name set does not
+        // show a blank box whose Save button would clear it. (The propagation-node field
+        // deliberately starts blank — pasting a fresh hex address is its normal use — but a
+        // name is edited, not replaced.)
+        .onAppear {
+            nameInput = store.displayName
         }
     }
 

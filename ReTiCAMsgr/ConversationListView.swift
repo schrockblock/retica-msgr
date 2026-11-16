@@ -25,6 +25,9 @@ enum ScanOutcome: Equatable {
 
 struct ConversationListView: View {
     @Bindable var store: StoreOf<AppFeature>
+    /// Passed on to Settings, whose MeshCore key sheets talk to the key store directly.
+    let meshCoreKeyStore: MeshCoreKeyStore
+    @State private var showingSettings = false
     @State private var showingCompose = false
     @State private var showingNewGroup = false
     @State private var scanOutcome: ScanOutcome?
@@ -93,6 +96,8 @@ struct ConversationListView: View {
             }
             // A larger message on its way in, from anyone (the sender isn't known yet).
             .incomingDownloadBanner(store.incomingDownloadFraction)
+            // Floats over the list, which scrolls beneath it and comes to rest above it.
+            .safeAreaInset(edge: .bottom, spacing: 0) { newChatButton }
             .navigationTitle("Chats")
             .toolbar {
                 ToolbarItem(placement: .barLeading) {
@@ -109,12 +114,8 @@ struct ConversationListView: View {
                         .accessibilityLabel("Check for messages")
                 }
                 ToolbarItem(placement: .barTrailing) {
-                    Menu {
-                        Button { showingCompose = true } label: { Label("New conversation", systemImage: "bubble.left") }
-                        Button { showingNewGroup = true } label: { Label("New group", systemImage: "person.3") }
-                    } label: {
-                        Image(systemName: "plus")
-                    }
+                    Button { showingSettings = true } label: { Image(systemName: "gear") }
+                        .accessibilityLabel("Settings")
                 }
             }
             .navigationDestination(
@@ -124,6 +125,19 @@ struct ConversationListView: View {
                 )
             ) {
                 ChatView(store: store)
+            }
+            // Never shown together with a chat: one opened from outside this screen (a "Message
+            // not sent" tap) replaces Settings and whatever Settings had pushed.
+            .navigationDestination(
+                isPresented: Binding(
+                    get: { showingSettings && store.openPeerHex == nil },
+                    set: { showingSettings = $0 }
+                )
+            ) {
+                SettingsView(store: store, meshCoreKeyStore: meshCoreKeyStore)
+            }
+            .onChange(of: store.openPeerHex) { _, opened in
+                if opened != nil { showingSettings = false }
             }
             .sheet(isPresented: $showingCompose, onDismiss: {
                 switch scanOutcome {
@@ -153,6 +167,36 @@ struct ConversationListView: View {
                 .macSheetFrame()
             }
         }
+        // On the stack, not on a screen in it: the three radio screens in Settings share this one
+        // picker, and a screen that is covered by a pushed one presents nothing.
+        // Driven by state: a swipe sends `.radioPicker(.dismiss)`, like Cancel and a pick.
+        .sheet(item: $store.scope(state: \.radioPicker, action: \.radioPicker)) { pickerStore in
+            RadioPickerView(store: pickerStore)
+                .macSheetFrame()
+        }
+    }
+
+    private static let newChatButtonSize: CGFloat = 56
+
+    /// New conversation or group: a round glass button centred at the bottom of the list.
+    private var newChatButton: some View {
+        Menu {
+            Button { showingCompose = true } label: { Label("New conversation", systemImage: "bubble.left") }
+            Button { showingNewGroup = true } label: { Label("New group", systemImage: "person.3") }
+        } label: {
+            Image(systemName: "plus")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: Self.newChatButtonSize, height: Self.newChatButtonSize)
+                // UI rule: the whole circle is the tap target, not just the glyph.
+                .contentShape(Circle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .glassEffect(.regular.tint(.accentColor).interactive(), in: Circle())
+        .padding(.bottom, 8)
+        .accessibilityLabel("New chat")
     }
 
     /// A peer's avatar; a group keeps its `person.3` glyph, in a circle of the same size.

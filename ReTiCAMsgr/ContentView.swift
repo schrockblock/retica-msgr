@@ -5,23 +5,12 @@ import ReTiCAMsgrCore
 struct RootView: View {
     let runtime: AppRuntime
 
-    private enum Tab: Hashable { case chat, settings }
-    @State private var tab = Tab.chat
-
     var body: some View {
         if let store = runtime.store, case .ready = runtime.state {
-            TabView(selection: $tab) {
-                ConversationListView(store: store)
-                    .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
-                    .tag(Tab.chat)
-                SettingsView(store: store, meshCoreKeyStore: runtime.meshCoreKeyStore)
-                    .tabItem { Label("Settings", systemImage: "gear") }
-                    .tag(Tab.settings)
-            }
-            // A "Message not sent" tap opens its chat, which lives on the Chat tab.
-            .onChange(of: runtime.chatRequests) { tab = .chat }
-            .modifier(LinkPromptsModifier(store: store))
-            .modifier(LocalNetworkAlertModifier(store: store))
+            // The one root screen: chats and Settings are both pushed on its stack.
+            ConversationListView(store: store, meshCoreKeyStore: runtime.meshCoreKeyStore)
+                .modifier(LinkPromptsModifier(store: store))
+                .modifier(LocalNetworkAlertModifier(store: store))
         } else if case .loading = runtime.state {
             ProgressView()
         } else {

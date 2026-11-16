@@ -251,10 +251,9 @@ public struct AppFeature {
         /// "viewed" only while this is true. Starts true: a launch is a foreground launch unless
         /// `.backgrounded` says otherwise, and a push-wake launch has no open thread anyway.
         public var isForeground = true
-        /// Whether ChatView is on screen (amendment A11). `openPeerHex` stays set while the user is
-        /// on another tab, so arrival and foreground stamping also require this. Set by opening or
-        /// starting a conversation and `.chatAppeared`, cleared by `.closeConversation` and
-        /// `.chatDisappeared`. Session-only.
+        /// Whether ChatView is on screen (amendment A11). Arrival and foreground stamping require
+        /// this as well as `openPeerHex`. Set by opening or starting a conversation and
+        /// `.chatAppeared`, cleared by `.closeConversation` and `.chatDisappeared`. Session-only.
         public var chatVisible = false
         // The Send gate: peers a send would route to right now (live learned path; from pathLearned
         // and seedReachablePeers). A peer outside it gets a path request on receipt / open
@@ -757,8 +756,7 @@ public struct AppFeature {
         /// belongs to the address). Remembered as a known destination, so a propagated send can
         /// reach the peer before it announces. Never replaces a key we already know.
         case scannedContactKey(ScannedContact)
-        /// ChatView's onAppear: the open thread is on screen again (back from another tab), so its
-        /// unstamped rows are viewed now.
+        /// ChatView's onAppear: the open thread is on screen, so its unstamped rows are viewed now.
         case chatAppeared
         /// ChatView's onDisappear: the open thread is no longer on screen.
         case chatDisappeared
@@ -2006,7 +2004,7 @@ public struct AppFeature {
                 )
 
             case .chatAppeared:
-                // Back on the chat from another tab: what arrived meanwhile is viewed now (A11).
+                // The chat is on screen: what arrived while it was not is viewed now (A11).
                 state.chatVisible = true
                 return viewOpenThreadEffect(state)
 
