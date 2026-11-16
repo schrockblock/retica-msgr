@@ -33,13 +33,25 @@ struct AnnounceListView: View {
     /// purely by recency moved rows under the user's finger, so a tap opened the wrong chat. Peers
     /// already listed keep their place; newcomers go at the bottom, so nothing above them shifts.
     @State private var frozenOrder: [Data] = []
+    @State private var searchText = ""
 
     private var orderedAnnounces: [DetectedAnnounce] {
         let rank = Dictionary(uniqueKeysWithValues: frozenOrder.enumerated().map { ($1, $0) })
         let all = detectedAnnounces
         let newcomers = all.filter { rank[$0.id] == nil }
         let known = all.filter { rank[$0.id] != nil }.sorted { rank[$0.id]! < rank[$1.id]! }
-        return known + newcomers
+        return (known + newcomers).filter(matchesSearch)
+    }
+
+    /// Matches the contact name, the announced name, or the address. The address is compared with
+    /// spaces and the `<…>` wrapping a copied address stripped, so a pasted one still matches.
+    private func matchesSearch(_ announce: DetectedAnnounce) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return true }
+        let names = [store.state.contactName(announce.hex), announce.displayName].compactMap { $0 }
+        if names.contains(where: { $0.localizedCaseInsensitiveContains(query) }) { return true }
+        let hexQuery = query.lowercased().filter { !" <>".contains($0) }
+        return !hexQuery.isEmpty && announce.hex.contains(hexQuery)
     }
 
     private var detectedAnnounces: [DetectedAnnounce] {
@@ -67,6 +79,8 @@ struct AnnounceListView: View {
                             description: Text("People will show up here as their apps announce "
                                               + "themselves. Make sure you're connected in Settings.")
                         )
+                    } else if orderedAnnounces.isEmpty {
+                        ContentUnavailableView.search(text: searchText)
                     } else {
                         ForEach(orderedAnnounces) { announce in
                             row(announce)
@@ -83,6 +97,8 @@ struct AnnounceListView: View {
                 }
             }
             .insetGroupedListStyle()
+            .searchable(text: $searchText, prompt: "Name or address")
+            .autocorrectionDisabled()
             .onAppear { frozenOrder = detectedAnnounces.map(\.id) }
             .navigationTitle("Announces")
             .inlineNavigationTitle()

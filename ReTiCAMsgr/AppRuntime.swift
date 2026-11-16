@@ -39,6 +39,9 @@ final class AppRuntime {
         /// The identity that signs tunnel-synthesis packets on each TCP connect. Inert by default for
         /// the same reason as `meshCoreKeyStore`; inert means no tunnel is synthesized.
         var tunnelIdentityStore: TunnelIdentityStore = .inert
+        /// Where `SendTrace` appends its send-path log. Nil (no trace) by default, so test hosts and
+        /// the runtime tests write nothing; `live()` puts it next to the database.
+        var sendTraceURL: URL?
 
         static func live() -> Environment {
             let dbPath = URL.documentsDirectory.appending(path: "reticamsgr.sqlite").path()
@@ -59,7 +62,8 @@ final class AppRuntime {
                 pushStorage: pushStorage ?? .temporary(),
                 meshCoreKeyStore: .live(ops: .live),
                 ownRatchetStore: .live(ops: .live),
-                tunnelIdentityStore: .live(ops: .live))
+                tunnelIdentityStore: .live(ops: .live),
+                sendTraceURL: URL.documentsDirectory.appending(path: "send-trace.log"))
         }
 
         /// Hosted XCTest runs and UI-test launches never touch the real Keychain, database or
@@ -118,6 +122,7 @@ final class AppRuntime {
         let meshCoreKeyStore = environment.meshCoreKeyStore
         let ownRatchetStore = environment.ownRatchetStore
         let tunnelIdentityStore = environment.tunnelIdentityStore
+        let sendTraceURL = environment.sendTraceURL
         var initialState = AppFeature.State(identity: identity, pushStorage: pushStorage)
         #if os(iOS)
         // A background launch (a push, a Bluetooth restore) starts with nobody looking, so the app
@@ -127,6 +132,8 @@ final class AppRuntime {
         #endif
         let store = Store(initialState: initialState) {
             AppFeature()
+            // After AppFeature, so it reads the state each action left.
+            SendTrace(fileURL: sendTraceURL)
         } withDependencies: {
             $0.defaultDatabase = database
             // Explicit, not the ambient default: a hosted XCTest process makes swift-dependencies

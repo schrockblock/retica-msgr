@@ -518,7 +518,7 @@
 				CODE_SIGN_ENTITLEMENTS = ReTiCAMsgr/ReTiCAMsgr.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "ReTiCAMsgr/ReTiCAMsgr-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = HK6WSAR793;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -535,7 +535,7 @@
 					"@executable_path/Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.4;
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgr;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -560,7 +560,7 @@
 				CODE_SIGN_ENTITLEMENTS = ReTiCAMsgr/ReTiCAMsgr.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "ReTiCAMsgr/ReTiCAMsgr-macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = HK6WSAR793;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -577,7 +577,7 @@
 					"@executable_path/Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.4;
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgr;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -691,7 +691,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ReTiCAMsgrNotificationService/ReTiCAMsgrNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = HK6WSAR793;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ReTiCAMsgrNotificationService/Info.plist;
@@ -703,7 +703,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgr.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -720,7 +720,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ReTiCAMsgrNotificationService/ReTiCAMsgrNotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_TEAM = HK6WSAR793;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ReTiCAMsgrNotificationService/Info.plist;
@@ -732,7 +732,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = co.lithobyte.ReTiCaMsgr.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
