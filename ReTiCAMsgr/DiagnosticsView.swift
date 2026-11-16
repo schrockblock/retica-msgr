@@ -4,28 +4,35 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 import ComposableArchitecture
 import ReTiCAMsgrCore
 
 /// Read-only triage. All derivation lives in `DiagnosticsSnapshot`; this file renders and
 /// nothing else. Rebuilding the snapshot inside `body` is what makes the screen live — TCA
 /// re-runs `body` when the observed state changes, so no timer or stored copy is needed.
+///
+/// That happens once per accepted announce, so `body` must cost the same however much of the
+/// network the node has heard: the snapshot it builds lists a limited number of paths and peers,
+/// and the full text is built when Share or Copy asks for it, never here.
 struct DiagnosticsView: View {
     let store: StoreOf<AppFeature>
 
     private var snapshot: DiagnosticsSnapshot {
-        DiagnosticsSnapshot(from: store.state, at: Date())
+        DiagnosticsSnapshot(from: store.state, at: Date(),
+                            tableRowLimit: DiagnosticsSnapshot.screenTableRowLimit)
     }
 
     var body: some View {
         let snapshot = self.snapshot
         List {
             Section {
-                ShareLink(item: snapshot.text) {
+                ShareLink(item: DiagnosticsExport(store: store),
+                          preview: SharePreview("ReTiCAMsgr diagnostics")) {
                     Label("Share diagnostics", systemImage: "square.and.arrow.up")
                 }
                 Button {
-                    Pasteboard.copy(snapshot.text)
+                    Pasteboard.copy(DiagnosticsExport(store: store).text)
                 } label: {
                     Label("Copy to clipboard", systemImage: "doc.on.doc")
                 }
@@ -96,5 +103,23 @@ struct DiagnosticsView: View {
 
     private func isHex(_ s: String) -> Bool {
         !s.isEmpty && s.allSatisfy { $0.isHexDigit }
+    }
+}
+
+/// The full diagnostics text — every path and peer — built when it is asked for: by the Copy
+/// button's action, or by the share sheet once a destination is chosen. Never from `body`.
+private nonisolated struct DiagnosticsExport: Transferable {
+    let store: StoreOf<AppFeature>
+
+    @MainActor var text: String {
+        DiagnosticsSnapshot(from: store.state, at: Date()).text
+    }
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .utf8PlainText) { export in
+            await MainActor.run { Data(export.text.utf8) }
+        }
+        // Without a name the share sheet's Save to Files writes a file called "text", no extension.
+        .suggestedFileName("ReTiCAMsgr diagnostics.txt")
     }
 }
