@@ -590,6 +590,7 @@ private func autoBringPeerOnline(_ store: TestStoreOf<AppFeature>, _ auto: AutoD
     await store.send(autoDelegate(.localNetworkDenied))
     #expect(store.state.autoInterfaceLocalNetworkDenied)
     #expect(!store.state.somethingWillDial)
+    #expect(store.state.presentedLocalNetworkAlert == .denied)
     auto.yield(discovery(from: autoOwnLL))
     for _ in 0..<50 where store.state.node.client.endpoint.auto?.interface.nics[autoNIC]?.firstEcho == nil {
         await Task.megaYield()
@@ -598,4 +599,45 @@ private func autoBringPeerOnline(_ store: TestStoreOf<AppFeature>, _ auto: AutoD
     #expect(!store.state.autoInterfaceLocalNetworkDenied, "the denial outlived the first echo")
     #expect(store.state.somethingWillDial)
     #expect(DiagnosticsSnapshot.autoInterfaceLayer(store.state, at: autoNow).health != .problem)
+    // The alert went up while the system prompt was waiting; Allow was tapped, so it comes down.
+    #expect(store.state.localNetworkAlert == .denied, "still stored: nobody dismissed it")
+    #expect(store.state.presentedLocalNetworkAlert == nil, "the alert outlived the first echo")
+}
+
+/// Wi-Fi drops and returns after an echo disproved a denial: the NIC is adopted anew, with no echo
+/// of its own yet. The disproof is the session's, so the denial must not come back.
+@MainActor @Test func autoDisprovedDenialStaysDisprovedWhenTheNICIsAdoptedAnew() async {
+    let auto = AutoDriverHarness()
+    let clock = TestClock<Duration>()
+    let store = autoStore(auto, clock: clock)
+    await store.send(.connectTapped)
+    await auto.waitForRuns(1)
+    await clock.advance(by: .seconds(2))
+    await store.receive(isPeeringWaitElapsed, timeout: .seconds(2))
+    await store.send(autoDelegate(.localNetworkDenied))
+    auto.yield(discovery(from: autoOwnLL))
+    for _ in 0..<50 where store.state.node.client.endpoint.auto?.interface.nics[autoNIC]?.firstEcho == nil {
+        await Task.megaYield()
+        await store.skipReceivedActions(strict: false)
+    }
+    #expect(!store.state.autoInterfaceLocalNetworkDenied)
+    let own = auto.nics.value
+    auto.nics.setValue([])
+    await clock.advance(by: .seconds(4))
+    for _ in 0..<50 where store.state.node.client.endpoint.auto?.interface.nics[autoNIC] != nil {
+        await Task.megaYield()
+        await store.skipReceivedActions(strict: false)
+    }
+    #expect(store.state.node.client.endpoint.auto?.interface.nics[autoNIC] == nil)
+    auto.nics.setValue(own)
+    await clock.advance(by: .seconds(4))
+    for _ in 0..<50 where store.state.node.client.endpoint.auto?.interface.nics[autoNIC] == nil {
+        await Task.megaYield()
+        await store.skipReceivedActions(strict: false)
+    }
+    let nic = store.state.node.client.endpoint.auto?.interface.nics[autoNIC]
+    #expect(nic != nil, "the NIC was not adopted again")
+    #expect(nic?.firstEcho == nil)
+    #expect(!store.state.autoInterfaceLocalNetworkDenied, "the denial came back with the NIC")
+    #expect(store.state.somethingWillDial)
 }

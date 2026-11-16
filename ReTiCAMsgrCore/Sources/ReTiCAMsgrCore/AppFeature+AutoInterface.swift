@@ -17,14 +17,23 @@ extension AppFeature.State {
     /// must not hold the app at Connecting….
     var autoInterfaceWillDial: Bool { autoInterfaceWanted && !autoInterfaceLocalNetworkDenied }
 
-    /// The interface reported `.localNetworkDenied` and no adopted NIC has heard its own multicast
-    /// echo since. The report is once per session, and on a Mac the user may grant the permission
-    /// while the session runs: the first echo after that proves the local network works, so the
-    /// denial no longer stands.
+    /// The interface reported `.localNetworkDenied` and the session has heard no multicast echo of
+    /// its own. The report is once per session, and the user may grant the permission while the
+    /// session runs (on a Mac, or by answering the system prompt late): the first echo after that
+    /// proves the local network works, so the denial no longer stands. Read from the session, not
+    /// from each NIC: a NIC that drops and returns starts with no echo of its own.
     public var autoInterfaceLocalNetworkDenied: Bool {
         guard autoInterfaceNotices.localNetworkDenied else { return false }
-        let nics = node.client.endpoint.auto?.interface.nics.values
-        return !(nics?.contains { $0.firstEcho != nil } ?? false)
+        return !(node.client.endpoint.auto?.interface.echoHeard ?? false)
+    }
+
+    /// The Local Network alert to put on screen: `localNetworkAlert`, except a `.denied` one that an
+    /// echo has since disproved. The interface cannot tell "denied" from "the system prompt is still
+    /// waiting for an answer", so the alert can go up behind that prompt; it must come down by itself
+    /// once the user taps Allow.
+    public var presentedLocalNetworkAlert: LocalNetworkAlert? {
+        if localNetworkAlert == .denied, !autoInterfaceLocalNetworkDenied { return nil }
+        return localNetworkAlert
     }
 
     /// The slot may be created or started now: anywhere but an iOS app in the background (spec §8.5),

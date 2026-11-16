@@ -38,7 +38,7 @@ private struct LocalNetworkAlertModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content.alert(AutoInterfaceText.alertTitle, isPresented: Binding(
-            get: { store.localNetworkAlert != nil },
+            get: { store.state.presentedLocalNetworkAlert != nil },
             set: { if !$0 { store.send(.localNetworkAlertDismissed) } }
         )) {
             Button("Open Settings") {
@@ -47,7 +47,7 @@ private struct LocalNetworkAlertModifier: ViewModifier {
             }
             Button("Not Now", role: .cancel) { store.send(.localNetworkAlertDismissed) }
         } message: {
-            Text(store.localNetworkAlert.map(AutoInterfaceText.alertMessage) ?? "")
+            Text(store.state.presentedLocalNetworkAlert.map(AutoInterfaceText.alertMessage) ?? "")
         }
     }
 }
