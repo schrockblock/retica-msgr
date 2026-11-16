@@ -210,12 +210,31 @@ struct ChatView: View {
                 // covers content growth, so a message landing would move a reader scrolled up; the
                 // follow logic below decides when to scroll instead.
                 .defaultScrollAnchor(.bottom, for: .alignment)
+                // Dragging the thread down toward older messages takes the keyboard with it. Only
+                // the reader's own drag does: the scrolls this view makes itself leave it up.
+                .scrollDismissesKeyboard(.interactively)
                 // Where the reader is. Content growing under a still viewport (a message landing)
                 // isn't the reader scrolling, so it leaves `nearBottom` as it was: the follow
                 // decision below must see where they were before the new row arrived.
                 .onScrollGeometryChange(for: ScrollSpot.self) { geometry in
-                    ScrollSpot(contentHeight: geometry.contentSize.height, visibleMaxY: geometry.visibleRect.maxY)
+                    // The visible rect runs under the composer and the keyboard (the bottom inset);
+                    // what the reader sees ends above them.
+                    ScrollSpot(contentHeight: geometry.contentSize.height,
+                               visibleMaxY: geometry.visibleRect.maxY - geometry.contentInsets.bottom,
+                               bottomInset: geometry.contentInsets.bottom)
                 } action: { old, new in
+                    // The keyboard coming up, or the composer growing, would cover the end of the
+                    // thread: a reader at the bottom stays on the last message. On the next run
+                    // loop, once the list has its new inset. Not animated: typing a line at a time
+                    // grows the inset in quick steps, and an animated scroll still in flight lands
+                    // on the earlier, shorter step.
+                    if ChatScroll.shouldPin(oldBottomInset: old.bottomInset, newBottomInset: new.bottomInset,
+                                            wasNearBottom: nearBottom) {
+                        if let last = store.threadMessages.last?.id {
+                            Task { @MainActor in proxy.scrollTo(last, anchor: .bottom) }
+                        }
+                        return
+                    }
                     if new.visibleMaxY == old.visibleMaxY, new.contentHeight > old.contentHeight { return }
                     nearBottom = ChatScroll.isNearBottom(contentHeight: new.contentHeight, visibleMaxY: new.visibleMaxY)
                     if nearBottom { unseenCount = 0 }
@@ -246,87 +265,51 @@ struct ChatView: View {
                     unseenCount = 0
                     nearBottom = true
                 }
+                // Above the composer, whenever the reader has scrolled up; it also carries the count
+                // of messages that arrived below them.
                 .overlay(alignment: .bottomTrailing) {
-                    if unseenCount > 0, let last = store.threadMessages.last?.id {
+                    if ChatScroll.showsJumpButton(nearBottom: nearBottom, unseenCount: unseenCount),
+                       let last = store.threadMessages.last?.id {
                         Button {
                             unseenCount = 0
                             withAnimation { proxy.scrollTo(last, anchor: .bottom) }
                         } label: {
-                            Text(unseenCount == 1 ? "↓ New message" : "↓ \(unseenCount) new messages")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(.regularMaterial, in: Capsule())
-                                // UI rule: the whole capsule is the tap target, not just the glyphs.
-                                .contentShape(Capsule())
+                            Image(systemName: "chevron.down")
+                                .font(.body.weight(.semibold))
+                                .frame(width: Self.controlSize, height: Self.controlSize)
+                                // UI rule: the whole circle is the tap target, not just the glyph.
+                                .contentShape(Circle())
                         }
                         .buttonStyle(.plain)
-                        .padding(12)
+                        .glassEffect(.regular.interactive(), in: Circle())
+                        .overlay(alignment: .topTrailing) {
+                            if let badge = ChatScroll.jumpBadgeText(unseenCount: unseenCount) {
+                                Text(badge)
+                                    .font(.caption2.weight(.bold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .frame(minWidth: 20, minHeight: 20)
+                                    .background(Capsule().fill(Color.accentColor))
+                                    .offset(x: 4, y: -8)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .padding(.trailing, 12)
+                        .padding(.bottom, 8)
+                        .accessibilityLabel(ChatScroll.jumpButtonLabel(unseenCount: unseenCount))
                         .accessibilityHint("Scrolls to the latest message")
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
                     }
                 }
+                .animation(.snappy, value: ChatScroll.showsJumpButton(nearBottom: nearBottom, unseenCount: unseenCount))
                 .sheet(item: $infoTarget) { target in
                     MessageInfoSheet(store: store, messageID: target.id)
                         .macSheetFrame()
                 }
-            }
-
-            Divider()
-
-            if let target = store.replyTarget {
-                let trimmedQuote = ReplyWire.trimQuote(target.body)
-                ReplyComposerBar(
-                    senderLabel: ReplyPreview.senderLabel(originalIsOutgoing: target.isOutgoing, peerName: peerName),
-                    // A whitespace-only original trims to "", so it shows the same "not available"
-                    // text as the resolver rather than an empty line (P1).
-                    text: trimmedQuote.isEmpty ? ReplyPreview.unavailable : trimmedQuote,
-                    onCancel: { store.send(.replyCancelled) }
-                )
-            }
-
-            if showAttachmentBar, isGroup || !store.state.isBlocked(store.openPeerHex ?? "") {
-                AttachmentComposerBar(
-                    pending: store.pendingAttachment,
-                    preparing: store.attachmentPreparing,
-                    error: store.attachmentError,
-                    onRemove: { store.send(.attachmentRemoved) },
-                    onOriginalToggled: { store.send(.attachmentOriginalToggled($0)) }
-                )
-            }
-
-            if !isGroup, let peer = store.openPeerHex, store.state.isBlocked(peer) {
-                BlockedBar(onUnblock: { store.send(.unblockPeer(peer)) })
-            } else if isGroup, store.openGroup?.state == GroupState.invited {
-                InviteBar(groupName: store.openGroup?.name ?? "the group",
-                          onAccept: { store.send(.acceptInvite) },
-                          onDecline: { store.send(.declineInvite) })
-            } else if isGroup, let state = store.openGroup?.state, state != GroupState.active {
-                ClosedGroupLine(state: state)
-            } else {
-                // Bottom-aligned so the buttons stay beside the last line as the field grows.
-                HStack(alignment: .bottom, spacing: 4) {
-                    if !isGroup {
-                        AttachmentPickerButton(
-                            peerHex: store.openPeerHex ?? "",
-                            onLoadStarted: { store.send(.attachmentLoadStarted(peerHex: $0)) },
-                            onPicked: { store.send(.attachmentPicked($0)) },
-                            onFailed: { store.send(.attachmentFailed($0)) }
-                        )
-                    }
-                    TextField("Message", text: $store.draft, axis: .vertical)
-                        .lineLimit(1...5)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($draftFocused)
-                        // One line plus this is 44 pt, the buttons' height, so they line up.
-                        .padding(.vertical, 5)
-                    Button("Send") { store.send(.sendTapped) }
-                        .frame(minHeight: 44)
-                        .disabled(!canSend)
-                        .padding(.leading, 4)
-                }
-                .padding(.vertical)
-                .padding(.trailing)
-                .padding(.leading, 8)
+                // The composer floats over the thread, which scrolls beneath it and comes to rest
+                // with its last message above it.
+                .safeAreaBar(edge: .bottom, spacing: 0) { bottomBar }
             }
         }
         // Amendment A11: a message is "viewed" only while this screen is actually showing.
@@ -394,6 +377,113 @@ struct ChatView: View {
             ImageViewerSheet(attachment: target.attachment, url: target.url, shareURL: target.shareURL)
         }
         .quickLookPreview($quickLookURL)
+    }
+
+    /// The round buttons' diameter, and the height of the field at one line.
+    private static let controlSize: CGFloat = 44
+    /// Half of `controlSize`, so a one-line field is a capsule; a taller one keeps the corners.
+    private static let surfaceShape = RoundedRectangle(cornerRadius: 22)
+
+    /// What floats over the bottom of the thread: the composer, or the bar that replaces it.
+    private var bottomBar: some View {
+        GlassEffectContainer {
+            Group {
+                if !isGroup, let peer = store.openPeerHex, store.state.isBlocked(peer) {
+                    replacementBar { BlockedBar(onUnblock: { store.send(.unblockPeer(peer)) }) }
+                } else if isGroup, store.openGroup?.state == GroupState.invited {
+                    replacementBar {
+                        InviteBar(groupName: store.openGroup?.name ?? "the group",
+                                  onAccept: { store.send(.acceptInvite) },
+                                  onDecline: { store.send(.declineInvite) })
+                    }
+                } else if isGroup, let state = store.openGroup?.state, state != GroupState.active {
+                    replacementBar { ClosedGroupLine(state: state) }
+                } else {
+                    composer
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+    }
+
+    /// A bar that stands in for the composer, on one glass surface with the reply and attachment
+    /// bars above it.
+    private func replacementBar(@ViewBuilder _ bar: () -> some View) -> some View {
+        VStack(spacing: 0) {
+            composerAccessories
+            bar()
+        }
+        .glassEffect(.regular, in: Self.surfaceShape)
+    }
+
+    /// "Replying to …" and the pending attachment: the top of the field's glass surface.
+    @ViewBuilder
+    private var composerAccessories: some View {
+        if let target = store.replyTarget {
+            let trimmedQuote = ReplyWire.trimQuote(target.body)
+            ReplyComposerBar(
+                senderLabel: ReplyPreview.senderLabel(originalIsOutgoing: target.isOutgoing,
+                                                      peerName: store.openPeerDisplayName),
+                // A whitespace-only original trims to "", so it shows the same "not available"
+                // text as the resolver rather than an empty line (P1).
+                text: trimmedQuote.isEmpty ? ReplyPreview.unavailable : trimmedQuote,
+                onCancel: { store.send(.replyCancelled) }
+            )
+        }
+
+        if showAttachmentBar, isGroup || !store.state.isBlocked(store.openPeerHex ?? "") {
+            AttachmentComposerBar(
+                pending: store.pendingAttachment,
+                preparing: store.attachmentPreparing,
+                error: store.attachmentError,
+                onRemove: { store.send(.attachmentRemoved) },
+                onOriginalToggled: { store.send(.attachmentOriginalToggled($0)) }
+            )
+        }
+    }
+
+    /// Attach, the field, Send: two round glass buttons either side of a glass field.
+    private var composer: some View {
+        // Bottom-aligned so the buttons stay beside the last line as the field grows.
+        HStack(alignment: .bottom, spacing: 8) {
+            if !isGroup {
+                AttachmentPickerButton(
+                    peerHex: store.openPeerHex ?? "",
+                    onLoadStarted: { store.send(.attachmentLoadStarted(peerHex: $0)) },
+                    onPicked: { store.send(.attachmentPicked($0)) },
+                    onFailed: { store.send(.attachmentFailed($0)) }
+                )
+            }
+            VStack(spacing: 0) {
+                composerAccessories
+                TextField("Message", text: $store.draft, axis: .vertical)
+                    .lineLimit(1...5)
+                    .textFieldStyle(.plain)
+                    .focused($draftFocused)
+                    // One line plus this is 44 pt, the buttons' height, so they line up.
+                    .padding(.vertical, 11)
+                    .padding(.horizontal, 16)
+            }
+            .frame(minHeight: Self.controlSize)
+            // UI rule: the whole field takes the tap, not just the line of text in it.
+            .contentShape(Self.surfaceShape)
+            .onTapGesture { draftFocused = true }
+            .glassEffect(.regular, in: Self.surfaceShape)
+            Button { store.send(.sendTapped) } label: {
+                Image(systemName: "arrow.up")
+                    .font(.body.weight(.bold))
+                    .foregroundStyle(canSend ? AnyShapeStyle(.white) : AnyShapeStyle(.tertiary))
+                    .frame(width: Self.controlSize, height: Self.controlSize)
+                    // UI rule: the whole circle is the tap target, not just the glyph.
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            // Tinted while it can send; plain glass with a faint arrow while it can't.
+            .glassEffect(canSend ? .regular.tint(.accentColor).interactive() : .regular, in: Circle())
+            .disabled(!canSend)
+            .accessibilityLabel("Send")
+        }
     }
 
     /// The bytes under the attachment's real name for QuickLook and the share sheet, so "save to
@@ -486,6 +576,7 @@ private struct PickerTarget: Identifiable {
 private struct ScrollSpot: Equatable {
     let contentHeight: CGFloat
     let visibleMaxY: CGFloat
+    let bottomInset: CGFloat
 }
 
 private struct InfoTarget: Identifiable {
