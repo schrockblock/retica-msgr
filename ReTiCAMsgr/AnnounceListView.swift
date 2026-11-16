@@ -8,20 +8,6 @@
 import SwiftUI
 import ComposableArchitecture
 import ReTiCAMsgrCore
-import ReTiCANode
-
-/// Local hex helper — ReTiCAMsgrCore's `Data.hexString` is internal to the package.
-private func toHex(_ data: Data) -> String {
-    data.map { String(format: "%02x", $0) }.joined()
-}
-
-/// A row in the detected-announces list, derived from `LXMFNode.LearnedPeer`.
-private struct DetectedAnnounce: Identifiable {
-    let id: Data          // destination hash (stable identity)
-    let hex: String       // hex of the destination hash, for display
-    let displayName: String?
-    let learnedAt: Date
-}
 
 /// Presented as a sheet from the Chats nav bar. Tapping a row hands its address to `onPick`; the
 /// presenter dismisses the sheet and opens the chat once the sheet is gone.
@@ -32,58 +18,35 @@ struct AnnounceListView: View {
     /// Row order captured when the sheet opens. Announces re-arrive every few seconds, and sorting
     /// purely by recency moved rows under the user's finger, so a tap opened the wrong chat. Peers
     /// already listed keep their place; newcomers go at the bottom, so nothing above them shifts.
-    @State private var frozenOrder: [Data] = []
+    @State private var order = AnnounceList.Order()
     @State private var searchText = ""
 
-    private var orderedAnnounces: [DetectedAnnounce] {
-        let rank = Dictionary(uniqueKeysWithValues: frozenOrder.enumerated().map { ($1, $0) })
-        let all = detectedAnnounces
-        let newcomers = all.filter { rank[$0.id] == nil }
-        let known = all.filter { rank[$0.id] != nil }.sorted { rank[$0.id]! < rank[$1.id]! }
-        return (known + newcomers).filter(matchesSearch)
-    }
-
-    /// Matches the contact name, the announced name, or the address. The address is compared with
-    /// spaces and the `<…>` wrapping a copied address stripped, so a pasted one still matches.
-    private func matchesSearch(_ announce: DetectedAnnounce) -> Bool {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return true }
-        let names = [store.state.contactName(announce.hex), announce.displayName].compactMap { $0 }
-        if names.contains(where: { $0.localizedCaseInsensitiveContains(query) }) { return true }
-        let hexQuery = query.lowercased().filter { !" <>".contains($0) }
-        return !hexQuery.isEmpty && announce.hex.contains(hexQuery)
-    }
-
-    private var detectedAnnounces: [DetectedAnnounce] {
-        store.state.node.client.learnedPeers
-            .filter { hash, _ in !store.state.isBlocked(toHex(hash)) }
-            .map { hash, peer in
-                DetectedAnnounce(
-                    id: hash,
-                    hex: toHex(hash),
-                    displayName: peer.displayName,
-                    learnedAt: peer.learnedAt
-                )
-            }
-            .sorted { $0.learnedAt > $1.learnedAt }
-    }
-
     var body: some View {
+        // Once per body, and with a row limit. The peer table is network-sized and this body runs
+        // on every announce the node accepts, so what it does per run has to stay small
+        // (`AnnounceList`).
+        let list = AnnounceList(from: store.state, order: order, search: searchText,
+                                rowLimit: AnnounceList.screenRowLimit)
         NavigationStack {
             List {
                 Section {
-                    if detectedAnnounces.isEmpty {
+                    if list.known == 0 {
                         ContentUnavailableView(
                             "No One Yet",
                             systemImage: "antenna.radiowaves.left.and.right.slash",
                             description: Text("People will show up here as their apps announce "
                                               + "themselves. Make sure you're connected in Settings.")
                         )
-                    } else if orderedAnnounces.isEmpty {
+                    } else if list.rows.isEmpty {
                         ContentUnavailableView.search(text: searchText)
                     } else {
-                        ForEach(orderedAnnounces) { announce in
+                        ForEach(list.rows) { announce in
                             row(announce)
+                        }
+                        if list.more > 0 {
+                            Text(moreText(list))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 } header: {
@@ -99,7 +62,7 @@ struct AnnounceListView: View {
             .insetGroupedListStyle()
             .searchable(text: $searchText, prompt: "Name or address")
             .autocorrectionDisabled()
-            .onAppear { frozenOrder = detectedAnnounces.map(\.id) }
+            .onAppear { order = AnnounceList.Order(of: store.state) }
             .navigationTitle("Announces")
             .inlineNavigationTitle()
             .toolbar {
@@ -116,17 +79,25 @@ struct AnnounceListView: View {
         }
     }
 
-    private func row(_ announce: DetectedAnnounce) -> some View {
+    /// The last row when the limit cut the list: how many people are not shown, and how to reach them.
+    private func moreText(_ list: AnnounceList) -> String {
+        let more = list.more.formatted()
+        return list.matching == list.known
+            ? "\(more) more not shown. Search by name or address to find someone."
+            : "\(more) more match. Keep typing to narrow the search."
+    }
+
+    private func row(_ announce: AnnounceList.Row) -> some View {
         Button {
             onPick(announce.hex)
         } label: {
             HStack(spacing: 12) {
                 AvatarView(store: store, peerHex: announce.hex, size: 40,
-                           name: store.state.contactName(announce.hex) ?? announce.displayName ?? "")
+                           name: announce.contactName ?? announce.announcedName ?? "")
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(store.state.contactName(announce.hex) ?? announce.displayName ?? "Unnamed")
+                    Text(announce.contactName ?? announce.announcedName ?? "Unnamed")
                         .font(.headline)
-                    if store.state.contactName(announce.hex) != nil, let name = announce.displayName {
+                    if announce.contactName != nil, let name = announce.announcedName {
                         Text("announces as \(name)").font(.caption).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 6) {
