@@ -33,11 +33,16 @@ struct AttachmentPickerButton: View {
             Button("Document", systemImage: "doc") { showingFiles = true }
         } label: {
             Image(systemName: "paperclip")
-                .font(.title3)
+                .font(.body.weight(.semibold))
                 // UI rule: a 44 pt hit area, all of it tappable.
                 .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+                .contentShape(Circle())
         }
+        // A round glass button like Send beside it, not a bordered menu button with an indicator.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .glassEffect(.regular.interactive(), in: Circle())
         .accessibilityLabel("Attach")
         .photosPicker(isPresented: $showingPhotos, selection: $photoItem, matching: .images)
         .onChange(of: photoItem) { _, item in
